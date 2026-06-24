@@ -365,4 +365,4 @@ La migration vers cette v2 se fera progressivement une fois le frontend React va
 
 ---
 
-*Développé pour l'UNCHK — Université du Sine Saloum El-Hadj Ibrahima NIASSE.*
+*Développé pour l'UNCHK — Université Numérique Cheikh Hamidou Kane*

@@ -1,0 +1,34 @@
+# Environnement virtuel
+.venv/
+.venv-base/
+
+# Variables sensibles
+.env
+*.env
+
+# Logs
+*.log
+/var/log/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Uploads (fichiers utilisateurs — non versionnés)
+static/uploads/
+static/snapshots/
+
+# Base de données locale
+*.db
+*.sqlite
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/

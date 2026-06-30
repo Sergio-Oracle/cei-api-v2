@@ -3,6 +3,13 @@
 **Centre d'Examen Intelligent** — Backend indépendant conçu pour séparer la couche API de la couche frontend.  
 Port public : `http://62.171.190.6:8100` · Swagger UI : `http://62.171.190.6:8100/api/docs`
 
+## Dépôts du projet
+
+| Partie | Dépôt | Port |
+|--------|-------|------|
+| Backend API (ce dépôt) | [Sergio-Oracle/cei-api-v2](https://github.com/Sergio-Oracle/cei-api-v2) | 8100 |
+| Frontend Next.js | [Sergio-Oracle/cei-next](https://github.com/Sergio-Oracle/cei-next) | 5173 |
+
 ---
 
 ## Mises à jour récentes

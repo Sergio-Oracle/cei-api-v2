@@ -5,6 +5,20 @@ Port public : `http://62.171.190.6:8100` · Swagger UI : `http://62.171.190.6:81
 
 ---
 
+## Mises à jour récentes
+
+### 30/06/2026 — Corrections critiques
+
+| Endpoint | Problème | Correction |
+|---|---|---|
+| `POST /api/exam_attempts/<id>/unban` | `ExamActivityLog` créé avec `details=` et `risk_score=` — champs inexistants → `TypeError` 500 | Remplacé par `event_data=json.dumps({...})` |
+| `GET /api/exam_attempts/<id>/review` | `attempt.corrector` accédé après `session.close()` → `DetachedInstanceError` 500 | Tous les champs extraits dans `result` dict avant `session.close()` |
+| `GET /api/exam_attempts/<id>/review` | `corrector_name` absent de la réponse JSON | Ajouté : `corrector_name: attempt.corrector.full_name if attempt.corrector else None` |
+| `GET /api/exam_attempts/<id>/integrity-report` | PDF : "Tab switches" en anglais ; types d'événements en anglais dans la chronologie | Traduits en français : "Changements d'onglet", "Tentative de copie", etc. |
+| `GET /api/exam_attempts/<id>/integrity-report` | Nom du fichier téléchargé = `rapport_integrite_<id>.pdf` | Nom inclut le prénom/nom de l'étudiant : `rapport_integrite_<nom>_<id>.pdf` |
+
+---
+
 ## Présentation
 
 Ce backend est la **version 2** de la plateforme CEI. Il reprend l'intégralité des fonctionnalités de la plateforme existante en séparant clairement :

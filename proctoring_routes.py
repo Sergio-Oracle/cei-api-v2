@@ -1673,7 +1673,6 @@ def get_exam_recordings(exam_id):
     try:
         user_id = get_current_user_id()
         role = get_current_user_role()
-        role    = claims.get('role')
         session = get_session()
 
         if role not in ['professor', 'admin', 'surveillant']:
@@ -1793,7 +1792,6 @@ def get_private_session_token(attempt_id):
     """Token LiveKit pour session privée surveillant ↔ étudiant"""
     user_id = get_current_user_id()
     role = get_current_user_role()
-    role    = claims.get('role')
 
     config = get_livekit_config()
     if not all([config['url'], config['api_key'], config['api_secret']]):
@@ -2090,7 +2088,6 @@ def agent_push_alert():
 def agent_get_alerts():
     """Dashboard : récupère les alertes non lues (prof / surveillant)."""
     role = get_current_user_role()
-    role   = claims.get('role')
     if role not in ['professor', 'admin', 'surveillant']:
         return jsonify({'error': 'Accès non autorisé'}), 403
     alerts = _load_alerts()
@@ -2231,7 +2228,6 @@ def agent_status():
     from datetime import datetime, timezone, timedelta
 
     role = get_current_user_role()
-    role   = claims.get('role')
     if role not in ['professor', 'admin', 'surveillant']:
         return jsonify({'error': 'Accès non autorisé'}), 403
 

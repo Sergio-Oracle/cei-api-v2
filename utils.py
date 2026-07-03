@@ -1212,6 +1212,7 @@ def generate_transcript_pdf(transcript_data, output_path):
     from reportlab.platypus.flowables import Flowable
     from reportlab.lib import colors
     from datetime import datetime
+    import pytz
 
     # ── Palette ──
     C_NAVY      = colors.HexColor('#0f2557')   # bleu très foncé (bandeau)
@@ -1289,8 +1290,8 @@ def generate_transcript_pdf(transcript_data, output_path):
                           fontName='Helvetica-Bold', leading=18),
         'cei_sub':    ps('CS', fontSize=8,  textColor=C_BLUE_PALE, leading=11),
         'doc_title':  ps('DT', fontSize=17, textColor=C_NAVY,
-                          fontName='Helvetica-Bold', alignment=1, spaceAfter=2),
-        'doc_year':   ps('DY', fontSize=9,  textColor=C_GRAY_600, alignment=1, spaceAfter=6),
+                          fontName='Helvetica-Bold', alignment=1, spaceAfter=8),
+        'doc_year':   ps('DY', fontSize=9,  textColor=C_GRAY_600, alignment=1, spaceAfter=8),
         'lbl':        ps('LB', fontSize=8.5, textColor=C_GRAY_600, fontName='Helvetica-Bold'),
         'val':        ps('VL', fontSize=8.5, textColor=C_GRAY_900),
         'ue_hdr':     ps('UH', fontSize=9.5, textColor=C_WHITE, fontName='Helvetica-Bold'),
@@ -1305,7 +1306,7 @@ def generate_transcript_pdf(transcript_data, output_path):
     }
 
     story = []
-    now = datetime.now()
+    now = datetime.now(pytz.timezone('Africa/Dakar'))
 
     # ── Année académique ──
     acad_year = f"{now.year - 1}/{now.year}" if now.month < 9 else f"{now.year}/{now.year + 1}"
@@ -1328,7 +1329,7 @@ def generate_transcript_pdf(transcript_data, output_path):
                                         alignment=2, leading=11))
 
     hdr_data = [[logo_cell, name_block, ref_block]]
-    hdr_table = Table(hdr_data, colWidths=[1.4*cm, 12.2*cm, 4.2*cm])
+    hdr_table = Table(hdr_data, colWidths=[1.8*cm, 11.8*cm, 4.2*cm])
     hdr_table.setStyle(TableStyle([
         ('BACKGROUND',    (0,0), (-1,-1), C_NAVY),
         ('LEFTPADDING',   (0,0), (0,0),   6),

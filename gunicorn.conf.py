@@ -11,7 +11,7 @@ import multiprocessing
 import os
 
 # ── Binding ──────────────────────────────────────────────────────────────────
-bind    = "0.0.0.0:8100"
+bind    = "unix:/run/cei-api-v2.sock"
 backlog = 2048              # file d'attente connexions entrantes
 
 # ── Workers ──────────────────────────────────────────────────────────────────

@@ -2304,17 +2304,48 @@ def get_professor_recent_incidents():
         incidents = session.query(ExamActivityLog).join(ExamAttempt).filter(
             ExamAttempt.exam_id.in_(exam_ids),
             ExamActivityLog.timestamp >= since
-        ).order_by(ExamActivityLog.timestamp.desc()).limit(50).all()
-        
+        ).order_by(ExamActivityLog.timestamp.desc()).limit(100).all()
+
+        # Charger les snapshots caméra pour les events visuels (face)
+        VISUAL_EVENTS = {'no_face_detected', 'no_face', 'multiple_faces', 'face_reference_captured',
+                         'face_absent', 'mismatch_detected'}
+        attempt_ids_with_visual = [i.attempt_id for i in incidents if i.event_type in VISUAL_EVENTS]
+        cam_logs = {}
+        if attempt_ids_with_visual:
+            raw_cams = session.query(CameraLog).filter(
+                CameraLog.attempt_id.in_(attempt_ids_with_visual),
+                CameraLog.timestamp >= since,
+                CameraLog.image_data.isnot(None)
+            ).order_by(CameraLog.timestamp.desc()).all()
+            # Grouper par attempt_id pour lookup rapide
+            for cam in raw_cams:
+                cam_logs.setdefault(cam.attempt_id, []).append(cam)
+
+        HIGH_SEVERITY = {'tab_switch', 'devtools_attempt', 'multiple_faces', 'proctor_ban', 'teacher_ban'}
+
         incidents_list = []
         for incident in incidents:
             incident_dict = incident.to_dict()
             incident_dict['student_name'] = incident.attempt.student.full_name
-            incident_dict['exam_title'] = incident.attempt.exam.title
-            incident_dict['severity'] = 'high' if incident.event_type in ['tab_switch', 'devtools_attempt'] else 'medium'
+            incident_dict['exam_title']   = incident.attempt.exam.title
+            incident_dict['severity']     = 'high' if incident.event_type in HIGH_SEVERITY else 'medium'
+            # Trouver le snapshot caméra le plus proche (±30s)
+            snapshot_data = None
+            if incident.event_type in VISUAL_EVENTS and incident.attempt_id in cam_logs:
+                inc_ts = incident.timestamp
+                best = None
+                best_diff = 30  # secondes max
+                for cam in cam_logs[incident.attempt_id]:
+                    diff = abs((cam.timestamp - inc_ts).total_seconds())
+                    if diff < best_diff:
+                        best_diff = diff
+                        best = cam
+                if best:
+                    snapshot_data = best.image_data
+            incident_dict['snapshot_data'] = snapshot_data
             incidents_list.append(incident_dict)
-        
-        # #12 — EC récemment affectés (7 derniers jours)
+
+        # Notifications EC affectés (7 derniers jours) — section séparée
         ec_since = utcnow() - timedelta(days=7)
         new_assignments = session.query(ECAssignment).filter(
             ECAssignment.professor_id == user_id,
@@ -2325,14 +2356,16 @@ def get_professor_recent_incidents():
             ec = asgn.ec
             ec_notifs.append({
                 'id': f'ec_assign_{asgn.id}',
-                'type': 'ec_assignment',
                 'event_type': 'ec_assignment',
                 'timestamp': asgn.assigned_at.isoformat() if asgn.assigned_at else None,
-                'details': f"Vous avez été affecté(e) à l'EC : {ec.name if ec else asgn.ec_id}",
-                'severity': 'info'
+                'details': f"Affectation à l'EC : {ec.name if ec else asgn.ec_id}",
+                'student_name': '',
+                'exam_title': '',
+                'severity': 'info',
+                'snapshot_data': None
             })
 
-        all_items = ec_notifs + incidents_list
+        all_items = incidents_list + ec_notifs
         session.close()
 
         return jsonify({

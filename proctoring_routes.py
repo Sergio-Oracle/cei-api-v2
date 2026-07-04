@@ -745,10 +745,10 @@ def send_student_message(attempt_id):
 @proctoring_bp.route('/api/online_exams/<int:exam_id>/student_messages', methods=['GET'])
 @paseto_required
 def get_student_messages(exam_id):
-    """Enseignant/surveillant récupère les messages étudiants"""
+    """Enseignant/surveillant récupère les messages étudiants — filtrés par groupe si surveillant"""
     user_id = get_current_user_id()
     role = get_current_user_role()
-    
+
     if role not in ['professor', 'admin', 'surveillant']:
         return jsonify({'error': 'Accès réservé aux enseignants et surveillants'}), 403
 
@@ -761,6 +761,27 @@ def get_student_messages(exam_id):
             ExamAttempt.exam_id == exam_id,
             ExamActivityLog.event_type == 'student_message'
         )
+
+        # Surveillants ne voient que les messages de leur groupe
+        if role == 'surveillant':
+            assignments = session.query(ProctorAssignment).filter_by(
+                exam_id=exam_id, proctor_id=user_id
+            ).all()
+            attempt_ids_direct = [pa.attempt_id for pa in assignments if pa.attempt_id]
+            student_ids_pre    = [pa.student_id  for pa in assignments if pa.student_id and not pa.attempt_id]
+
+            # Tenter d'élargir avec les tentatives des étudiants pré-affectés
+            if student_ids_pre:
+                extra = session.query(ExamAttempt.id).filter(
+                    ExamAttempt.exam_id == exam_id,
+                    ExamAttempt.student_id.in_(student_ids_pre)
+                ).all()
+                attempt_ids_direct += [r.id for r in extra]
+
+            if not attempt_ids_direct:
+                return jsonify({'success': True, 'messages': []})
+            query = query.filter(ExamActivityLog.attempt_id.in_(attempt_ids_direct))
+
         if since_str:
             try:
                 since = datetime.fromisoformat(since_str)
@@ -1341,7 +1362,7 @@ def toggle_room_recording(exam_id):
             return jsonify({'error': 'Examen introuvable'}), 404
 
         if action == 'start':
-            # Vérifier qu'il y a au moins un participant dans la salle
+            # Lister les participants pour obtenir leurs track IDs
             now2 = int(time.time())
             admin_payload = {
                 'exp': now2 + 300, 'iss': config['api_key'], 'nbf': now2,
@@ -1362,16 +1383,18 @@ def toggle_room_recording(exam_id):
                 with urlreq.urlopen(parts_req, timeout=5) as presp:
                     parts_data = json.loads(presp.read())
                     participants = parts_data.get('participants', [])
-                    # Filtrer pour ne garder que les étudiants (pas le prof)
-                    students_in_room = [p for p in participants if p.get('identity', '').startswith('student-')]
-                    print(f'[REC-ROOM] Participants dans {room_name}: {[p.get("identity") for p in participants]}')
-                    if not students_in_room:
-                        return jsonify({
-                            'error': "Aucun étudiant n'est actuellement connecté à la salle. "
-                                     "L'enregistrement n'est possible que pendant l'examen."
-                        }), 400
             except (urllib.error.URLError, TimeoutError, OSError) as e:
-                print(f'[REC-ROOM] ListParticipants error (ignored): {e}')
+                print(f'[REC-ROOM] ListParticipants error: {e}')
+                return jsonify({'error': 'Impossible de joindre le serveur LiveKit.'}), 503
+
+            parts_by_id = {p['identity']: p for p in participants}
+            students_in_room = [p for p in participants if p.get('identity', '').startswith('student-')]
+            print(f'[REC-ROOM] Participants: {[p.get("identity") for p in participants]}')
+            if not students_in_room:
+                return jsonify({
+                    'error': "Aucun étudiant n'est actuellement connecté à la salle. "
+                             "L'enregistrement n'est possible que pendant l'examen."
+                }), 400
 
             s3_cfg = {
                 'access_key': os.environ.get('S3_KEY_ID', ''),
@@ -1382,48 +1405,97 @@ def toggle_room_recording(exam_id):
                 'force_path_style': True
             }
             ts = datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')
-            filepath = f'recordings/exam-{exam_id}/room-{ts}.mp4'
-            body = json.dumps({
-                'room_name': room_name,
-                'layout': 'grid-dark',
-                'file_outputs': [{'filepath': filepath, 's3': s3_cfg}]
-            }).encode()
+            all_egress_ids = []
+            errors = []
 
-            req = urlreq.Request(
-                f'{lk_http}/twirp/livekit.Egress/StartRoomCompositeEgress',
-                data=body, headers=headers
-            )
-            try:
-                with urlreq.urlopen(req, timeout=10) as resp:
-                    result = json.loads(resp.read())
-                    egress_id = result.get('egress_id')
-                    print(f'[REC-ROOM] RoomComposite démarré: egress_id={egress_id} fichier={filepath}')
-                    return jsonify({'success': True, 'egress_id': egress_id, 'filepath': filepath})
-            except urllib.error.HTTPError as e:
-                err_body = e.read().decode()
-                print(f'[REC-ROOM] StartRoomCompositeEgress error: {err_body}')
-                return jsonify({'error': f'Erreur LiveKit: {err_body}'}), 500
-            except (urllib.error.URLError, TimeoutError, OSError):
-                return jsonify({'error': "Le service d'enregistrement est momentanément indisponible."}), 503
+            for p in students_in_room:
+                identity = p['identity']
+                tracks = p.get('tracks', [])
+                cam_track = next((t['sid'] for t in tracks
+                    if t.get('type') in ('VIDEO', 1)
+                    and t.get('source') not in ('SCREEN_SHARE', 3)
+                    and not t.get('muted', False)), None)
+                screen_track = next((t['sid'] for t in tracks
+                    if t.get('type') in ('VIDEO', 1)
+                    and t.get('source') in ('SCREEN_SHARE', 3)), None)
+                audio_track = next((t['sid'] for t in tracks
+                    if t.get('type') in ('AUDIO', 0)
+                    and not t.get('muted', False)), None)
+
+                if not cam_track:
+                    errors.append({'identity': identity, 'error': 'caméra non active'})
+                    continue
+
+                sid = identity.replace('student-', '')
+                cam_path = f'recordings/exam-{exam_id}/salle-cam-{sid}-{ts}.mp4'
+                cam_body = {'room_name': room_name, 'video_track_id': cam_track,
+                            'file_outputs': [{'filepath': cam_path, 's3': s3_cfg}]}
+                if audio_track:
+                    cam_body['audio_track_id'] = audio_track
+                try:
+                    req = urlreq.Request(f'{lk_http}/twirp/livekit.Egress/StartTrackCompositeEgress',
+                        data=json.dumps(cam_body).encode(), headers=headers)
+                    with urlreq.urlopen(req, timeout=8) as resp:
+                        eid = json.loads(resp.read()).get('egress_id')
+                        all_egress_ids.append(eid)
+                        print(f'[REC-ROOM] TrackComposite cam démarré: {identity} egress={eid}')
+                except Exception as e:
+                    print(f'[REC-ROOM] Erreur cam {identity}: {e}')
+                    errors.append({'identity': identity, 'error': str(e)})
+
+                if screen_track:
+                    scr_path = f'recordings/exam-{exam_id}/salle-ecran-{sid}-{ts}.mp4'
+                    scr_body = {'room_name': room_name, 'video_track_id': screen_track,
+                                'file_outputs': [{'filepath': scr_path, 's3': s3_cfg}]}
+                    if audio_track:
+                        scr_body['audio_track_id'] = audio_track
+                    try:
+                        req = urlreq.Request(f'{lk_http}/twirp/livekit.Egress/StartTrackCompositeEgress',
+                            data=json.dumps(scr_body).encode(), headers=headers)
+                        with urlreq.urlopen(req, timeout=8) as resp:
+                            eid = json.loads(resp.read()).get('egress_id')
+                            all_egress_ids.append(eid)
+                    except Exception:
+                        pass
+
+            if not all_egress_ids:
+                detail = f' ({len(errors)} étudiant(s) sans caméra active)' if errors else ''
+                return jsonify({'error': f'Aucun enregistrement démarré{detail}. Vérifiez que les étudiants ont leur caméra active.'}), 400
+
+            combined_id = 'multi:' + ','.join(all_egress_ids)
+            print(f'[REC-ROOM] {len(all_egress_ids)} piste(s) enregistrée(s), combined_id={combined_id}')
+            return jsonify({
+                'success': True,
+                'egress_id': combined_id,
+                'started': len(students_in_room) - len(errors),
+                'errors': len(errors)
+            })
 
         elif action == 'stop':
             egress_id = data.get('egress_id')
             if not egress_id:
                 return jsonify({'error': 'egress_id requis pour arrêter'}), 400
-            body = json.dumps({'egress_id': egress_id}).encode()
-            req = urlreq.Request(
-                f'{lk_http}/twirp/livekit.Egress/StopEgress',
-                data=body, headers=headers
-            )
-            try:
-                with urlreq.urlopen(req, timeout=5) as resp:
-                    print(f'[REC-ROOM] RoomComposite arrêté: egress_id={egress_id}')
-                    return jsonify({'success': True})
-            except urllib.error.HTTPError as e:
-                err_body = e.read().decode()
-                return jsonify({'error': "Arrêt de l'enregistrement échoué."}), 500
-            except (urllib.error.URLError, TimeoutError, OSError):
-                return jsonify({'error': "Service momentanément indisponible."}), 503
+
+            if egress_id.startswith('multi:'):
+                ids_to_stop = [e for e in egress_id[6:].split(',') if e]
+            else:
+                ids_to_stop = [egress_id]
+
+            stopped = 0
+            for eid in ids_to_stop:
+                body = json.dumps({'egress_id': eid}).encode()
+                req = urlreq.Request(
+                    f'{lk_http}/twirp/livekit.Egress/StopEgress',
+                    data=body, headers=headers
+                )
+                try:
+                    with urlreq.urlopen(req, timeout=5):
+                        stopped += 1
+                        print(f'[REC-ROOM] Egress arrêté: {eid}')
+                except Exception as e:
+                    print(f'[REC-ROOM] Erreur arrêt {eid}: {e}')
+
+            return jsonify({'success': True, 'stopped': stopped})
 
         return jsonify({'error': 'action invalide (start|stop)'}), 400
     finally:

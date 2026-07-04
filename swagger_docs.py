@@ -254,7 +254,7 @@ OPENAPI_SPEC = {
         "title": "CEI — Centre d'Examen Intelligent API",
         "version": "2.1.0",
         "description": (
-            "API REST complète de la plateforme CEI de l'**RTN – Réseaux et Techniques Numériques (EC2LT)**.\n\n"
+            "API REST complète de la plateforme CEI de l'**UNCHK — VisioPLUS**.\n\n"
             "## Authentification\n"
             "1. `POST /api/auth/login` → récupérer `access_token`\n"
             "2. Bouton **Authorize** → saisir `Bearer <access_token>`\n\n"
@@ -272,15 +272,15 @@ OPENAPI_SPEC = {
             "| Changement onglet | +15 (max 60) |\n| Avertissement | +5 (max 40) |"
         ),
         "contact": {
-            "name": "EC2LT — VisioPLUS",
-            "email": "entreprisertn221@gmail.com",
-            "url": "http://62.171.190.6:8100"
+            "name": "UNCHK — VisioPLUS",
+            "email": "visioplus@unchk.edu.sn",
+            "url": "https://dev-cei.ddns.net"
         },
         "license": {"name": "MIT", "url": "https://opensource.org/licenses/MIT"}
     },
     "servers": [
-        {"url": "http://62.171.190.6:8100", "description": "Production EC2LT"},
-        {"url": "http://localhost:5000",  "description": "Développement local"}
+        {"url": "https://dev-cei.ddns.net/api", "description": "Production UNCHK"},
+        {"url": "http://localhost:5000",         "description": "Développement local"}
     ],
     "tags": [
         {"name": "Authentification",         "description": "Connexion PASETO v4, rafraîchissement token, déconnexion, profil, mot de passe"},
@@ -2390,270 +2390,636 @@ OPENAPI_SPEC = {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Enrichissement automatique — exemples JSON pour TOUTES les réponses
+# ─────────────────────────────────────────────────────────────────────────────
+
+_SCHEMA_EXAMPLES = {
+    "User": {
+        "id": 7, "email": "amadou.diallo@unchk.edu.sn", "full_name": "Amadou Diallo",
+        "role": "student", "is_active": True, "has_email": True,
+        "created_at": "2026-09-01T08:00:00Z"
+    },
+    "Subject": {
+        "id": 12, "title": "Examen de Réseaux L3 — Session 2026",
+        "content": "Partie 1 : Protocoles TCP/IP\nQ1. Expliquez le mécanisme de TCP Three-Way Handshake.",
+        "rubric": "Q1 : 4 pts | Q2 : 6 pts | Q3 : 10 pts",
+        "ec_id": 3, "creator_id": 5, "created_at": "2026-10-15T10:30:00Z", "papers_count": 28
+    },
+    "StudentPaper": {
+        "id": 34, "subject_id": 12, "student_id": 7, "student_name": "Amadou Diallo",
+        "score": 14.5,
+        "grade": "Bonne maîtrise des protocoles. Q3 partiellement réussie — revoir la segmentation.",
+        "filename": "copie_amadou_diallo.pdf",
+        "corrected_at": "2026-10-20T14:22:00Z", "email_sent": True
+    },
+    "OnlineExam": {
+        "id": 5, "title": "Examen Final Réseaux L3", "subject_id": 12,
+        "duration_minutes": 90, "access_code": "RESEAU2026", "status": "active",
+        "max_attempts": 1,
+        "starts_at": "2026-11-10T09:00:00Z", "ends_at": "2026-11-10T11:30:00Z",
+        "created_at": "2026-11-01T00:00:00Z"
+    },
+    "ExamAttempt": {
+        "id": 88, "exam_id": 5, "student_id": 7, "student_name": "Amadou Diallo",
+        "status": "in_progress", "score": None, "risk_score": 15,
+        "tab_switches": 1, "warnings_count": 0,
+        "started_at": "2026-11-10T09:02:00Z", "submitted_at": None
+    },
+    "Formation": {
+        "id": 1, "name": "Licence Informatique", "code": "LI",
+        "description": "Formation Licence 3 en Informatique", "duration_years": 3
+    },
+    "Semester": {"id": 2, "name": "Semestre 1", "formation_id": 1, "order": 1},
+    "UE": {
+        "id": 4, "name": "Réseaux et Télécommunications", "code": "RT301",
+        "semester_id": 2, "credits": 6, "coefficient": 2
+    },
+    "EC": {
+        "id": 8, "name": "Protocoles TCP/IP", "code": "RT301-01", "ue_id": 4,
+        "coefficient": 1, "cm": 24, "td": 12, "tp": 12, "tpe": 0, "vht": 48, "is_active": True
+    },
+    "Reclamation": {
+        "id": 3, "paper_id": 34,
+        "reason": "La question 2 a été mal évaluée — ma réponse sur le routage OSPF est correcte.",
+        "status": "pending", "response": None,
+        "ia_proposed_status": None, "ia_proposed_score": None,
+        "created_at": "2026-10-22T10:00:00Z"
+    },
+    "GradeTranscript": {
+        "id": 1, "student_id": 7, "student_name": "Amadou Diallo",
+        "semester_id": 2, "semester_name": "Semestre 1",
+        "formation_name": "Licence Informatique", "gpa": 13.4,
+        "total_credits": 30, "obtained_credits": 28, "validated": True,
+        "generated_at": "2026-12-15T09:00:00Z"
+    },
+    "AgentAlert": {
+        "exam_id": 5, "exam_title": "Examen Final Réseaux L3", "attempt_id": 88,
+        "student_name": "Amadou Diallo", "risk_score": 75, "level": "ALERTE",
+        "no_face": 3, "multi_face": 1, "tab_switches": 2,
+        "ai_note": "Comportement suspect — visage absent 3 fois consécutives.",
+        "timestamp": "2026-11-10T09:45:00Z", "read": False
+    },
+    "ExamIncident": {
+        "id": 10, "attempt_id": 88, "student_name": "Amadou Diallo",
+        "event_type": "tab_switch", "severity": "medium",
+        "timestamp": "2026-11-10T09:30:00Z"
+    },
+    "Error": {"error": "Message d'erreur détaillé"},
+    "Success": {"success": True, "message": "Opération effectuée avec succès"},
+}
+
+_STATUS_EXAMPLES = {
+    "200": {"success": True, "message": "Opération effectuée avec succès"},
+    "201": {"success": True, "id": 42, "message": "Ressource créée avec succès"},
+    "400": {"error": "Requête invalide — paramètre manquant ou valeur incorrecte"},
+    "401": {"error": "Token manquant, invalide ou expiré"},
+    "403": {"error": "Droits insuffisants pour cette action"},
+    "404": {"error": "Ressource introuvable"},
+    "409": {"error": "Conflit — cette ressource existe déjà"},
+}
+
+
+def _type_default(t):
+    """Valeur par défaut selon le type JSON."""
+    return {"integer": 1, "number": 1.5, "boolean": True, "array": [], "object": {}}.get(t, "valeur")
+
+
+def _example_from_props(props):
+    """Construit un dict exemple depuis les properties d'un schéma inline."""
+    out = {}
+    for k, v in props.items():
+        if "example" in v:
+            out[k] = v["example"]
+        elif "default" in v:
+            out[k] = v["default"]
+        elif v.get("type") == "array":
+            inner = v.get("items", {})
+            inner_ref = inner.get("$ref", "").split("/")[-1]
+            out[k] = [_SCHEMA_EXAMPLES[inner_ref]] if inner_ref in _SCHEMA_EXAMPLES else []
+        elif v.get("type") == "object" and "properties" in v:
+            out[k] = _example_from_props(v["properties"])
+        elif "$ref" in v:
+            name = v["$ref"].split("/")[-1]
+            out[k] = _SCHEMA_EXAMPLES.get(name, {})
+        else:
+            out[k] = _type_default(v.get("type", "string"))
+    return out
+
+
+def _enrich_spec(spec):
+    """Injecte automatiquement des exemples JSON dans toutes les réponses API."""
+    for _path, methods in spec["paths"].items():
+        for _method, operation in methods.items():
+            if not isinstance(operation, dict):
+                continue
+            for code, resp in operation.get("responses", {}).items():
+                if not isinstance(resp, dict) or "$ref" in resp:
+                    continue
+
+                content = resp.get("content", {})
+
+                # Réponse sans content du tout → exemple générique par code HTTP
+                if not content:
+                    resp["content"] = {
+                        "application/json": {
+                            "example": _STATUS_EXAMPLES.get(str(code), {"success": True})
+                        }
+                    }
+                    continue
+
+                # Réponse JSON sans example → injecter exemple concret
+                aj = content.get("application/json", {})
+                if not aj or "example" in aj:
+                    continue
+
+                schema = aj.get("schema", {})
+                ref    = schema.get("$ref", "")
+                name   = ref.split("/")[-1] if ref else ""
+
+                if name in _SCHEMA_EXAMPLES:
+                    # Schéma par référence connu
+                    aj["example"] = _SCHEMA_EXAMPLES[name]
+                elif schema.get("type") == "array":
+                    # Tableau : exemple = liste avec un élément
+                    items    = schema.get("items", {})
+                    item_ref = items.get("$ref", "").split("/")[-1]
+                    if item_ref in _SCHEMA_EXAMPLES:
+                        aj["example"] = [_SCHEMA_EXAMPLES[item_ref]]
+                    elif items.get("type") == "object" and "properties" in items:
+                        aj["example"] = [_example_from_props(items["properties"])]
+                    else:
+                        aj["example"] = []
+                elif schema.get("type") == "object" and "properties" in schema:
+                    # Schéma inline avec properties
+                    aj["example"] = _example_from_props(schema["properties"])
+                else:
+                    # Fallback générique
+                    aj["example"] = _STATUS_EXAMPLES.get(str(code), {"success": True})
+
+    return spec
+
+
+OPENAPI_SPEC = _enrich_spec(OPENAPI_SPEC)
+
+# ─────────────────────────────────────────────────────────────────────────────
 # HTML Swagger UI & ReDoc
 # ─────────────────────────────────────────────────────────────────────────────
+
+_CEI_SVG_LOGO = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 44 44" fill="none" aria-hidden="true">
+  <rect width="44" height="44" rx="9" fill="rgba(255,255,255,0.12)" stroke="rgba(255,255,255,0.22)" stroke-width="1"/>
+  <!-- Toque académique — mortarboard -->
+  <path d="M22 9 L36 16.5 L22 24 L8 16.5 Z" fill="white"/>
+  <path d="M13 20 L13 29.5 C17.5 34 26.5 34 31 29.5 L31 20" fill="rgba(255,255,255,0.18)" stroke="white" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+  <line x1="36" y1="16.5" x2="36" y2="26" stroke="white" stroke-width="2" stroke-linecap="round"/>
+  <circle cx="36" cy="28.5" r="3" fill="#10b981"/>
+</svg>"""
 
 _SWAGGER_HTML = """<!DOCTYPE html>
 <html lang="fr">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>CEI API — Documentation</title>
+  <title>CEI — Documentation API</title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css">
   <style>
-    /* ── Fond clair, lisible ── */
+    *, *::before, *::after { box-sizing: border-box; }
+
     html, body {
-      margin: 0;
-      background: #f0f4f8;
-      font-size: 16px;
+      margin: 0; padding: 0;
+      background: #f1f5f9;
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;
-      color: #1a202c;
+      color: #1e293b;
     }
 
-    /* ── Barre de titre ── */
-    .topbar {
-      background: #1e40af !important;
-      padding: 10px 0 !important;
-      box-shadow: 0 2px 8px rgba(0,0,0,0.18);
+    /* ═══════════════════════════════════
+       HEADER PERSONNALISÉ
+    ═══════════════════════════════════ */
+    .cei-header {
+      background: #1e3a8a;
+      border-bottom: 3px solid #1d4ed8;
+      padding: 0;
+      position: sticky;
+      top: 0;
+      z-index: 1000;
+      box-shadow: 0 2px 12px rgba(0,0,0,0.22);
     }
-    .topbar-wrapper img { display: none; }
-    .topbar-wrapper::after {
-      content: "CEI — Centre d'Examen Intelligent · API v2.1 · 157 endpoints";
+    .cei-header-inner {
+      max-width: 1400px;
+      margin: 0 auto;
+      padding: 0 24px;
+      height: 60px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+    .cei-logo-wrap {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      text-decoration: none;
+      flex-shrink: 0;
+    }
+    .cei-logo-wrap svg { width: 36px; height: 36px; }
+    .cei-brand-name {
+      font-size: 16px;
+      font-weight: 800;
       color: #ffffff;
+      letter-spacing: .2px;
+      line-height: 1.1;
+    }
+    .cei-brand-sub {
+      font-size: 11px;
+      color: rgba(255,255,255,.6);
+      font-weight: 500;
+      letter-spacing: .4px;
+      text-transform: uppercase;
+    }
+    .cei-header-divider {
+      width: 1px;
+      height: 32px;
+      background: rgba(255,255,255,.18);
+      flex-shrink: 0;
+    }
+    .cei-header-meta {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex: 1;
+    }
+    .cei-badge {
+      display: inline-flex;
+      align-items: center;
+      padding: 3px 10px;
+      border-radius: 99px;
+      font-size: 11.5px;
       font-weight: 700;
-      font-size: 17px;
       letter-spacing: .3px;
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
     }
-    .topbar .download-url-wrapper { display: none !important; }
-
-    /* ── Zone principale ── */
-    .swagger-ui {
-      background: #f0f4f8;
-      font-size: 15px;
+    .cei-badge-version { background: #1d4ed8; color: #fff; }
+    .cei-badge-oas     { background: rgba(255,255,255,.12); color: rgba(255,255,255,.85); border: 1px solid rgba(255,255,255,.2); }
+    .cei-badge-count   { background: rgba(16,185,129,.18); color: #6ee7b7; border: 1px solid rgba(16,185,129,.3); }
+    .cei-header-nav {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      margin-left: auto;
     }
+    .cei-nav-link {
+      padding: 6px 14px;
+      border-radius: 6px;
+      font-size: 13px;
+      font-weight: 600;
+      color: rgba(255,255,255,.75);
+      text-decoration: none;
+      border: 1px solid transparent;
+      transition: all .15s;
+    }
+    .cei-nav-link:hover { background: rgba(255,255,255,.1); color: #fff; }
+    .cei-nav-link.active { background: rgba(255,255,255,.15); color: #fff; border-color: rgba(255,255,255,.25); }
 
-    /* ── Bloc d'information ── */
+    /* ═══════════════════════════════════
+       MASQUER TOPBAR SWAGGER PAR DÉFAUT
+    ═══════════════════════════════════ */
+    .swagger-ui .topbar { display: none !important; }
+
+    /* ═══════════════════════════════════
+       ZONE PRINCIPALE
+    ═══════════════════════════════════ */
+    .swagger-ui { background: #f1f5f9; font-size: 15px; }
+    .swagger-ui .wrapper { padding: 0 20px !important; }
+
+    /* ═══════════════════════════════════
+       BLOC INFO — REDESIGN COMPLET
+    ═══════════════════════════════════ */
     .swagger-ui .info {
       background: #ffffff;
-      border-radius: 10px;
-      padding: 24px 28px;
-      margin: 20px 0 16px;
-      box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+      border-radius: 0 0 12px 12px;
+      border-top: none;
+      border: 1px solid #e2e8f0;
+      border-top: none;
+      padding: 28px 32px 24px;
+      margin: 0 0 20px;
+      box-shadow: 0 1px 6px rgba(0,0,0,0.06);
     }
+    /* Accent bleu sur le bord gauche */
+    .swagger-ui .info::before {
+      content: '';
+      display: block;
+      position: absolute;
+      left: 0; top: 0; bottom: 0;
+      width: 4px;
+      background: #1d4ed8;
+      border-radius: 4px 0 0 4px;
+    }
+    .swagger-ui .info { position: relative; }
+
+    .swagger-ui .info hgroup.main { margin-bottom: 16px; }
     .swagger-ui .info .title {
-      font-size: 26px !important;
+      font-size: 22px !important;
+      font-weight: 800 !important;
       color: #1e3a8a !important;
-      font-weight: 800;
+      letter-spacing: -.3px;
+      line-height: 1.3 !important;
     }
+    /* Masquer les badges version/OAS générés par Swagger UI (on a les nôtres) */
+    .swagger-ui .info .title small { display: none !important; }
+    .swagger-ui .info .title small.version-stamp { display: none !important; }
+
     .swagger-ui .info p,
     .swagger-ui .info li,
     .swagger-ui .renderedMarkdown p {
+      font-size: 14.5px !important;
+      line-height: 1.75 !important;
+      color: #475569 !important;
+    }
+    .swagger-ui .info h2,
+    .swagger-ui .renderedMarkdown h2 {
       font-size: 15px !important;
-      line-height: 1.7 !important;
-      color: #374151 !important;
+      font-weight: 700 !important;
+      color: #1e293b !important;
+      margin: 20px 0 8px !important;
+      padding-bottom: 4px !important;
+      border-bottom: 1.5px solid #e2e8f0 !important;
+    }
+    .swagger-ui .renderedMarkdown table {
+      border-collapse: collapse !important;
+      font-size: 13.5px !important;
+      width: auto !important;
+      border-radius: 6px !important;
+      overflow: hidden !important;
+      border: 1px solid #e2e8f0 !important;
+      margin: 8px 0 16px !important;
+    }
+    .swagger-ui .renderedMarkdown th {
+      background: #f1f5f9 !important;
+      color: #1e293b !important;
+      font-weight: 700 !important;
+      padding: 8px 14px !important;
+      text-align: left !important;
+      border-bottom: 1.5px solid #e2e8f0 !important;
+    }
+    .swagger-ui .renderedMarkdown td {
+      padding: 7px 14px !important;
+      color: #475569 !important;
+      border-bottom: 1px solid #f1f5f9 !important;
+    }
+    .swagger-ui .renderedMarkdown code {
+      background: #eff6ff !important;
+      color: #1d4ed8 !important;
+      padding: 2px 6px !important;
+      border-radius: 4px !important;
+      font-size: 13px !important;
+      font-family: 'SFMono-Regular', Menlo, Consolas, monospace !important;
     }
     .swagger-ui .info .base-url {
-      font-size: 14px !important;
-      color: #4b5563 !important;
+      font-size: 13px !important;
+      color: #64748b !important;
+      background: #f8fafc !important;
+      border: 1px solid #e2e8f0 !important;
+      border-radius: 6px !important;
+      padding: 5px 12px !important;
+      display: inline-block !important;
+      margin-top: 8px !important;
     }
 
-    /* ── Filtres et barre de recherche ── */
+    /* Contact links in info */
+    .swagger-ui .info a { color: #2563eb !important; }
+
+    /* ═══════════════════════════════════
+       FILTRE / RECHERCHE
+    ═══════════════════════════════════ */
+    .swagger-ui .filter-container { padding: 0 0 12px !important; }
     .swagger-ui .filter input {
-      font-size: 15px !important;
-      padding: 8px 12px !important;
-      border-radius: 6px !important;
-      border: 1.5px solid #9ca3af !important;
+      font-size: 14px !important;
+      padding: 9px 14px !important;
+      border-radius: 8px !important;
+      border: 1.5px solid #cbd5e1 !important;
       background: #ffffff !important;
-      color: #111827 !important;
+      color: #1e293b !important;
+      width: 100% !important;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.05) !important;
     }
     .swagger-ui .filter input:focus {
-      border-color: #1e40af !important;
-      outline: 2px solid #bfdbfe !important;
+      border-color: #2563eb !important;
+      outline: none !important;
+      box-shadow: 0 0 0 3px rgba(37,99,235,.15) !important;
     }
 
-    /* ── Tags (groupes de routes) ── */
+    /* ═══════════════════════════════════
+       TAGS / GROUPES
+    ═══════════════════════════════════ */
     .swagger-ui .opblock-tag {
-      font-size: 18px !important;
+      font-size: 17px !important;
       font-weight: 700 !important;
       color: #1e3a8a !important;
       border-bottom: 2px solid #dbeafe !important;
-      padding: 10px 0 6px !important;
+      padding: 12px 4px 8px !important;
+      margin-top: 8px !important;
     }
-    .swagger-ui .opblock-tag:hover { background: #eff6ff !important; }
+    .swagger-ui .opblock-tag:hover { background: #f0f9ff !important; border-radius: 6px !important; }
+    .swagger-ui .opblock-tag-section h3 { font-size: 17px !important; }
+    .swagger-ui .opblock-tag small {
+      font-size: 13px !important;
+      color: #64748b !important;
+      font-weight: 400 !important;
+    }
 
-    /* ── Blocs de routes ── */
+    /* ═══════════════════════════════════
+       BLOCS DE ROUTES
+    ═══════════════════════════════════ */
     .swagger-ui .opblock {
       border-radius: 8px !important;
-      margin-bottom: 6px !important;
-      box-shadow: 0 1px 3px rgba(0,0,0,0.07) !important;
+      margin-bottom: 5px !important;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.06) !important;
       border-width: 1px !important;
     }
-    .swagger-ui .opblock-summary {
-      padding: 10px 14px !important;
-      align-items: center !important;
-    }
+    .swagger-ui .opblock.is-open { box-shadow: 0 2px 8px rgba(0,0,0,0.1) !important; }
+    .swagger-ui .opblock-summary { padding: 10px 16px !important; align-items: center !important; }
     .swagger-ui .opblock-summary-method {
-      font-size: 13px !important;
-      font-weight: 700 !important;
-      min-width: 72px !important;
+      font-size: 12px !important;
+      font-weight: 800 !important;
+      min-width: 70px !important;
       text-align: center !important;
-      border-radius: 4px !important;
-      padding: 5px 10px !important;
+      border-radius: 5px !important;
+      padding: 5px 0 !important;
+      letter-spacing: .5px;
     }
     .swagger-ui .opblock-summary-path {
-      font-size: 15px !important;
+      font-size: 14.5px !important;
       font-weight: 600 !important;
       color: #1e293b !important;
-      letter-spacing: .2px;
+      font-family: 'SFMono-Regular', Menlo, Consolas, monospace !important;
     }
     .swagger-ui .opblock-summary-description {
-      font-size: 14px !important;
-      color: #4b5563 !important;
+      font-size: 13.5px !important;
+      color: #64748b !important;
     }
 
-    /* ── Intérieur déplié ── */
+    /* ── Couleurs méthodes HTTP — sans violet ── */
+    .swagger-ui .opblock-get    .opblock-summary-method { background: #0369a1 !important; }
+    .swagger-ui .opblock-get    { border-color: #bae6fd !important; }
+    .swagger-ui .opblock-post   .opblock-summary-method { background: #15803d !important; }
+    .swagger-ui .opblock-post   { border-color: #bbf7d0 !important; }
+    .swagger-ui .opblock-put    .opblock-summary-method { background: #b45309 !important; }
+    .swagger-ui .opblock-put    { border-color: #fde68a !important; }
+    .swagger-ui .opblock-patch  .opblock-summary-method { background: #0f766e !important; }
+    .swagger-ui .opblock-patch  { border-color: #99f6e4 !important; }
+    .swagger-ui .opblock-delete .opblock-summary-method { background: #b91c1c !important; }
+    .swagger-ui .opblock-delete { border-color: #fecaca !important; }
+
+    /* ═══════════════════════════════════
+       INTÉRIEUR DÉPLIÉ
+    ═══════════════════════════════════ */
     .swagger-ui .opblock-body {
       background: #ffffff !important;
       border-radius: 0 0 8px 8px !important;
-      padding: 16px !important;
+      padding: 18px 20px !important;
+    }
+    .swagger-ui .opblock-section-header {
+      background: #f8fafc !important;
+      border-radius: 6px !important;
+      padding: 8px 12px !important;
+      margin-bottom: 12px !important;
     }
     .swagger-ui .opblock-section-header h4 {
-      font-size: 14px !important;
+      font-size: 13px !important;
       font-weight: 700 !important;
       color: #374151 !important;
+      text-transform: uppercase !important;
+      letter-spacing: .6px !important;
     }
 
-    /* ── Paramètres ── */
+    /* ═══════════════════════════════════
+       PARAMÈTRES
+    ═══════════════════════════════════ */
     .swagger-ui table thead tr th,
     .swagger-ui .parameters-col_name,
     .swagger-ui .parameter__name {
-      font-size: 14px !important;
+      font-size: 13.5px !important;
       color: #1e293b !important;
-      font-weight: 600 !important;
+      font-weight: 700 !important;
     }
     .swagger-ui table tbody tr td,
     .swagger-ui .parameter__type,
     .swagger-ui .parameter__in {
-      font-size: 14px !important;
-      color: #374151 !important;
+      font-size: 13.5px !important;
+      color: #475569 !important;
     }
-    .swagger-ui .parameter__name.required::after {
-      color: #dc2626 !important;
-      font-size: 14px !important;
+    .swagger-ui .parameter__name.required::after { color: #dc2626 !important; }
+    .swagger-ui .parameter__in {
+      background: #f1f5f9 !important;
+      border-radius: 4px !important;
+      padding: 1px 6px !important;
+      font-size: 12px !important;
     }
 
-    /* ── Champs de saisie Try It Out ── */
+    /* ═══════════════════════════════════
+       CHAMPS TRY IT OUT
+    ═══════════════════════════════════ */
     .swagger-ui input[type=text],
     .swagger-ui textarea,
     .swagger-ui select {
       font-size: 14px !important;
-      border: 1.5px solid #9ca3af !important;
-      border-radius: 5px !important;
-      padding: 7px 10px !important;
+      border: 1.5px solid #cbd5e1 !important;
+      border-radius: 6px !important;
+      padding: 8px 12px !important;
       background: #ffffff !important;
-      color: #111827 !important;
+      color: #1e293b !important;
     }
     .swagger-ui input[type=text]:focus,
     .swagger-ui textarea:focus {
-      border-color: #1e40af !important;
-      outline: 2px solid #bfdbfe !important;
+      border-color: #2563eb !important;
+      box-shadow: 0 0 0 3px rgba(37,99,235,.12) !important;
+      outline: none !important;
     }
 
-    /* ── Bouton Execute ── */
+    /* ═══════════════════════════════════
+       BOUTONS
+    ═══════════════════════════════════ */
+    .swagger-ui .btn {
+      font-size: 13px !important;
+      font-weight: 600 !important;
+      border-radius: 6px !important;
+    }
     .swagger-ui .btn.execute {
       background: #1d4ed8 !important;
       color: #ffffff !important;
       font-size: 14px !important;
-      font-weight: 700 !important;
-      border-radius: 6px !important;
-      padding: 9px 22px !important;
+      padding: 9px 24px !important;
       border: none !important;
     }
-    .swagger-ui .btn.execute:hover { background: #1e40af !important; }
-
-    /* ── Boutons Cancel/Try it out ── */
-    .swagger-ui .btn {
-      font-size: 13px !important;
-      border-radius: 5px !important;
-    }
-    .swagger-ui .btn.cancel {
-      color: #dc2626 !important;
-      border-color: #dc2626 !important;
-    }
-    .swagger-ui .try-out__btn {
-      font-size: 13px !important;
-      font-weight: 600 !important;
-    }
-
-    /* ── Réponses ── */
-    .swagger-ui .responses-inner h4,
-    .swagger-ui .response-col_status {
-      font-size: 14px !important;
-      font-weight: 700 !important;
-    }
-    .swagger-ui .response-col_description {
-      font-size: 14px !important;
-      color: #374151 !important;
-    }
-    .swagger-ui .highlight-code pre,
-    .swagger-ui .microlight {
-      font-size: 13px !important;
-      line-height: 1.6 !important;
-      background: #f8fafc !important;
-      border-radius: 6px !important;
-      padding: 12px !important;
-      color: #1e293b !important;
-    }
-
-    /* ── Schémas / Models ── */
-    .swagger-ui section.models h4,
-    .swagger-ui .model-title {
-      font-size: 15px !important;
-      font-weight: 700 !important;
-      color: #1e3a8a !important;
-    }
-    .swagger-ui .model {
-      font-size: 14px !important;
-      color: #374151 !important;
-    }
-    .swagger-ui .prop-type { color: #0369a1 !important; }
-    .swagger-ui .prop-format { color: #6b7280 !important; font-size: 13px !important; }
-
-    /* ── Badges de méthode HTTP (couleurs accessibles) ── */
-    .swagger-ui .opblock-get    .opblock-summary-method { background: #0369a1 !important; }
-    .swagger-ui .opblock-post   .opblock-summary-method { background: #15803d !important; }
-    .swagger-ui .opblock-put    .opblock-summary-method { background: #92400e !important; }
-    .swagger-ui .opblock-patch  .opblock-summary-method { background: #6d28d9 !important; }
-    .swagger-ui .opblock-delete .opblock-summary-method { background: #b91c1c !important; }
-
-    /* ── Bandeau d'autorisation ── */
+    .swagger-ui .btn.execute:hover { background: #1e3a8a !important; }
+    .swagger-ui .btn.cancel { color: #dc2626 !important; border-color: #fca5a5 !important; }
+    .swagger-ui .try-out__btn { font-weight: 700 !important; }
     .swagger-ui .auth-wrapper .authorize {
-      font-size: 14px !important;
       border-color: #1d4ed8 !important;
       color: #1d4ed8 !important;
     }
     .swagger-ui .btn.authorize svg { fill: #1d4ed8 !important; }
 
-    /* ── Lien ReDoc ── */
-    #redoc-link {
-      display: inline-block;
-      margin: 0 20px 16px;
-      padding: 7px 16px;
-      background: #f1f5f9;
-      border: 1.5px solid #cbd5e1;
-      border-radius: 6px;
-      font-size: 14px;
-      font-weight: 600;
-      color: #1e3a8a;
-      text-decoration: none;
+    /* ═══════════════════════════════════
+       RÉPONSES
+    ═══════════════════════════════════ */
+    .swagger-ui .responses-inner h4,
+    .swagger-ui .response-col_status { font-size: 14px !important; font-weight: 700 !important; }
+    .swagger-ui .response-col_description { font-size: 14px !important; color: #475569 !important; }
+    .swagger-ui .highlight-code pre,
+    .swagger-ui .microlight {
+      font-size: 13px !important;
+      line-height: 1.65 !important;
+      background: #f8fafc !important;
+      border: 1px solid #e2e8f0 !important;
+      border-radius: 6px !important;
+      padding: 14px !important;
+      color: #1e293b !important;
     }
-    #redoc-link:hover { background: #dbeafe; border-color: #1e40af; }
+    .swagger-ui .response-col_status .response-undocumented { color: #94a3b8 !important; }
+
+    /* ═══════════════════════════════════
+       SCHÉMAS / MODELS
+    ═══════════════════════════════════ */
+    .swagger-ui section.models {
+      background: #ffffff !important;
+      border: 1px solid #e2e8f0 !important;
+      border-radius: 10px !important;
+      padding: 4px 0 !important;
+      margin-top: 20px !important;
+    }
+    .swagger-ui section.models h4 { font-size: 15px !important; font-weight: 700 !important; color: #1e3a8a !important; }
+    .swagger-ui .model-title { font-size: 14px !important; font-weight: 700 !important; color: #1e3a8a !important; }
+    .swagger-ui .model { font-size: 14px !important; color: #475569 !important; }
+    .swagger-ui .prop-type { color: #0369a1 !important; font-weight: 600 !important; }
+    .swagger-ui .prop-format { color: #64748b !important; font-size: 12px !important; }
   </style>
 </head>
 <body>
+
+<!-- ═══ HEADER PERSONNALISÉ ═══ -->
+<header class="cei-header">
+  <div class="cei-header-inner">
+    <div class="cei-logo-wrap">
+      """ + _CEI_SVG_LOGO + """
+      <div>
+        <div class="cei-brand-name">Centre d'Examen Intelligent</div>
+        <div class="cei-brand-sub">UNCHK &mdash; VisioPLUS</div>
+      </div>
+    </div>
+    <div class="cei-header-divider"></div>
+    <div class="cei-header-meta">
+      <span class="cei-badge cei-badge-version">v2.1</span>
+      <span class="cei-badge cei-badge-oas">OpenAPI 3.0</span>
+      <span class="cei-badge cei-badge-count">178 endpoints</span>
+    </div>
+    <nav class="cei-header-nav">
+      <a class="cei-nav-link active" href="/api/docs">Swagger UI</a>
+      <a class="cei-nav-link" href="/api/docs/redoc">ReDoc</a>
+      <a class="cei-nav-link" href="/api/docs/openapi.json">JSON</a>
+    </nav>
+  </div>
+</header>
+
 <div id="swagger-ui"></div>
-<a id="redoc-link" href="/api/docs/redoc" target="_blank">📄 Voir aussi ReDoc (lecture facile)</a>
+
 <script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
 <script>
   SwaggerUIBundle({
@@ -2678,79 +3044,203 @@ _REDOC_HTML = """<!DOCTYPE html>
 <html lang="fr">
 <head>
   <meta charset="UTF-8">
-  <title>CEI API — ReDoc</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CEI — Documentation API</title>
   <style>
-    body { margin: 0; padding: 0; background: #f0f4f8; }
-    #redoc-header {
-      background: #1e40af;
-      color: #fff;
-      padding: 14px 24px;
-      font-size: 17px;
-      font-weight: 700;
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-      box-shadow: 0 2px 8px rgba(0,0,0,0.18);
+    *, *::before, *::after { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif; }
+
+    /* ════════════ HEADER ════════════ */
+    .cei-header {
+      background: #1e3a8a;
+      border-bottom: 3px solid #1d4ed8;
+      position: fixed;
+      top: 0; left: 0; right: 0;
+      height: 60px;
+      z-index: 9999;
+      box-shadow: 0 2px 16px rgba(0,0,0,0.28);
     }
-    #redoc-header a {
-      color: #bfdbfe;
-      font-size: 14px;
-      font-weight: 500;
-      text-decoration: none;
-      margin-left: 20px;
+    .cei-header-inner {
+      padding: 0 24px;
+      height: 60px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
     }
-    #redoc-header a:hover { color: #fff; text-decoration: underline; }
+    .cei-logo-wrap {
+      display: flex; align-items: center; gap: 12px;
+      text-decoration: none; flex-shrink: 0;
+    }
+    .cei-logo-wrap svg { width: 36px; height: 36px; }
+    .cei-brand-name {
+      font-size: 15.5px; font-weight: 800; color: #fff;
+      letter-spacing: .1px; line-height: 1.15;
+    }
+    .cei-brand-sub {
+      font-size: 10.5px; color: rgba(255,255,255,.55);
+      font-weight: 500; letter-spacing: .5px; text-transform: uppercase;
+    }
+    .cei-divider { width: 1px; height: 30px; background: rgba(255,255,255,.18); flex-shrink: 0; }
+    .cei-meta { display: flex; align-items: center; gap: 7px; flex: 1; }
+    .cei-badge {
+      display: inline-flex; align-items: center;
+      padding: 3px 10px; border-radius: 99px;
+      font-size: 11px; font-weight: 700; letter-spacing: .4px;
+    }
+    .b-v  { background: #1d4ed8; color: #fff; }
+    .b-o  { background: rgba(255,255,255,.1); color: rgba(255,255,255,.8); border: 1px solid rgba(255,255,255,.2); }
+    .b-e  { background: rgba(16,185,129,.15); color: #6ee7b7; border: 1px solid rgba(16,185,129,.3); }
+    .cei-nav { display: flex; align-items: center; gap: 4px; margin-left: auto; }
+    .n-link {
+      padding: 6px 14px; border-radius: 6px; font-size: 13px; font-weight: 600;
+      color: rgba(255,255,255,.7); text-decoration: none;
+      border: 1px solid transparent; transition: background .15s, color .15s;
+    }
+    .n-link:hover { background: rgba(255,255,255,.1); color: #fff; }
+    .n-link.on { background: rgba(255,255,255,.14); color: #fff; border-color: rgba(255,255,255,.22); }
+
+    /* Décalage pour le header fixe */
+    body > redoc { display: block; margin-top: 60px; }
+
+    /* ════════════ REDOC OVERRIDES ════════════ */
+    /* Sidebar */
+    [data-role="search-input"] { border-radius: 6px !important; }
+
+    /* Filet séparateur entre sections */
+    .redoc-wrap { padding-top: 0 !important; }
   </style>
 </head>
 <body>
-  <div id="redoc-header">
-    CEI — Centre d'Examen Intelligent · API v2.1
-    <a href="/api/docs">← Swagger UI</a>
+
+<header class="cei-header">
+  <div class="cei-header-inner">
+    <div class="cei-logo-wrap">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 44 44" fill="none" aria-hidden="true">
+        <rect width="44" height="44" rx="9" fill="rgba(255,255,255,0.12)" stroke="rgba(255,255,255,0.22)" stroke-width="1"/>
+        <path d="M22 9 L36 16.5 L22 24 L8 16.5 Z" fill="white"/>
+        <path d="M13 20 L13 29.5 C17.5 34 26.5 34 31 29.5 L31 20" fill="rgba(255,255,255,0.18)" stroke="white" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+        <line x1="36" y1="16.5" x2="36" y2="26" stroke="white" stroke-width="2" stroke-linecap="round"/>
+        <circle cx="36" cy="28.5" r="3" fill="#10b981"/>
+      </svg>
+      <div>
+        <div class="cei-brand-name">Centre d'Examen Intelligent</div>
+        <div class="cei-brand-sub">UNCHK &mdash; VisioPLUS</div>
+      </div>
+    </div>
+    <div class="cei-divider"></div>
+    <div class="cei-meta">
+      <span class="cei-badge b-v">v2.1</span>
+      <span class="cei-badge b-o">OpenAPI 3.0</span>
+      <span class="cei-badge b-e">178 endpoints</span>
+    </div>
+    <nav class="cei-nav">
+      <a class="n-link" href="/api/docs">Swagger UI</a>
+      <a class="n-link on" href="/api/docs/redoc">ReDoc</a>
+      <a class="n-link" href="/api/docs/openapi.json">JSON</a>
+    </nav>
   </div>
-  <redoc
-    spec-url='/api/docs/openapi.json'
-    expand-responses="200,201"
-    hide-download-button
-    theme='{
-      "colors": {
-        "primary": { "main": "#1e40af" },
-        "text":    { "primary": "#1a202c", "secondary": "#4b5563" },
-        "http": {
-          "get":    "#0369a1",
-          "post":   "#15803d",
-          "put":    "#92400e",
-          "delete": "#b91c1c",
-          "patch":  "#6d28d9"
-        }
+</header>
+
+<redoc
+  spec-url='/api/docs/openapi.json'
+  expand-responses="200,201"
+  hide-download-button
+  required-props-first
+  sort-props-alphabetically="false"
+  theme='{
+    "colors": {
+      "primary":    { "main": "#1d4ed8" },
+      "success":    { "main": "#15803d" },
+      "warning":    { "main": "#b45309" },
+      "error":      { "main": "#b91c1c" },
+      "text":       { "primary": "#1e293b", "secondary": "#475569" },
+      "border":     { "dark": "#cbd5e1", "light": "#e2e8f0" },
+      "responses": {
+        "success":  { "color": "#15803d", "backgroundColor": "#f0fdf4", "tabTextColor": "#15803d" },
+        "error":    { "color": "#b91c1c", "backgroundColor": "#fff1f2", "tabTextColor": "#b91c1c" },
+        "redirect": { "color": "#b45309", "backgroundColor": "#fffbeb", "tabTextColor": "#b45309" },
+        "info":     { "color": "#0369a1", "backgroundColor": "#f0f9ff", "tabTextColor": "#0369a1" }
       },
-      "typography": {
-        "fontSize":       "16px",
-        "lineHeight":     "1.7",
-        "fontFamily":     "-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Arial, sans-serif",
-        "headings": {
-          "fontFamily":   "-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",
-          "fontWeight":   "700"
-        },
-        "code": {
-          "fontSize":     "14px",
-          "fontFamily":   "SFMono-Regular, Menlo, Consolas, monospace",
-          "lineHeight":   "1.6"
-        }
-      },
-      "sidebar": {
-        "backgroundColor": "#f8fafc",
-        "textColor":       "#1e293b",
-        "width":           "280px"
-      },
-      "rightPanel": {
-        "backgroundColor": "#1e293b"
-      },
-      "spacing": {
-        "sectionVertical":   20,
-        "unit":               6
+      "http": {
+        "get":    "#0369a1",
+        "post":   "#15803d",
+        "put":    "#b45309",
+        "delete": "#b91c1c",
+        "patch":  "#0f766e",
+        "head":   "#475569",
+        "options":"#475569"
       }
-    }'
-  ></redoc>
-  <script src="https://cdn.jsdelivr.net/npm/redoc@latest/bundles/redoc.standalone.js"></script>
+    },
+    "schema": {
+      "linesColor":       "#e2e8f0",
+      "defaultDetailsWidth": "75%",
+      "typeNameColor":    "#0369a1",
+      "typeTitleColor":   "#1e3a8a",
+      "requireLabelColor":"#b91c1c",
+      "labelsTextSize":   "0.85em",
+      "nestingSpacing":   "1em"
+    },
+    "typography": {
+      "fontSize":      "15px",
+      "lineHeight":    "1.75",
+      "fontWeightRegular": "400",
+      "fontWeightBold":    "700",
+      "fontWeightLight":   "300",
+      "fontFamily":    "-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Arial, sans-serif",
+      "smoothing":     "antialiased",
+      "optimizeSpeed": true,
+      "headings": {
+        "fontFamily": "-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",
+        "fontWeight": "700",
+        "lineHeight": "1.35"
+      },
+      "code": {
+        "fontSize":   "13.5px",
+        "fontFamily": "SFMono-Regular, Menlo, Consolas, Liberation Mono, monospace",
+        "lineHeight": "1.65",
+        "color":      "#1d4ed8",
+        "backgroundColor": "#eff6ff",
+        "wrap":       true
+      },
+      "links": {
+        "color":     "#1d4ed8",
+        "visited":   "#1d4ed8",
+        "hover":     "#1e3a8a"
+      }
+    },
+    "sidebar": {
+      "backgroundColor": "#f8fafc",
+      "textColor":       "#1e293b",
+      "activeTextColor": "#1d4ed8",
+      "sectionTitleColor":"#64748b",
+      "lineHeight":      "1.6",
+      "arrow": {
+        "size": "1.5em",
+        "color":"#94a3b8"
+      },
+      "width": "290px",
+      "groupItems": { "subItemsColor": "#475569" },
+      "level1Items": { "textTransform": "none" }
+    },
+    "rightPanel": {
+      "backgroundColor": "#0f172a",
+      "textColor":       "#e2e8f0",
+      "width":           "40%"
+    },
+    "codeBlock": {
+      "backgroundColor": "#1e293b"
+    },
+    "fab": { "backgroundColor": "#1d4ed8", "color": "#fff" },
+    "spacing": {
+      "unit":              6,
+      "sectionHorizontal": 40,
+      "sectionVertical":   24
+    },
+    "breakpoints": { "small": "50rem", "medium": "85rem", "large": "105rem" }
+  }'
+></redoc>
+
+<script src="https://cdn.jsdelivr.net/npm/redoc@latest/bundles/redoc.standalone.js"></script>
 </body>
 </html>"""
 

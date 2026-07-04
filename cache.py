@@ -34,9 +34,15 @@ def _get_client() -> Optional[redis.Redis]:
 
 
 def make_key(*parts: str) -> str:
-    """Hash arbitrary parts into a deterministic cache key."""
+    """Build a human-readable cache key so cache_delete_pattern glob matching works.
+    For large/arbitrary content keys (e.g. AI prompts), use make_content_key instead."""
+    return 'cei:' + ':'.join(str(p) for p in parts)
+
+
+def make_content_key(*parts: str) -> str:
+    """Hash-based key for large content (AI prompts, etc.) where glob invalidation is not needed."""
     raw = ':'.join(str(p) for p in parts)
-    return 'cei:' + hashlib.sha256(raw.encode()).hexdigest()[:24]
+    return 'cei:content:' + hashlib.sha256(raw.encode()).hexdigest()[:24]
 
 
 def cache_get(key: str) -> Optional[Any]:

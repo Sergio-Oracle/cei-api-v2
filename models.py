@@ -485,12 +485,12 @@ class OnlineExam(Base):
 class ExamAttempt(Base):
     """Tentative de composition d'un étudiant"""
     __tablename__ = 'exam_attempts'
-    
+
     id = Column(Integer, primary_key=True)
-    exam_id = Column(Integer, ForeignKey('online_exams.id'), nullable=False)
-    student_id = Column(Integer, ForeignKey('users.id'), nullable=False)
-    
-    status = Column(SQLEnum(AttemptStatus), default=AttemptStatus.IN_PROGRESS)
+    exam_id    = Column(Integer, ForeignKey('online_exams.id'), nullable=False, index=True)
+    student_id = Column(Integer, ForeignKey('users.id'),        nullable=False, index=True)
+
+    status = Column(SQLEnum(AttemptStatus), default=AttemptStatus.IN_PROGRESS, index=True)
     started_at = Column(DateTime, default=datetime.utcnow)
     submitted_at = Column(DateTime)
     
@@ -561,11 +561,11 @@ class ExamActivityLog(Base):
     __tablename__ = 'exam_activity_logs'
     
     id = Column(Integer, primary_key=True)
-    attempt_id = Column(Integer, ForeignKey('exam_attempts.id'), nullable=False)
-    event_type = Column(String(50), nullable=False)  # tab_switch, copy_attempt, paste_attempt, right_click, etc.
-    event_data = Column(Text)  # Données additionnelles (JSON)
-    timestamp = Column(DateTime, default=datetime.utcnow)
-    
+    attempt_id = Column(Integer, ForeignKey('exam_attempts.id'), nullable=False, index=True)
+    event_type = Column(String(50), nullable=False)
+    event_data = Column(Text)
+    timestamp  = Column(DateTime, default=datetime.utcnow, index=True)
+
     attempt = relationship('ExamAttempt', back_populates='activity_logs')
     
     def to_dict(self):
@@ -782,15 +782,17 @@ if not DATABASE_URL:
 
 print(f"🔗 Connexion à: {DATABASE_URL.split('@')[1] if '@' in DATABASE_URL else DATABASE_URL}")
 
+# pool_size=3, max_overflow=7 → 10 conns max/worker × 9 workers = 90 total
+# PostgreSQL max_connections=100 → 10 réservées pour admin/monitoring
 engine = create_engine(
     DATABASE_URL,
     echo=False,
     pool_pre_ping=True,
     pool_recycle=1800,
-    pool_size=10,
-    max_overflow=20,
+    pool_size=3,
+    max_overflow=7,
     pool_timeout=30,
-    connect_args={'options': '-c timezone=UTC'}
+    connect_args={'options': '-c timezone=UTC'},
 )
 SessionLocal = sessionmaker(bind=engine)
 

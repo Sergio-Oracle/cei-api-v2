@@ -13,11 +13,22 @@ from flask import Blueprint, request, jsonify
 from sqlalchemy.orm import joinedload
 
 from auth_paseto import paseto_required, get_current_user_id, get_current_user_role
+from cache import cache_get, cache_set, cache_delete_pattern, make_key
 from models import (
     get_session,
     User, UserRole,
     Formation, Semester, UE, EC, ECAssignment, StudentUEEnrollment,
 )
+
+_CACHE_TTL = 300  # 5 minutes — structure académique change rarement
+
+
+def _invalidate_academic_cache():
+    """Invalider le cache après toute modification de la structure académique."""
+    cache_delete_pattern('cei:*formations*')
+    cache_delete_pattern('cei:*semesters*')
+    cache_delete_pattern('cei:*ues*')
+    cache_delete_pattern('cei:*ecs*')
 
 formations_bp = Blueprint('formations', __name__)
 
@@ -38,10 +49,15 @@ def _is_admin(session):
 @paseto_required
 def get_formations():
     try:
+        key = make_key('formations', 'all')
+        cached = cache_get(key)
+        if cached is not None:
+            return jsonify(cached)
         session = get_session()
         formations = session.query(Formation).filter_by(is_active=True).all()
         result = [f.to_dict() for f in formations]
         session.close()
+        cache_set(key, result, ttl=_CACHE_TTL)
         return jsonify(result)
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -51,10 +67,15 @@ def get_formations():
 @paseto_required
 def get_formation_semesters(formation_id):
     try:
+        key = make_key('semesters', str(formation_id))
+        cached = cache_get(key)
+        if cached is not None:
+            return jsonify(cached)
         session = get_session()
         semesters = session.query(Semester).filter_by(formation_id=formation_id, is_active=True).all()
         result = [s.to_dict() for s in semesters]
         session.close()
+        cache_set(key, result, ttl=_CACHE_TTL)
         return jsonify(result)
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -64,10 +85,15 @@ def get_formation_semesters(formation_id):
 @paseto_required
 def get_semester_ues(semester_id):
     try:
+        key = make_key('ues', 'sem', str(semester_id))
+        cached = cache_get(key)
+        if cached is not None:
+            return jsonify(cached)
         session = get_session()
         ues = session.query(UE).filter_by(semester_id=semester_id, is_active=True).all()
         result = [ue.to_dict() for ue in ues]
         session.close()
+        cache_set(key, result, ttl=_CACHE_TTL)
         return jsonify(result)
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -125,10 +151,15 @@ def list_all_ues():
         role = get_current_user_role()
         if role not in ['professor', 'admin']:
             return jsonify({'error': 'Accès non autorisé'}), 403
+        key = make_key('ues', 'all')
+        cached = cache_get(key)
+        if cached is not None:
+            return jsonify(cached)
         session = get_session()
         ues = session.query(UE).order_by(UE.name).all()
         result = [u.to_dict() for u in ues]
         session.close()
+        cache_set(key, result, ttl=_CACHE_TTL)
         return jsonify(result)
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -156,6 +187,7 @@ def create_formation():
         )
         session.add(f); session.commit()
         result = f.to_dict(); session.close()
+        _invalidate_academic_cache()
         return jsonify({'success': True, 'formation': result}), 201
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -178,6 +210,7 @@ def update_formation(fid):
         for field in ('name', 'level', 'department', 'description', 'is_active'):
             if field in data: setattr(f, field, data[field])
         session.commit(); result = f.to_dict(); session.close()
+        _invalidate_academic_cache()
         return jsonify({'success': True, 'formation': result})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -193,6 +226,7 @@ def delete_formation(fid):
         f = session.query(Formation).filter_by(id=fid).first()
         if not f: session.close(); return jsonify({'error': 'Formation non trouvée'}), 404
         session.delete(f); session.commit(); session.close()
+        _invalidate_academic_cache()
         return jsonify({'success': True, 'message': 'Formation supprimée'})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -217,6 +251,7 @@ def create_semester():
             name=data['name'], total_credits=data.get('total_credits', 30),
         )
         session.add(s); session.commit(); result = s.to_dict(); session.close()
+        _invalidate_academic_cache()
         return jsonify({'success': True, 'semester': result}), 201
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -235,6 +270,7 @@ def update_semester(sid):
         for field in ('number', 'name', 'total_credits', 'is_active'):
             if field in data: setattr(s, field, data[field])
         session.commit(); result = s.to_dict(); session.close()
+        _invalidate_academic_cache()
         return jsonify({'success': True, 'semester': result})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -250,6 +286,7 @@ def delete_semester(sid):
         s = session.query(Semester).filter_by(id=sid).first()
         if not s: session.close(); return jsonify({'error': 'Semestre non trouvé'}), 404
         session.delete(s); session.commit(); session.close()
+        _invalidate_academic_cache()
         return jsonify({'success': True, 'message': 'Semestre supprimé'})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -274,6 +311,7 @@ def create_ue():
         ue = UE(semester_id=data['semester_id'], code=data['code'],
                 name=data['name'], credits=data.get('credits', 6))
         session.add(ue); session.commit(); result = ue.to_dict(); session.close()
+        _invalidate_academic_cache()
         return jsonify({'success': True, 'ue': result}), 201
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -296,6 +334,7 @@ def update_ue(uid):
         for field in ('name', 'credits', 'is_active'):
             if field in data: setattr(ue, field, data[field])
         session.commit(); result = ue.to_dict(); session.close()
+        _invalidate_academic_cache()
         return jsonify({'success': True, 'ue': result})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -311,6 +350,7 @@ def delete_ue(uid):
         ue = session.query(UE).filter_by(id=uid).first()
         if not ue: session.close(); return jsonify({'error': 'UE non trouvée'}), 404
         session.delete(ue); session.commit(); session.close()
+        _invalidate_academic_cache()
         return jsonify({'success': True, 'message': 'UE supprimée'})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -337,6 +377,7 @@ def create_ec():
                 tpe=data.get('tpe', 0), vht=data.get('vht', 0),
                 coefficient=data.get('coefficient', 1))
         session.add(ec); session.commit(); result = ec.to_dict(); session.close()
+        _invalidate_academic_cache()
         return jsonify({'success': True, 'ec': result}), 201
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -359,6 +400,7 @@ def update_ec(eid):
         for field in ('name', 'cm', 'td', 'tp', 'tpe', 'vht', 'coefficient', 'is_active'):
             if field in data: setattr(ec, field, data[field])
         session.commit(); result = ec.to_dict(); session.close()
+        _invalidate_academic_cache()
         return jsonify({'success': True, 'ec': result})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -374,6 +416,7 @@ def delete_ec(eid):
         ec = session.query(EC).filter_by(id=eid).first()
         if not ec: session.close(); return jsonify({'error': 'EC non trouvé'}), 404
         session.delete(ec); session.commit(); session.close()
+        _invalidate_academic_cache()
         return jsonify({'success': True, 'message': 'EC supprimé'})
     except Exception as e:
         return jsonify({'error': str(e)}), 500

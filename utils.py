@@ -4,9 +4,12 @@
 - Extraction de texte avec OCR
 - Export PDF de copies corrigées
 """
+import logging
 import os
 import hashlib
 import smtplib
+
+_log = logging.getLogger('cei.utils')
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
@@ -36,7 +39,7 @@ def _smtp_config():
         'password':   env.get('SMTP_PASSWORD', os.getenv('SMTP_PASSWORD', '')),
         'from_email': env.get('SMTP_FROM_EMAIL', os.getenv('SMTP_FROM_EMAIL', 'noreply@examgrading.com')),
         'from_name':  env.get('SMTP_FROM_NAME', os.getenv('SMTP_FROM_NAME', "CEI — Centre d'Examen Intelligent")),
-        'app_url':    env.get('APP_URL', os.getenv('APP_URL', 'https://cei.ec2lt.sn')).rstrip('/'),
+        'app_url':    env.get('APP_URL', os.getenv('APP_URL', 'https://dev-cei.ddns.net')).rstrip('/'),
     }
 
 # Compatibilité ascendante (utilisé dans send_email)
@@ -369,26 +372,24 @@ def generate_corrected_paper_pdf(paper_data, output_path):
 # ============================================================================
 
 def _get_mx_host(domain):
-    """Résoudre le serveur MX d'un domaine via DNS."""
-    import subprocess
+    """Résoudre le serveur MX d'un domaine via DNS (sans subprocess/injection)."""
+    import re
+    # Validation stricte : seuls les noms de domaine légitimes sont autorisés
+    if not re.match(r'^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z]{2,})+$', domain):
+        return None
     try:
-        result = subprocess.run(
-            ['python3', '-c',
-             f"import dns.resolver; answers=dns.resolver.resolve('{domain}','MX'); "
-             f"print(sorted(answers, key=lambda r: r.preference)[0].exchange.to_text().rstrip('.'))"],
-            capture_output=True, text=True, timeout=5
-        )
-        if result.returncode == 0:
-            return result.stdout.strip()
+        import dns.resolver
+        answers = dns.resolver.resolve(domain, 'MX')
+        return sorted(answers, key=lambda r: r.preference)[0].exchange.to_text().rstrip('.')
     except Exception:
         pass
     fallbacks = {
-        'gmail.com': 'gmail-smtp-in.l.google.com',
+        'gmail.com':      'gmail-smtp-in.l.google.com',
         'googlemail.com': 'gmail-smtp-in.l.google.com',
-        'yahoo.fr': 'mta5.am0.yahoodns.net',
-        'yahoo.com': 'mta5.am0.yahoodns.net',
-        'outlook.com': 'outlook-com.olc.protection.outlook.com',
-        'hotmail.com': 'outlook-com.olc.protection.outlook.com',
+        'yahoo.fr':       'mta5.am0.yahoodns.net',
+        'yahoo.com':      'mta5.am0.yahoodns.net',
+        'outlook.com':    'outlook-com.olc.protection.outlook.com',
+        'hotmail.com':    'outlook-com.olc.protection.outlook.com',
     }
     return fallbacks.get(domain.lower())
 
@@ -398,7 +399,7 @@ def _send_direct_mx(to_email, msg_obj, from_email):
     domain = to_email.split('@')[-1]
     mx_host = _get_mx_host(domain)
     if not mx_host:
-        print(f"⚠️ MX introuvable pour {domain}")
+        _log.warning('MX introuvable pour domaine %s', domain)
         return False
     print(f"📡 Livraison directe → {mx_host}:25")
     try:
@@ -409,22 +410,22 @@ def _send_direct_mx(to_email, msg_obj, from_email):
                 s.ehlo()
             except Exception:
                 pass
-            result = s.sendmail(from_email, [to_email], msg_obj.as_string())
-            print(f"✅ Livraison directe OK à {to_email} (résultat: {result})")
+            s.sendmail(from_email, [to_email], msg_obj.as_string())
+            _log.info('Livraison directe MX OK (domaine: %s)', to_email.split('@')[-1])
             return True
     except Exception as e:
-        print(f"❌ Livraison directe échouée pour {to_email}: {e}")
+        _log.warning('Livraison directe échouée (domaine: %s): %s', to_email.split('@')[-1], e)
         return False
 
 
 def _app_domain(cfg):
-    """Extrait le domaine racine depuis APP_URL (ex: cei.ec2lt.sn → ec2lt.sn)."""
+    """Extrait le domaine racine depuis APP_URL (ex: dev-cei.ddns.net → ddns.net)."""
     import urllib.parse
-    netloc = urllib.parse.urlparse(cfg.get('app_url', '')).netloc or 'cei.ec2lt.sn'
+    netloc = urllib.parse.urlparse(cfg.get('app_url', '')).netloc or 'dev-cei.ddns.net'
     parts  = netloc.split('.')
     return '.'.join(parts[-2:]) if len(parts) >= 2 else netloc
 
-def _build_msg(from_header, to_email, subject, html_body, text_body, domain='cei.ec2lt.sn'):
+def _build_msg(from_header, to_email, subject, html_body, text_body, domain='dev-cei.ddns.net'):
     """Construit un message multipart/alternative avec text+html (norme RFC 2046)."""
     from email.utils import formatdate, make_msgid
     msg = MIMEMultipart('alternative')
@@ -479,12 +480,12 @@ def send_email(to_email, subject, html_body, attachments=None, text_body=None):
                 server.ehlo()
                 server.login(cfg['username'], cfg['password'])
                 server.send_message(msg)
-            print(f"Email envoyé à {to_email} (via {cfg['server']})")
+            _log.info('Email envoyé (domaine: %s, relay: %s)', to_email.split('@')[-1], cfg['server'])
             return True
         except (ConnectionResetError, OSError, smtplib.SMTPServerDisconnected) as conn_err:
-            print(f"SMTP {cfg['server']} inaccessible ({conn_err}) → basculement livraison directe")
+            _log.warning('SMTP %s inaccessible (%s) → basculement livraison directe', cfg['server'], conn_err)
         except smtplib.SMTPException as smtp_error:
-            print(f"Erreur SMTP envoi email à {to_email}: {smtp_error}")
+            _log.error('Erreur SMTP (domaine: %s): %s', to_email.split('@')[-1], smtp_error)
             return False
         except Exception as e:
             print(f"Erreur SMTP ({e}) → basculement livraison directe")
@@ -925,7 +926,7 @@ def find_or_create_student(student_name, extracted_name, session):
 def send_exam_started_email(student_email, student_name, exam_title, exam_url, end_time_str):
     """Email aux étudiants quand un examen en ligne est activé."""
     smtp_cfg  = _smtp_config()
-    app_url   = smtp_cfg.get('app_url', 'https://cei.ec2lt.sn')
+    app_url   = smtp_cfg.get('app_url', 'https://dev-cei.ddns.net')
     from_name = smtp_cfg.get('from_name', "CEI — Centre d'Examen Intelligent")
     subject   = f"Examen disponible : {exam_title}"
 
@@ -1010,7 +1011,7 @@ Accéder à l'examen : {exam_url}
 def send_password_changed_email(user_email, user_name, reset_url):
     """Email de sécurité envoyé après un changement de mot de passe réussi."""
     smtp_cfg  = _smtp_config()
-    app_url   = smtp_cfg.get('app_url', 'https://cei.ec2lt.sn')
+    app_url   = smtp_cfg.get('app_url', 'https://dev-cei.ddns.net')
     from_name = smtp_cfg.get('from_name', "CEI — Centre d'Examen Intelligent")
     subject   = "Votre mot de passe CEI a été modifié"
 
@@ -1097,7 +1098,7 @@ Ce n'était pas vous ? Réinitialisez votre mot de passe immédiatement :
 def send_password_reset_email(user_email, user_name, reset_link):
     """Email de réinitialisation de mot de passe — token valide 1 heure."""
     smtp_cfg  = _smtp_config()
-    app_url   = smtp_cfg.get('app_url', 'https://cei.ec2lt.sn')
+    app_url   = smtp_cfg.get('app_url', 'https://dev-cei.ddns.net')
     from_name = smtp_cfg.get('from_name', "CEI — Centre d'Examen Intelligent")
     subject   = "Réinitialisation de votre mot de passe CEI"
 

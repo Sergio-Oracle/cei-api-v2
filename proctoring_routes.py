@@ -15,6 +15,8 @@ import boto3
 from botocore.exceptions import ClientError
 from botocore.config import Config
 
+from sqlalchemy import update as _sa_update
+from sqlalchemy.orm import joinedload
 from models import (
     get_session, ExamAttempt, OnlineExam, ExamActivityLog, User,
     AttemptStatus, UserRole, ExamStatus, CameraLog,
@@ -238,7 +240,14 @@ def log_proctoring_event(attempt_id):
         risk_increment = proctoring_risk_map.get(event_type, 5)
 
         if event_type != 'session_end':
-            attempt.risk_score = min((attempt.risk_score or 0) + risk_increment, 100)
+            # Incrémentation atomique avec plafonnement à 100 via LEAST (évite race condition)
+            from sqlalchemy import func as _sa_func
+            session.execute(
+                _sa_update(ExamAttempt)
+                .where(ExamAttempt.id == attempt_id)
+                .values(risk_score=_sa_func.least(ExamAttempt.risk_score + risk_increment, 100))
+            )
+            session.refresh(attempt)
 
         session.commit()
 
@@ -481,13 +490,15 @@ def get_active_proctoring(exam_id):
             attempt_ids_direct  = [pa.attempt_id for pa in assignments if pa.attempt_id]
             student_ids_preassign = [pa.student_id for pa in assignments if pa.student_id and not pa.attempt_id]
 
-            # Tentatives directement liées par attempt_id
-            attempts_by_id = session.query(ExamAttempt).filter(
-                ExamAttempt.id.in_(attempt_ids_direct)
-            ).all() if attempt_ids_direct else []
+            # Tentatives directement liées par attempt_id (joinedload évite N+1 sur .student)
+            attempts_by_id = session.query(ExamAttempt).options(
+                joinedload(ExamAttempt.student)
+            ).filter(ExamAttempt.id.in_(attempt_ids_direct)).all() if attempt_ids_direct else []
 
             # Tentatives démarrées par les étudiants pré-affectés
-            attempts_by_student = session.query(ExamAttempt).filter(
+            attempts_by_student = session.query(ExamAttempt).options(
+                joinedload(ExamAttempt.student)
+            ).filter(
                 ExamAttempt.exam_id == exam_id,
                 ExamAttempt.student_id.in_(student_ids_preassign)
             ).all() if student_ids_preassign else []
@@ -499,7 +510,9 @@ def get_active_proctoring(exam_id):
                 if a.id not in seen_ids:
                     attempts.append(a)
         else:
-            attempts = session.query(ExamAttempt).filter_by(exam_id=exam_id).all()
+            attempts = session.query(ExamAttempt).options(
+                joinedload(ExamAttempt.student)
+            ).filter_by(exam_id=exam_id).all()
 
         # ── Auto-assignation des nouveaux étudiants non encore affectés ──────
         # Cas : étudiant qui a démarré l'examen sans être dans les pré-affectations
@@ -2111,7 +2124,10 @@ def get_video_recordings(exam_id):
 
 import json as _json_mod
 import os as _os_mod
+import fcntl as _fcntl
+import logging as _logging
 
+_alerts_log = _logging.getLogger('cei.agent')
 _ALERTS_FILE = _os_mod.path.join(_os_mod.path.dirname(__file__), 'agent_alerts.json')
 _MAX_ALERTS  = 200  # nombre maximum d'alertes conservées en mémoire
 
@@ -2126,7 +2142,11 @@ def _load_alerts() -> list:
     try:
         if _os_mod.path.exists(_ALERTS_FILE):
             with open(_ALERTS_FILE, 'r', encoding='utf-8') as f:
-                return _json_mod.load(f)
+                _fcntl.flock(f, _fcntl.LOCK_SH)
+                try:
+                    return _json_mod.load(f)
+                finally:
+                    _fcntl.flock(f, _fcntl.LOCK_UN)
     except Exception:
         pass
     return []
@@ -2134,10 +2154,22 @@ def _load_alerts() -> list:
 
 def _save_alerts(alerts: list):
     try:
-        with open(_ALERTS_FILE, 'w', encoding='utf-8') as f:
-            _json_mod.dump(alerts[-_MAX_ALERTS:], f, ensure_ascii=False)
+        with open(_ALERTS_FILE, 'a+', encoding='utf-8') as f:
+            _fcntl.flock(f, _fcntl.LOCK_EX)
+            try:
+                f.seek(0)
+                try:
+                    existing = _json_mod.load(f)
+                except Exception:
+                    existing = []
+                merged = (existing + [a for a in alerts if a not in existing])[-_MAX_ALERTS:]
+                f.seek(0)
+                f.truncate()
+                _json_mod.dump(merged, f, ensure_ascii=False)
+            finally:
+                _fcntl.flock(f, _fcntl.LOCK_UN)
     except Exception as e:
-        print(f"⚠️  Sauvegarde alertes : {e}")
+        _alerts_log.warning('Sauvegarde alertes échouée : %s', e)
 
 
 @proctoring_bp.route('/api/agent/alerts', methods=['POST'])

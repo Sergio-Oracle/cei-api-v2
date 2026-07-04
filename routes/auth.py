@@ -10,7 +10,7 @@ from flask import Blueprint, request, jsonify, make_response
 from datetime import datetime, timedelta, timezone
 import os
 
-from extensions import bcrypt
+from extensions import bcrypt, limiter
 from helpers    import utcnow
 from auth_paseto import (
     paseto_required, get_current_user_id,
@@ -30,6 +30,7 @@ auth_bp = Blueprint('auth', __name__)
 
 # ── Inscription ───────────────────────────────────────────────────────────────
 @auth_bp.route('/api/auth/register', methods=['POST'])
+@limiter.limit("10 per hour")
 def register():
     try:
         data    = request.json or {}
@@ -45,7 +46,7 @@ def register():
         )
         session.add(user); session.commit()
         user_dict = user.to_dict(); session.close()
-        send_account_created_email(data['email'], data['full_name'], 'student', data['password'])
+        send_account_created_email(data['email'], data['full_name'], 'student')
         return jsonify({'success': True, 'message': 'Inscription réussie', 'user': user_dict}), 201
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -53,6 +54,7 @@ def register():
 
 # ── Connexion ─────────────────────────────────────────────────────────────────
 @auth_bp.route('/api/auth/login', methods=['POST'])
+@limiter.limit("10 per minute;50 per hour")
 def login():
     try:
         data     = request.json or {}
@@ -85,6 +87,7 @@ def login():
 
 # ── Refresh ───────────────────────────────────────────────────────────────────
 @auth_bp.route('/api/auth/refresh', methods=['POST'])
+@limiter.limit("30 per minute")
 def refresh_token_endpoint():
     token = get_refresh_token_from_cookie()
     if not token:
@@ -225,16 +228,16 @@ def change_password():
         if not bcrypt.check_password_hash(user.password_hash, current_pw):
             session.close()
             return jsonify({'error': 'Mot de passe actuel incorrect'}), 400
-        if len(new_pw) < 6:
+        if len(new_pw) < 8:
             session.close()
-            return jsonify({'error': 'Le mot de passe doit comporter au moins 6 caractères'}), 400
+            return jsonify({'error': 'Le mot de passe doit comporter au moins 8 caractères'}), 400
         if confirm_pw and new_pw != confirm_pw:
             session.close()
             return jsonify({'error': 'Les mots de passe ne correspondent pas'}), 400
 
         user.password_hash = bcrypt.generate_password_hash(new_pw).decode('utf-8')
         session.commit()
-        app_url   = os.getenv('APP_URL', 'https://cei.ec2lt.sn').rstrip('/')
+        app_url   = os.getenv('APP_URL', 'https://dev-cei.ddns.net').rstrip('/')
         reset_url = f"{app_url}/app?action=forgot"
         try:
             if user.email:
@@ -249,6 +252,7 @@ def change_password():
 
 # ── Mot de passe oublié ───────────────────────────────────────────────────────
 @auth_bp.route('/api/auth/forgot-password', methods=['POST'])
+@limiter.limit("5 per minute;20 per hour")
 def forgot_password():
     try:
         import secrets as _secrets
@@ -318,7 +322,7 @@ def reset_password():
         user.reset_token_expires = None
         session.commit()
 
-        app_url   = os.getenv('APP_URL', 'https://cei.ec2lt.sn').rstrip('/')
+        app_url   = os.getenv('APP_URL', 'https://dev-cei.ddns.net').rstrip('/')
         reset_url = f"{app_url}/app?action=forgot"
         try:
             if saved_email:

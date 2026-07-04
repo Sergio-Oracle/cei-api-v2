@@ -51,7 +51,7 @@ def init_paseto():
 
 # ─── Durées ──────────────────────────────────────────────────────────────────
 
-ACCESS_TTL  = timedelta(minutes=int(os.getenv("PASETO_ACCESS_TTL_MIN",  "480")))
+ACCESS_TTL  = timedelta(minutes=int(os.getenv("PASETO_ACCESS_TTL_MIN",  "15")))
 REFRESH_TTL = timedelta(days   =int(os.getenv("PASETO_REFRESH_TTL_DAYS", "7")))
 COOKIE_NAME = "cei_refresh"
 

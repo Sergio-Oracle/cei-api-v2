@@ -1,116 +1,22 @@
 """
 Blueprint Professeur.
 
-POST /api/reclamations/<id>/apply_proposal
-POST /api/reclamations/<id>/reject_proposal
 GET  /api/professor/dashboard
 GET  /api/student/online_results
 GET  /api/student/papers
 """
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, jsonify
 from sqlalchemy import desc
 from sqlalchemy.orm import joinedload
 
 from auth_paseto import paseto_required, get_current_user_id
-from helpers     import utcnow
 from models      import (
     get_session, User, UserRole,
-    Subject, StudentPaper, Reclamation, ReclamationStatus, CorrectionHistory,
+    Subject, StudentPaper, Reclamation,
     OnlineExam, ExamAttempt,
 )
 
 professor_bp = Blueprint('professor', __name__)
-
-
-# ── Gestion des propositions IA ───────────────────────────────────────────────
-
-@professor_bp.route('/api/reclamations/<int:reclamation_id>/apply_proposal', methods=['POST'])
-@paseto_required
-def apply_ai_proposal(reclamation_id):
-    try:
-        user_id = get_current_user_id()
-        session = get_session()
-        user    = session.query(User).filter_by(id=user_id).first()
-
-        reclamation = session.query(Reclamation).options(
-            joinedload(Reclamation.paper).joinedload(StudentPaper.subject)
-        ).filter_by(id=reclamation_id).first()
-        if not reclamation: session.close(); return jsonify({'error': 'Réclamation introuvable'}), 404
-
-        paper = reclamation.paper
-        if not paper:
-            session.close()
-            return jsonify({'error': "Impossible d'appliquer une proposition IA sur une réclamation d'examen en ligne. Répondez manuellement."}), 400
-        subject = paper.subject
-
-        if user.role != UserRole.ADMIN and not (user.role == UserRole.PROFESSOR and subject and subject.creator_id == user_id):
-            session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
-
-        if not reclamation.ia_proposed_status:
-            session.close(); return jsonify({'error': 'Aucune proposition IA disponible pour cette réclamation'}), 400
-
-        old_score = paper.score
-        old_grade = paper.grade
-        new_score = reclamation.ia_proposed_score or old_score
-        new_grade = reclamation.ia_proposed_grade or old_grade
-
-        history = CorrectionHistory(
-            paper_id=paper.id, corrector_id=user_id,
-            old_score=old_score, new_score=new_score,
-            old_grade=old_grade, new_grade=new_grade,
-            reason=f"Application de la proposition IA: {reclamation.ia_proposed_reason or 'N/A'}",
-        )
-        session.add(history)
-
-        paper.score      = new_score
-        paper.grade      = new_grade
-        paper.corrected_at = utcnow()
-
-        reclamation.status           = ReclamationStatus.RESOLVED
-        reclamation.response         = reclamation.ia_proposed_reason or 'Proposition IA acceptée'
-        reclamation.responded_by_id  = user_id
-        reclamation.updated_at       = utcnow()
-
-        session.commit(); session.close()
-        return jsonify({'success': True, 'message': 'Proposition IA appliquée'})
-    except Exception as e:
-        print(f"ERROR apply_ai_proposal: {e}")
-        return jsonify({'error': str(e)}), 500
-
-
-@professor_bp.route('/api/reclamations/<int:reclamation_id>/reject_proposal', methods=['POST'])
-@paseto_required
-def reject_ai_proposal(reclamation_id):
-    try:
-        user_id = get_current_user_id()
-        session = get_session()
-        user    = session.query(User).filter_by(id=user_id).first()
-
-        reclamation = session.query(Reclamation).options(
-            joinedload(Reclamation.paper).joinedload(StudentPaper.subject)
-        ).filter_by(id=reclamation_id).first()
-        if not reclamation: session.close(); return jsonify({'error': 'Réclamation introuvable'}), 404
-
-        paper = reclamation.paper
-        if not paper:
-            session.close()
-            return jsonify({'error': "Impossible de rejeter une proposition IA sur une réclamation d'examen en ligne. Répondez manuellement."}), 400
-        subject = paper.subject
-
-        if user.role != UserRole.ADMIN and not (user.role == UserRole.PROFESSOR and subject and subject.creator_id == user_id):
-            session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
-
-        payload = request.get_json() or {}
-        reclamation.status          = ReclamationStatus.REJECTED
-        reclamation.response        = payload.get('response', 'Proposition IA rejetée par le professeur')
-        reclamation.responded_by_id = user_id
-        reclamation.updated_at      = utcnow()
-
-        session.commit(); session.close()
-        return jsonify({'success': True, 'message': 'Proposition IA rejetée'})
-    except Exception as e:
-        print(f"ERROR reject_ai_proposal: {e}")
-        return jsonify({'error': str(e)}), 500
 
 
 # ── Dashboard professeur ──────────────────────────────────────────────────────

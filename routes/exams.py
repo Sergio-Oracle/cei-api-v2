@@ -144,7 +144,7 @@ def create_online_exam():
             session.close()
             return jsonify({'error': 'Accès réservé aux professeurs et administrateurs'}), 403
 
-        data = request.json
+        data = request.get_json(silent=True) or {}
 
         # Validation
         required_fields = ['subject_id', 'title', 'start_time', 'end_time']
@@ -250,7 +250,7 @@ def activate_online_exam(exam_id):
 
         # Notifier par email tous les étudiants inscrits à la formation de l'examen
         try:
-            app_url  = os.getenv('APP_URL', 'https://cei.ec2lt.sn').rstrip('/')
+            app_url  = os.getenv('APP_URL', 'https://dev-cei.ddns.net').rstrip('/')
             exam_url = f"{app_url}/app"
             end_str  = exam.end_time.strftime('%d/%m/%Y à %H:%M') if exam.end_time else 'voir sur la plateforme'
             from models import StudentUEEnrollment, EC as ECModel, UE as UEModel
@@ -337,6 +337,13 @@ def close_online_exam(exam_id):
             session.close()
             return jsonify({'error': 'Accès non autorisé'}), 403
         
+        # Auto-soumettre toutes les tentatives encore en cours avant de fermer
+        in_progress = session.query(ExamAttempt).filter_by(
+            exam_id=exam_id, status=AttemptStatus.IN_PROGRESS
+        ).all()
+        for att in in_progress:
+            att.status = AttemptStatus.AUTO_SUBMITTED
+
         # Passer en statut CLOSED
         exam.status = ExamStatus.CLOSED
         session.commit()
@@ -658,7 +665,7 @@ def save_exam_answers(attempt_id):
             session.close()
             return jsonify({'error': 'Impossible de modifier une tentative terminée'}), 400
         
-        data = request.json
+        data = request.get_json(silent=True) or {}
         attempt.answers = data.get('answers', '{}')
         
         session.commit()
@@ -682,10 +689,10 @@ def log_exam_activity(attempt_id):
             session.close()
             return jsonify({'error': 'Tentative non trouvée'}), 404
         
-        data = request.json
+        data = request.get_json(silent=True) or {}
         event_type = data.get('event_type', 'unknown')
         event_data = data.get('event_data', '')
-        
+
         # Logger l'activité
         log = ExamActivityLog(
             attempt_id=attempt_id,
@@ -693,7 +700,7 @@ def log_exam_activity(attempt_id):
             event_data=event_data
         )
         session.add(log)
-        
+
         exam = attempt.exam
         severity_tab_events   = ['tab_switch', 'fullscreen_exit', 'window_blur']
         severity_medium_events = ['right_click', 'copy_attempt', 'paste_attempt', 'f12_attempt']
@@ -701,17 +708,29 @@ def log_exam_activity(attempt_id):
         ban_reason = None
 
         # ── 1. Outils développeur ─────────────────────────────────────────────
+        # Incréments atomiques via UPDATE SQL pour éviter les race conditions multi-thread
+        from sqlalchemy import update as _sa_update
         if event_type == 'devtools_attempt':
             ban_on_dev = exam.ban_on_devtools if exam.ban_on_devtools is not None else True
-            attempt.tab_switches += 1
-            attempt.warnings_count += 2
+            session.execute(
+                _sa_update(ExamAttempt).where(ExamAttempt.id == attempt_id).values(
+                    tab_switches=ExamAttempt.tab_switches + 1,
+                    warnings_count=ExamAttempt.warnings_count + 2
+                )
+            )
+            session.refresh(attempt)
             if ban_on_dev:
                 ban_reason = "Ouverture des outils développeur détectée"
 
         # ── 2. Changements de fenêtre / onglet / plein écran ──────────────────
         elif event_type in severity_tab_events:
-            attempt.tab_switches += 1
-            attempt.warnings_count += 2
+            session.execute(
+                _sa_update(ExamAttempt).where(ExamAttempt.id == attempt_id).values(
+                    tab_switches=ExamAttempt.tab_switches + 1,
+                    warnings_count=ExamAttempt.warnings_count + 2
+                )
+            )
+            session.refresh(attempt)
             max_sw = exam.max_tab_switches if exam.max_tab_switches is not None else 2
             if max_sw >= 0 and attempt.tab_switches > max_sw:
                 ban_reason = f"Trop de changements de contexte : {attempt.tab_switches} (seuil : {max_sw})"
@@ -739,22 +758,35 @@ def log_exam_activity(attempt_id):
 
         # ── 4. Visage non détecté (face_absent = alias FaceDetector.js) ──────
         elif event_type in ('no_face_detected', 'face_absent'):
-            no_face_count = (attempt.no_face_count or 0) + 1
-            attempt.no_face_count = no_face_count
-            attempt.warnings_count += 1
+            session.execute(
+                _sa_update(ExamAttempt).where(ExamAttempt.id == attempt_id).values(
+                    no_face_count=ExamAttempt.no_face_count + 1,
+                    warnings_count=ExamAttempt.warnings_count + 1
+                )
+            )
+            session.refresh(attempt)
             max_nf = exam.max_no_face_count if exam.max_no_face_count is not None else 10
-            if max_nf >= 0 and no_face_count >= max_nf:
-                ban_reason = f"Visage absent trop souvent : {no_face_count} fois (seuil : {max_nf})"
+            if max_nf >= 0 and (attempt.no_face_count or 0) >= max_nf:
+                ban_reason = f"Visage absent trop souvent : {attempt.no_face_count} fois (seuil : {max_nf})"
 
         # ── 3b. Plusieurs visages détectés ────────────────────────────────────
         elif event_type == 'multiple_faces':
-            attempt.warnings_count += 2
-            no_face_count = attempt.no_face_count or 0
-            attempt.tab_switches += 1  # compte comme violation grave
+            session.execute(
+                _sa_update(ExamAttempt).where(ExamAttempt.id == attempt_id).values(
+                    warnings_count=ExamAttempt.warnings_count + 2,
+                    tab_switches=ExamAttempt.tab_switches + 1
+                )
+            )
+            session.refresh(attempt)
 
         # ── 4. Violations mineures ────────────────────────────────────────────
         elif event_type in severity_medium_events:
-            attempt.warnings_count += 1
+            session.execute(
+                _sa_update(ExamAttempt).where(ExamAttempt.id == attempt_id).values(
+                    warnings_count=ExamAttempt.warnings_count + 1
+                )
+            )
+            session.refresh(attempt)
 
         # ── Appliquer le bannissement si nécessaire ───────────────────────────
         if ban_reason:
@@ -945,7 +977,7 @@ RAPPEL: Tu DOIS finir par "Note totale: XX.XX/20" """
 
         print(f"🤖 Auto-correction tentative {attempt_id} ({attempt.student.full_name}) — en cours…")
         result = call_claude(system_prompt, user_message, temperature=0.15)
-        score  = extract_score_from_correction(result)
+        score  = max(0.0, min(20.0, float(extract_score_from_correction(result) or 0)))
 
         attempt.score          = score
         attempt.feedback       = result
@@ -995,7 +1027,7 @@ def submit_exam_attempt(attempt_id):
             return jsonify({'error': 'Tentative déjà soumise ou bannie'}), 400
         
         # Sauvegarder les dernières réponses
-        data = request.json
+        data = request.get_json(silent=True) or {}
         if 'answers' in data:
             attempt.answers = data['answers']
         if 'signature_data' in data and data['signature_data']:
@@ -1312,8 +1344,8 @@ RAPPEL: Tu DOIS finir par "Note totale: XX.XX/20" """
 
         # Appeler Claude pour la correction
         result = call_claude(system_prompt, user_message, temperature=0.15)
-        score = extract_score_from_correction(result)
-        
+        score = max(0.0, min(20.0, float(extract_score_from_correction(result) or 0)))
+
         # Stocker les résultats
         attempt.score = score
         attempt.feedback = result
@@ -1720,6 +1752,9 @@ def manual_grade_attempt(attempt_id):
         if not attempt:
             session.close()
             return jsonify({'error': 'Tentative non trouvée'}), 404
+        if user.role == UserRole.PROFESSOR and attempt.exam.created_by_id != user_id:
+            session.close()
+            return jsonify({'error': 'Accès non autorisé'}), 403
         data   = request.get_json(silent=True) or {}
         score  = data.get('score')
         feedback = data.get('feedback', '').strip()
@@ -2662,9 +2697,9 @@ Réponds UNIQUEMENT avec un JSON valide dans ce format exact (OBLIGATOIREMENT 3 
         # ── Redis cache check (key = hash of course content + params) ──────────
         import json
         import re
-        from cache import cache_get, cache_set, make_key
+        from cache import cache_get, cache_set, make_content_key
 
-        cache_key = make_key(course_content[:4000], difficulty, student_level, question_types)
+        cache_key = make_content_key(course_content[:4000], difficulty, student_level, question_types)
         cached    = cache_get(cache_key)
         if cached:
             os.remove(temp_filepath)

@@ -1,389 +1,256 @@
 # CEI API v2 — Backend REST Flask + PASETO v4
 
-**Centre d'Examen Intelligent** — Backend indépendant conçu pour séparer la couche API de la couche frontend.  
-Port public : `http://62.171.190.6:8100` · Swagger UI : `http://62.171.190.6:8100/api/docs`
+**Centre d'Examen Intelligent** — UNCHK VisioPLUS  
+Production : `https://dev-cei.ddns.net` · Swagger UI : `https://dev-cei.ddns.net/api/docs`
 
 ## Dépôts du projet
 
-| Partie | Dépôt | Port |
-|--------|-------|------|
-| Backend API (ce dépôt) | [Sergio-Oracle/cei-api-v2](https://github.com/Sergio-Oracle/cei-api-v2) | 8100 |
-| Frontend Next.js | [Sergio-Oracle/cei-next](https://github.com/Sergio-Oracle/cei-next) | 5173 |
+| Partie | Dépôt | Description |
+|--------|-------|-------------|
+| Backend API (ce dépôt) | [Sergio-Oracle/cei-api-v2](https://github.com/Sergio-Oracle/cei-api-v2) | Flask + Gunicorn + PostgreSQL + Redis |
+| Frontend Next.js | [Sergio-Oracle/cei-next](https://github.com/Sergio-Oracle/cei-next) | Next.js 16 + TypeScript + PWA |
 
 ---
 
-## Mises à jour récentes
+## Mises à jour — 04/07/2026
 
-### 30/06/2026 — Corrections critiques
+### Correctifs sécurité critiques
 
-| Endpoint | Problème | Correction |
-|---|---|---|
-| `POST /api/exam_attempts/<id>/unban` | `ExamActivityLog` créé avec `details=` et `risk_score=` — champs inexistants → `TypeError` 500 | Remplacé par `event_data=json.dumps({...})` |
-| `GET /api/exam_attempts/<id>/review` | `attempt.corrector` accédé après `session.close()` → `DetachedInstanceError` 500 | Tous les champs extraits dans `result` dict avant `session.close()` |
-| `GET /api/exam_attempts/<id>/review` | `corrector_name` absent de la réponse JSON | Ajouté : `corrector_name: attempt.corrector.full_name if attempt.corrector else None` |
-| `GET /api/exam_attempts/<id>/integrity-report` | PDF : "Tab switches" en anglais ; types d'événements en anglais dans la chronologie | Traduits en français : "Changements d'onglet", "Tentative de copie", etc. |
-| `GET /api/exam_attempts/<id>/integrity-report` | Nom du fichier téléchargé = `rapport_integrite_<id>.pdf` | Nom inclut le prénom/nom de l'étudiant : `rapport_integrite_<nom>_<id>.pdf` |
+| Fichier | Problème | Correction |
+|---------|----------|------------|
+| `utils.py` | **RCE** — injection de code Python via domaine email dans f-string subprocess | Validation regex stricte + appel direct `dns.resolver` sans subprocess |
+| `auth_paseto.py` | TTL par défaut access token = 480 min (8h) au lieu de 15 min | Valeur par défaut corrigée à 15 min |
+| `routes/auth.py` | Mot de passe brut envoyé en clair dans email de bienvenue | Email de bienvenue sans mot de passe |
+| `routes/auth.py` | Longueur minimum mot de passe incohérente (6 vs 8 selon la route) | Harmonisé à 8 caractères partout |
+| `app.py` | Absence de FAIL FAST — variables d'env critiques non vérifiées au boot | Vérification `SECRET_KEY`, `DATABASE_URL`, `PASETO_PRIVATE_KEY`, `PASETO_PUBLIC_KEY` |
+| `utils.py` | PII (emails, domaines) dans `print()` exposés aux journaux système | Migré vers `logging.getLogger('cei.utils')` avec masquage |
 
----
+### Correctifs logique métier
 
-## Présentation
+| Fichier | Problème | Correction |
+|---------|----------|------------|
+| `routes/exams.py` | Race condition non-atomique sur `tab_switches`/`warnings_count` — contournement anti-fraude possible | `UPDATE ... SET col = col + 1` via SQLAlchemy (atomique) |
+| `proctoring_routes.py` | Race condition non-atomique sur `risk_score` | `LEAST(risk_score + increment, 100)` via `func.least()` SQLAlchemy |
+| `routes/exams.py` | `close_online_exam` ne soumettait pas les copies `IN_PROGRESS` → réponses perdues | Auto-submit `IN_PROGRESS → AUTO_SUBMITTED` avant fermeture |
+| `routes/exams.py` | `request.json` sans garde `None` → `AttributeError` sans `Content-Type` | Remplacé par `request.get_json(silent=True) or {}` |
+| `routes/exams.py` | Score IA non borné [0, 20] → notes hors barème en base | `max(0.0, min(20.0, float(score)))` après extraction |
+| `routes/exams.py` | `manual_grade_attempt` sans vérification de propriété → prof peut noter examen d'un collègue | Ajout du check `exam.created_by_id != user_id` |
+| `proctoring_routes.py` | `agent_alerts.json` sans verrou fichier → JSON corrompu multi-workers | `fcntl.flock()` LOCK_EX en écriture, LOCK_SH en lecture |
 
-Ce backend est la **version 2** de la plateforme CEI. Il reprend l'intégralité des fonctionnalités de la plateforme existante en séparant clairement :
+### Correctifs performance
 
-- **Backend** (ce dépôt) : API REST Flask, pur JSON, aucun template HTML servi
-- **Frontend** (à venir) : React + Vite, consommateur de cette API
-
-### Différences majeures par rapport à la v1
-
-| Aspect | v1 (existante) | v2 (ce dépôt) |
-|--------|---------------|---------------|
-| Auth | JWT (flask-jwt-extended) | **PASETO v4.public Ed25519** |
-| Architecture | Monolithique Flask (API + templates) | API REST pure (JSON uniquement) |
-| Refresh token | Absent | Cookie httpOnly 7 jours + rotation |
-| Token révocation | Absent | Table `token_blocklist` en base |
-| Documentation | Swagger partiel | **Swagger 100% couvert — 147 endpoints** |
-| Scalabilité | 1 worker | **Gunicorn 9 workers gthread (1000+ users)** |
-| Déploiement | Port 7000 | **Port 8100** |
-
----
-
-## Acteurs et rôles
-
-| Rôle | Description |
-|------|-------------|
-| `admin` | Gestion complète : utilisateurs, maquette pédagogique, examens, relevés |
-| `professor` | Création sujets, correction copies, gestion examens en ligne, analytics |
-| `surveillant` | Monitoring en direct, avertissements, bannissements, messages étudiants |
-| `student` | Passage examens, soumission, consultation résultats et relevés |
-| `PUBLIC` | Routes sans auth : login, register, reset password, statut agent |
+| Fichier | Problème | Correction |
+|---------|----------|------------|
+| `cache.py` | Invalidation cache cassée : clés SHA-256 incompatibles avec glob patterns | Clés lisibles `cei:category:id` ; `make_content_key()` séparé pour le hachage IA |
+| `models.py` | Index DB manquants sur `exam_attempts.exam_id`, `student_id`, `status`, `activity_logs.attempt_id` | `index=True` ajouté sur toutes les colonnes de FK et de filtre proctoring |
+| `proctoring_routes.py` | N+1 queries dans `get_active_proctoring` — `a.student` lazy-loadé dans boucle | `options(joinedload(ExamAttempt.student))` |
 
 ---
 
-## Authentification PASETO v4
+## Mises à jour — 03/07/2026
 
-### Flux complet
+### Scalabilité et normes professionnelles
 
-```
-POST /api/auth/login
-  → access_token (v4.public, 15 min, stocker en mémoire JS)
-  → cookie httpOnly cei_refresh (7 jours, path=/api/auth)
-
-GET /api/* avec Header: Authorization: Bearer <access_token>
-
-POST /api/auth/refresh   (cookie envoyé automatiquement)
-  → nouvel access_token + rotation du refresh token
-
-POST /api/auth/logout
-  → révocation refresh token (token_blocklist) + suppression cookie
-```
-
-### Sécurité
-
-- **Algorithme fixe** Ed25519 — résistant aux attaques algorithm confusion (impossible avec JWT)
-- **Clé publique exposée** sur `GET /api/auth/public-key` — le frontend peut vérifier localement
-- **Rotation** du refresh token à chaque usage — un token volé ne peut être utilisé qu'une fois
-- **Révocation en base** via table `token_blocklist` (hash SHA-256)
-- **Access token en mémoire** — non exposé au localStorage (XSS-safe)
-- **Refresh token httpOnly** — non accessible en JavaScript (XSS-safe)
-
----
-
-## Endpoints — Vue d'ensemble (147 routes)
-
-### Authentification (10 routes)
-
-| Méthode | Route | Rôle | Description |
-|---------|-------|------|-------------|
-| `POST` | `/api/auth/login` | PUBLIC | Connexion → token PASETO + cookie refresh |
-| `POST` | `/api/auth/register` | PUBLIC | Inscription étudiant |
-| `POST` | `/api/auth/refresh` | PUBLIC (cookie) | Renouveler l'access token |
-| `POST` | `/api/auth/logout` | Authentifié | Révoquer le refresh token |
-| `GET` | `/api/auth/public-key` | PUBLIC | Clé publique Ed25519 du serveur |
-| `GET` | `/api/auth/me` | Tous | Profil de l'utilisateur connecté |
-| `PUT` | `/api/profile` | Tous | Modifier son profil |
-| `PUT` | `/api/profile/password` | Tous | Changer son mot de passe |
-| `POST` | `/api/auth/forgot-password` | PUBLIC | Demander réinitialisation |
-| `POST` | `/api/auth/reset-password` | PUBLIC | Valider token + nouveau mot de passe |
-
-### Administration (11 routes)
-
-| Méthode | Route | Description |
-|---------|-------|-------------|
-| `GET` | `/api/admin/dashboard` | Stats globales (users, examens, copies) |
-| `GET/POST` | `/api/admin/users` | Lister / créer utilisateurs |
-| `PUT/DELETE` | `/api/admin/users/<id>` | Modifier / supprimer utilisateur |
-| `POST` | `/api/admin/users/student-no-email` | Créer étudiant sans email |
-| `GET` | `/api/admin/corrected_papers` | 50 dernières copies corrigées |
-| `GET` | `/api/admin/exams_history` | Historique tous les examens |
-| `GET` | `/api/admin/security_report` | Rapport de sécurité global |
-| `GET` | `/api/admin/online_exams/<id>` | Détail examen (admin) |
-| `PUT` | `/api/admin/online_exams/<id>` | Modifier examen (admin) |
-
-### Maquette pédagogique — Académique (28 routes)
-
-Gestion complète de la structure : **Formation → Semestre → UE → EC → Affectation professeur → Inscription étudiant**
-
-| Ressource | Routes disponibles |
-|-----------|-------------------|
-| Formations | GET liste, POST créer, PUT modifier, DELETE supprimer |
-| Semestres | GET par formation, POST, PUT, DELETE |
-| UE (Unités d'Enseignement) | GET par semestre, GET toutes, POST, PUT, DELETE |
-| EC (Éléments Constitutifs) | GET par UE, GET tous, POST, PUT, DELETE |
-| Affectations EC | POST assigner prof, DELETE retirer, POST alt |
-| Inscriptions UE | POST inscrire étudiant, DELETE retirer, GET enrollments |
-| Formation complète | POST inscrire étudiant à toute une formation |
-
-### Sujets et Copies (13 routes)
-
-| Méthode | Route | Rôle | Description |
-|---------|-------|------|-------------|
-| `GET` | `/api/subjects` | Tous | Lister sujets (filtrés par rôle) |
-| `GET` | `/api/subjects/<id>` | Tous | Détail sujet + barème |
-| `POST` | `/api/subjects/upload` | Prof/Admin | Créer sujet + génération barème IA |
-| `DELETE` | `/api/subjects/<id>` | Prof/Admin | Supprimer sujet |
-| `POST` | `/api/subjects/<id>/upload_image` | Prof/Admin | Ajouter image au sujet |
-| `POST` | `/api/papers/upload` | Prof/Admin | Correction IA d'une copie |
-| `POST` | `/api/papers/correct` | Prof/Admin | Alias upload |
-| `POST` | `/api/papers/upload-batch` | Prof/Admin | Batch ZIP (plusieurs copies) |
-| `GET` | `/api/papers/subject/<id>` | Tous | Copies d'un sujet |
-| `GET` | `/api/papers/detail/<id>` | Tous | Détail copie corrigée |
-| `GET` | `/api/papers/<id>/export` | Prof/Admin/Étudiant | Export PDF copie |
-| `GET` | `/api/statistics/<subject_id>` | Prof/Admin | Stats d'un sujet |
-| `GET` | `/api/student/papers` | Étudiant | Mes copies papier |
-
-### Examens en ligne (29 routes)
-
-Gestion du cycle de vie complet : **Création → Activation → Passage → Correction → Clôture**
-
-| Phase | Routes |
-|-------|--------|
-| Gestion | Créer, modifier, supprimer, activer, prolonger, clore |
-| Étudiant | Démarrer tentative, sauvegarder réponses, soumettre, voir résultats |
-| Professeur | Corriger automatiquement, noter manuellement, accorder temps supplémentaire |
-| Export | CSV résultats, PDF bilan, ZIP corrections, QR code |
-| Analyse | Stats examen, bilan détaillé, détection plagiat, rapport intégrité |
-| Banque de questions | Lister, ajouter, supprimer, assembler examen |
-
-### Surveillant (15 routes dédiées)
-
-| Méthode | Route | Description |
-|---------|-------|-------------|
-| `GET` | `/api/surveillant/exams` | Examens assignés au surveillant connecté |
-| `GET` | `/api/online_exams/<id>/active_proctoring` | Vue temps réel des étudiants actifs |
-| `GET` | `/api/exam_attempts/<id>/risk_status` | Score de risque + statut bannissement |
-| `POST` | `/api/exam_attempts/<id>/send_warning` | Envoyer avertissement à un étudiant |
-| `POST` | `/api/exam_attempts/<id>/proctor_ban` | Exclure définitivement un étudiant |
-| `GET` | `/api/online_exams/<id>/student_messages` | Messages des étudiants (vue surveillant) |
-| `POST` | `/api/exam_attempts/<id>/student_message` | Envoyer message à un étudiant |
-| `GET` | `/api/exam_attempts/<id>/pending_messages` | Messages en attente (polling étudiant) |
-| `GET` | `/api/online_exams/<id>/proctor_token` | Token LiveKit surveillant (tous les flux) |
-| `GET` | `/api/exam_attempts/<id>/private_token` | Token appel privé surveillant ↔ étudiant |
-| `POST` | `/api/exam_attempts/<id>/proctor-note` | Ajouter note de surveillance |
-| `GET` | `/api/exam_attempts/<id>/proctor-notes` | Lire notes de surveillance |
-| `GET/POST` | `/api/online_exams/<id>/proctors` | Gérer les surveillants d'un examen |
-| `DELETE` | `/api/online_exams/<id>/proctors/<proctor_id>` | Retirer un surveillant |
-| `POST` | `/api/online_exams/<id>/distribute_proctors` | Distribuer étudiants entre surveillants |
-
-### Proctoring — Infrastructure LiveKit (14 routes)
-
-Surveillance vidéo WebRTC : tokens LiveKit, snapshots caméra, événements de fraude, signatures, enregistrements vidéo.
-
-### Intelligence Artificielle (7 routes)
-
-| Méthode | Route | Description |
-|---------|-------|-------------|
-| `POST` | `/api/ai/generate-exam-suggestions` | Générer suggestions de sujets (Claude/Gemini) |
-| `POST` | `/api/subjects/generate-full-exam` | Générer un examen complet par IA |
-| `POST` | `/api/subjects/create-from-suggestion` | Créer sujet depuis suggestion IA |
-
-### Réclamations (6 routes)
-
-Dépôt → Traitement IA → Proposition → Accepter/Rejeter
-
-### Relevés de notes (7 routes)
-
-Génération PDF individuel/groupé, publication, suppression.
-
-### Agent autonome (6 routes)
-
-API consommée par `agent_proctor/monitor.py` — heartbeat, alertes fraude, liste examens actifs.
-
----
-
-## Architecture technique
-
-```
-/root/cei-api-v2/
-├── app.py                    # Application Flask principale (130 routes)
-├── auth_paseto.py            # PASETO v4.public Ed25519 — tokens, décorateurs
-├── models.py                 # SQLAlchemy — User, Subject, OnlineExam, TokenBlocklist...
-├── proctoring_routes.py      # Blueprint proctoring (31 routes LiveKit)
-├── csv_import_routes.py      # Blueprint import CSV (4 routes)
-├── export_route.py           # Blueprint export PDF (1 route)
-├── swagger_docs.py           # Swagger UI + spec OpenAPI 3.0 (147 endpoints)
-├── utils.py                  # Email, PDF, extraction texte, hashing
-├── gunicorn.conf.py          # Config Gunicorn — 9 workers gthread
-├── scripts/
-│   └── generate_paseto_keys.py
-├── agent_proctor/
-│   └── monitor.py            # Agent IA de surveillance autonome
-└── static/
-    ├── uploads/              # Copies et sujets uploadés
-    └── models/               # Modèles face-api.js
-```
-
-### Stack technique
-
-| Composant | Technologie |
+| Composant | Amélioration |
 |-----------|-------------|
-| Framework | Flask 3.x |
-| Auth | PASETO v4.public (pyseto 1.9.3) + Ed25519 |
-| ORM | SQLAlchemy + PostgreSQL |
-| Serveur WSGI | Gunicorn (gthread, 9 workers) |
-| IA correction | Anthropic Claude Sonnet + Google Gemini |
-| Vidéo surveillance | LiveKit WebRTC |
-| Export PDF | WeasyPrint / ReportLab |
-| Documentation | Swagger UI + OpenAPI 3.0 |
-| Process manager | Systemd (`cei-api-v2.service`) |
+| `models.py` | Pool SQLAlchemy : `pool_size=3, max_overflow=7` → 10/worker × 9 workers = 90 connexions (< 100 max PostgreSQL) |
+| `gunicorn.conf.py` | Hooks `post_fork` + `worker_exit` : `engine.dispose()` pour éviter le partage de connexions DB après fork |
+| `extensions.py` | Rate limiter migré de `memory://` (compteurs indépendants) vers Redis DB 1 (partagé entre workers) |
+| `app.py` | Health check `GET /api/health` (DB + Redis), logging structuré `X-Request-ID`, error handlers 404/405/413/429/500 |
+| `routes/formations.py` | Cache Redis sur endpoints hot (formations, semestres, UE, EC) — TTL 5 min, invalidation sur mutations |
+| `app.py` | CSP différenciée : stricte pour les routes API, permissive pour `/api/docs` (Swagger CDN) |
 
 ---
 
-## Installation et démarrage
+## Architecture
 
-### Prérequis
+```
+Internet
+    │
+    ▼
+Nginx (TLS/HTTPS 443)
+    │
+    ├── / → Next.js standalone (port 5173)
+    │
+    └── /api/* → unix:/run/cei-api-v2.sock
+                     │
+                     ▼
+               Gunicorn gthread
+               9 workers × 4 threads = 36 slots
+                     │
+              ┌──────┴──────┐
+              ▼             ▼
+         PostgreSQL       Redis
+         (pool 90)     DB0: cache
+                       DB1: rate limit
+```
 
-- Python 3.10+
-- PostgreSQL (base `exam_grader_db`)
-- LiveKit Server (pour le proctoring vidéo)
+---
 
-### Variables d'environnement (`.env`)
+## Stack technique
+
+| Couche | Technologie | Version |
+|--------|-------------|---------|
+| Langage | Python | 3.10+ |
+| Framework | Flask | 3.x |
+| WSGI | Gunicorn gthread | 21+ |
+| Auth | PASETO v4.public Ed25519 | python-paseto |
+| ORM | SQLAlchemy | 2.x |
+| Base de données | PostgreSQL | 15+ |
+| Cache / Rate limit | Redis | 7+ |
+| IA correction | Claude (Anthropic) → Gemini → DeepSeek → Ollama | - |
+| Email | SMTP → Livraison directe MX | smtplib |
+| Compression | flask-compress (gzip/brotli level 6) | - |
+
+---
+
+## Authentification — Architecture hybride
+
+| Type | Mécanisme | Durée | Révocable |
+|------|-----------|-------|-----------|
+| Access token | PASETO v4.public stateless | 15 min | Non (court TTL) |
+| Refresh token | Cookie httpOnly + blocklist DB | 7 jours | Oui (rotation) |
+
+**Stateless** : l'access token est vérifié par signature Ed25519 sans requête DB.  
+**Stateful** : le refresh token est vérifié en base (`token_blocklist`) + rotation à chaque usage.  
+**Hybride** : les deux mécanismes coexistent pour combiner performance (stateless) et révocabilité (stateful).
+
+---
+
+## Sécurité
+
+| Mesure | Détail |
+|--------|--------|
+| Algorithme auth | Ed25519 — immunisé contre les algorithm confusion attacks |
+| Rotation refresh | Token révoqué après chaque usage |
+| Rate limiting | Flask-Limiter Redis — 10/min login, 5/min forgot-password |
+| Headers HTTP | CSP, HSTS, X-Frame-Options DENY, X-Content-Type-Options |
+| CORS | Origines depuis `ALLOWED_ORIGINS` dans `.env` |
+| FAIL FAST | 4 variables critiques vérifiées au boot (arrêt si manquantes) |
+| Mots de passe | bcrypt, minimum 8 caractères |
+| Subprocess | Validation regex domaine avant tout appel DNS |
+| Atomicité | UPDATE SQL pour les compteurs de surveillance (pas de += Python) |
+| Logs | PII masqué (domaine uniquement, pas d'adresse complète) |
+
+---
+
+## Configuration Gunicorn
+
+```python
+bind            = 'unix:/run/cei-api-v2.sock'
+workers         = 9       # 2 × CPU + 1
+worker_class    = 'gthread'
+threads         = 4       # 9 × 4 = 36 slots
+timeout         = 600     # routes IA
+preload_app     = True
+```
+
+**Pool PostgreSQL** : `pool_size=3, max_overflow=7` → max 10/worker × 9 = 90 connexions (PostgreSQL max_connections=100).
+
+---
+
+## Variables d'environnement requises
 
 ```env
-# Base de données
-DATABASE_URL=postgresql://user:pass@localhost:5432/exam_grader_db
+# Obligatoires (FAIL FAST si absentes)
+SECRET_KEY=
+DATABASE_URL=postgresql://user:pass@localhost:5432/dbname
+PASETO_PRIVATE_KEY=
+PASETO_PUBLIC_KEY=
 
-# PASETO v4 Ed25519 (générer avec scripts/generate_paseto_keys.py)
-PASETO_PRIVATE_KEY=<PEM encodé en base64>
-PASETO_PUBLIC_KEY=<PEM encodé en base64>
+# Recommandées
+REDIS_URL=redis://127.0.0.1:6379/0
+REDIS_LIMITER_URL=redis://127.0.0.1:6379/1
+ALLOWED_ORIGINS=https://dev-cei.ddns.net
+APP_URL=https://dev-cei.ddns.net
 PASETO_ACCESS_TTL_MIN=15
 PASETO_REFRESH_TTL_DAYS=7
 
-# IA
-ANTHROPIC_API_KEY=sk-ant-...
-GOOGLE_API_KEY=...
-
-# LiveKit
-LIVEKIT_URL=wss://...
-LIVEKIT_API_KEY=...
-LIVEKIT_API_SECRET=...
-
 # Email
-SMTP_HOST=smtp.gmail.com
-SMTP_USERNAME=...
-SMTP_PASSWORD=...
+SMTP_SERVER=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USERNAME=
+SMTP_PASSWORD=
 
-# Swagger docs
-DOCS_USER=admin@cei.sn
-DOCS_PASS=motdepasse
+# Docs API
+DOCS_USER=
+DOCS_PASS=
 
-# CORS (frontend)
-ALLOWED_ORIGINS=http://localhost:5173,https://votre-domaine.com
-APP_URL=http://62.171.190.6:8100
+# Proctoring LiveKit
+LIVEKIT_URL=
+LIVEKIT_API_KEY=
+LIVEKIT_API_SECRET=
+AGENT_SECRET_KEY=
+
+# IA
+ANTHROPIC_API_KEY=
+GEMINI_API_KEY=
 ```
 
-### Génération des clés PASETO
+---
+
+## Endpoints — Vue d'ensemble (160 routes)
+
+### Authentification (10)
+`POST /api/auth/login` · `POST /api/auth/register` · `POST /api/auth/refresh` · `POST /api/auth/logout` · `GET /api/auth/public-key` · `GET /api/auth/me` · `PUT /api/profile` · `PUT /api/profile/password` · `POST /api/auth/forgot-password` · `POST /api/auth/reset-password`
+
+### Administration (11)
+Dashboard stats · Gestion utilisateurs (CRUD) · Création étudiant sans email · Historique examens · Rapport sécurité
+
+### Maquette pédagogique (28)
+Formations → Semestres → UE → EC · Affectations professeurs · Inscriptions étudiants
+
+### Import CSV (4)
+Templates CSV utilisateurs et maquette · Import masse utilisateurs · Import maquette pédagogique
+
+### Sujets et Copies (13)
+Upload sujets (PDF/DOCX/OCR) · Correction IA · Batch ZIP · Export PDF · Statistiques
+
+### Examens en ligne (29)
+Cycle de vie complet · Banque de questions · Résultats · Export CSV/ZIP/QR
+
+### Surveillance — Surveillant (15)
+Monitoring temps réel · Avertissements · Bannissements · Messagerie bidirectionnelle
+
+### Proctoring LiveKit (12)
+Tokens flux vidéo · Snapshots caméra · Appel privé surveillant-étudiant · Enregistrements
+
+### Agent autonome (4)
+Heartbeat · Alertes push · Statut · Lecture alertes
+
+### IA (3)
+Génération sujets · Suggestions · Analyse domaine
+
+### Réclamations (7)
+Dépôt · Analyse IA · Décision prof · Historique corrections
+
+### Relevés de notes (5)
+Génération PDF · Téléchargement · Bilan semestriel · Validation LMD
+
+### Tableaux de bord (9)
+Dashboard admin · Dashboard prof · Dashboard étudiant · Analytics · Calendrier
+
+---
+
+## Lancer en développement
 
 ```bash
-python scripts/generate_paseto_keys.py
-# Copier PASETO_PRIVATE_KEY et PASETO_PUBLIC_KEY dans .env
-# Ne jamais commiter la clé privée dans git
-```
-
-### Démarrage
-
-```bash
-# Développement
+cd /root/cei-api-v2
+source /root/cei-unchk.sn/.venv/bin/activate
 python app.py
+```
 
-# Production (Gunicorn)
-gunicorn --config gunicorn.conf.py app:app
+## Lancer en production
 
-# Systemd
+```bash
 systemctl start cei-api-v2
 systemctl status cei-api-v2
+journalctl -u cei-api-v2 -f
 ```
 
----
-
-## Accès Swagger UI
-
-```
-URL    : http://62.171.190.6:8100/api/docs
-Login  : DOCS_USER / DOCS_PASS (définis dans .env)
-Format : OpenAPI 3.0 — spec brute sur /api/docs/openapi.json
-```
-
-Le Swagger UI permet de tester toutes les routes directement depuis le navigateur.  
-Cliquer sur **Authorize** → saisir le Bearer token obtenu via `POST /api/auth/login`.
-
----
-
-## Exemple d'utilisation
-
-### 1. Login
+## Health check
 
 ```bash
-curl -s -c cookies.txt -X POST http://62.171.190.6:8100/api/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"email":"admin@cei.sn","password":"motdepasse"}'
+curl https://dev-cei.ddns.net/api/health
+# {"status":"ok","checks":{"database":"ok","redis":"ok"}}
 ```
-
-```json
-{
-  "success": true,
-  "access_token": "v4.public.eyJzdWIiOiIxIiwicm9sZS...",
-  "user": {"id": 1, "role": "admin", "email": "admin@cei.sn"}
-}
-```
-
-### 2. Requête authentifiée
-
-```bash
-TOKEN="v4.public.eyJzdWIiOiIx..."
-curl -H "Authorization: Bearer $TOKEN" http://62.171.190.6:8100/api/admin/dashboard
-```
-
-### 3. Rafraîchir le token
-
-```bash
-curl -s -b cookies.txt -c cookies.txt -X POST http://62.171.190.6:8100/api/auth/refresh
-```
-
-### 4. Déconnexion
-
-```bash
-curl -b cookies.txt -H "Authorization: Bearer $TOKEN" \
-  -X POST http://62.171.190.6:8100/api/auth/logout
-```
-
----
-
-## Prochaines étapes
-
-- [ ] Déploiement du frontend React (Vite + React Router + Zustand)
-- [ ] Configuration HTTPS (Let's Encrypt) avec nom de domaine
-- [ ] Redis pour le rate limiting et le cache tokens
-- [ ] Tests automatisés (pytest + httpx)
-- [ ] CI/CD GitHub Actions
-
----
-
-## Relation avec la plateforme existante
-
-Ce backend est une **image indépendante** de la plateforme `cei-unchk.sn` (port 7000).  
-Les deux coexistent sur le même serveur sans interférence.  
-La migration vers cette v2 se fera progressivement une fois le frontend React validé.
-
----
-
-*Développé pour l'UNCHK — Université Numérique Cheikh Hamidou Kane*

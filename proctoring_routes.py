@@ -251,6 +251,24 @@ def log_proctoring_event(attempt_id):
 
         session.commit()
 
+        # Alerte fraude si le score de risque vient de franchir 75
+        if event_type != 'session_end' and attempt.risk_score >= 75:
+            try:
+                from notif_bus import notify_exam
+                _student = attempt.student if hasattr(attempt, 'student') and attempt.student else None
+                _sname   = _student.full_name if _student else f'Étudiant #{attempt.student_id}'
+                notify_exam(
+                    attempt.exam_id,
+                    'high_risk',
+                    'Alerte fraude détectée',
+                    f'{_sname} — score risque : {attempt.risk_score}/100',
+                    priority='urgent',
+                    tags=['rotating_light'],
+                )
+            except Exception as _nb_err:
+                import logging as _lg
+                _lg.getLogger('cei.proctoring').warning('notif_bus risk error: %s', _nb_err)
+
         return jsonify({
             'success': True,
             'risk_score': attempt.risk_score,
@@ -275,23 +293,27 @@ def save_camera_snapshot(attempt_id):
         if not attempt or attempt.status != AttemptStatus.IN_PROGRESS:
             return jsonify({'error': 'Tentative non active'}), 400
 
-        data = request.get_json() or {}
-        image_data = data.get('image_data', '')
-        # Limiter la taille (JPEG 320×240 ≈ 15–30 Ko en base64)
-        if len(image_data) > 100_000:
-            image_data = image_data[:100_000]
+        data       = request.get_json() or {}
+        image_b64  = data.get('image_data', '')
+        exam_id    = attempt.exam_id
+
+        # Upload vers MinIO — stocker la clé S3 dans image_filename
+        # image_data reste NULL pour les nouvelles entrées (rétrocompat : anciens = base64)
+        from s3_client import upload_snapshot
+        s3_key = upload_snapshot(exam_id, attempt_id, image_b64) if image_b64 else None
 
         snap = CameraLog(
             attempt_id=attempt_id,
             event_type=data.get('event_type', 'periodic'),
-            image_data=image_data,
+            image_filename=s3_key,          # clé S3 (ex: snapshots/3/12/20260704T...)
+            image_data=None,                # NULL pour les nouvelles entrées
             face_detected=data.get('face_detected'),
             faces_count=data.get('faces_count'),
             confidence_score=data.get('confidence_score'),
         )
         session.add(snap)
         session.commit()
-        return jsonify({'success': True, 'snapshot_id': snap.id})
+        return jsonify({'success': True, 'snapshot_id': snap.id, 'stored': 's3' if s3_key else 'none'})
     finally:
         session.close()
 
@@ -448,6 +470,24 @@ def proctor_ban_student(attempt_id):
             session.add(notify_log)
 
         session.commit()
+
+        # Notification temps réel : Redis + ntfy
+        try:
+            student_obj = session.query(User).filter_by(id=attempt.student_id).first()
+            student_name = student_obj.full_name if student_obj else f'Étudiant #{attempt.student_id}'
+            from notif_bus import notify_exam
+            notify_exam(
+                attempt.exam_id,
+                'student_banned',
+                'Étudiant exclu',
+                f'{student_name} — motif : {reason}',
+                priority='urgent',
+                tags=['warning', 'skull'],
+            )
+        except Exception as _nb_err:
+            import logging as _lg
+            _lg.getLogger('cei.proctoring').warning('notif_bus ban error: %s', _nb_err)
+
         return jsonify({'success': True, 'message': f'Étudiant banni: {reason}'})
     finally:
         session.close()
@@ -1806,20 +1846,30 @@ def get_exam_recordings(exam_id):
             student_name = student.full_name if student else f'Étudiant #{attempt.student_id}'
             student_email = student.email if student else ''
 
-            # Récupérer les snapshots caméra (image_data = base64)
+            # Récupérer les snapshots caméra
             snapshots = session.query(CameraLog).filter_by(
                 attempt_id=attempt.id
             ).order_by(CameraLog.timestamp.asc()).all()
 
+            from s3_client import get_snapshot_url
             snaps_list = []
             for snap in snapshots:
+                # Nouvelles entrées : image_filename = clé S3
+                # Anciennes entrées : image_data = base64 (rétrocompat)
+                if snap.image_filename and snap.image_filename.startswith('snapshots/'):
+                    img = get_snapshot_url(snap.image_filename)
+                    img_type = 'url'
+                else:
+                    img = snap.image_data  # base64 legacy
+                    img_type = 'base64' if snap.image_data else 'none'
                 snaps_list.append({
-                    'id': snap.id,
-                    'timestamp': snap.timestamp.isoformat() if snap.timestamp else None,
-                    'event_type': snap.event_type or snap.violation_type,
-                    'image_data': snap.image_data,
+                    'id':           snap.id,
+                    'timestamp':    snap.timestamp.isoformat() if snap.timestamp else None,
+                    'event_type':   snap.event_type or snap.violation_type,
+                    'image_url':    img if img_type == 'url' else None,
+                    'image_data':   img if img_type == 'base64' else None,
                     'face_detected': snap.face_detected,
-                    'faces_count': snap.faces_count,
+                    'faces_count':  snap.faces_count,
                 })
 
             result.append({
@@ -2124,12 +2174,20 @@ def get_video_recordings(exam_id):
 
 import json as _json_mod
 import os as _os_mod
-import fcntl as _fcntl
 import logging as _logging
+import redis as _redis_alerts_lib
 
-_alerts_log = _logging.getLogger('cei.agent')
-_ALERTS_FILE = _os_mod.path.join(_os_mod.path.dirname(__file__), 'agent_alerts.json')
-_MAX_ALERTS  = 200  # nombre maximum d'alertes conservées en mémoire
+_alerts_log  = _logging.getLogger('cei.agent')
+_MAX_ALERTS  = 200                          # nb max d'alertes en Redis
+_ALERTS_KEY  = 'cei:agent:alerts'           # Redis List  — alertes JSON
+_READ_KEY    = 'cei:agent:alerts:read'      # Redis Set   — attempt_ids lus
+_REDIS_URL   = _os_mod.getenv('REDIS_URL', 'redis://127.0.0.1:6379/0')
+
+
+def _redis_alerts():
+    """Connexion Redis dédiée aux alertes agent (courte durée)."""
+    return _redis_alerts_lib.from_url(
+        _REDIS_URL, decode_responses=True, socket_connect_timeout=1)
 
 
 def _agent_auth():
@@ -2139,52 +2197,77 @@ def _agent_auth():
 
 
 def _load_alerts() -> list:
+    """Charge les alertes depuis Redis (List + Set des IDs lus)."""
     try:
-        if _os_mod.path.exists(_ALERTS_FILE):
-            with open(_ALERTS_FILE, 'r', encoding='utf-8') as f:
-                _fcntl.flock(f, _fcntl.LOCK_SH)
-                try:
-                    return _json_mod.load(f)
-                finally:
-                    _fcntl.flock(f, _fcntl.LOCK_UN)
-    except Exception:
-        pass
-    return []
-
-
-def _save_alerts(alerts: list):
-    try:
-        with open(_ALERTS_FILE, 'a+', encoding='utf-8') as f:
-            _fcntl.flock(f, _fcntl.LOCK_EX)
+        r = _redis_alerts()
+        raw      = r.lrange(_ALERTS_KEY, 0, -1)
+        read_ids = {int(x) for x in r.smembers(_READ_KEY) if x.isdigit()}
+        r.close()
+        alerts = []
+        for item in raw:
             try:
-                f.seek(0)
-                try:
-                    existing = _json_mod.load(f)
-                except Exception:
-                    existing = []
-                merged = (existing + [a for a in alerts if a not in existing])[-_MAX_ALERTS:]
-                f.seek(0)
-                f.truncate()
-                _json_mod.dump(merged, f, ensure_ascii=False)
-            finally:
-                _fcntl.flock(f, _fcntl.LOCK_UN)
-    except Exception as e:
-        _alerts_log.warning('Sauvegarde alertes échouée : %s', e)
+                a = _json_mod.loads(item)
+                a['read'] = a.get('attempt_id') in read_ids
+                alerts.append(a)
+            except Exception:
+                pass
+        return alerts
+    except Exception as exc:
+        _alerts_log.warning('Redis load alerts failed: %s', exc)
+        return []
+
+
+def _push_alert(alert: dict) -> None:
+    """Pousse une alerte dans la List Redis (max _MAX_ALERTS entrées)."""
+    try:
+        r = _redis_alerts()
+        r.lpush(_ALERTS_KEY, _json_mod.dumps(alert, ensure_ascii=False))
+        r.ltrim(_ALERTS_KEY, 0, _MAX_ALERTS - 1)
+        r.close()
+    except Exception as exc:
+        _alerts_log.warning('Redis push alert failed: %s', exc)
+
+
+def _mark_read(attempt_ids: set) -> None:
+    """Marque des attempt_ids comme lus dans le Set Redis."""
+    if not attempt_ids:
+        return
+    try:
+        r = _redis_alerts()
+        r.sadd(_READ_KEY, *[str(aid) for aid in attempt_ids])
+        r.close()
+    except Exception as exc:
+        _alerts_log.warning('Redis mark read failed: %s', exc)
 
 
 @proctoring_bp.route('/api/agent/alerts', methods=['POST'])
 def agent_push_alert():
-    """L'agent autonome pousse une nouvelle alerte."""
+    """L'agent autonome pousse une nouvelle alerte (stockée dans Redis)."""
     if not _agent_auth():
         return jsonify({'error': 'Non autorisé'}), 403
     data = request.get_json(silent=True) or {}
     if not data.get('attempt_id') or not data.get('student_name'):
         return jsonify({'error': 'Données incomplètes'}), 400
-    alerts = _load_alerts()
     data['read'] = False
-    alerts.append(data)
-    _save_alerts(alerts)
-    return jsonify({'success': True, 'total': len(alerts)})
+    _push_alert(data)
+
+    # Notification temps réel vers le dashboard du surveillant
+    try:
+        exam_id = data.get('exam_id')
+        if exam_id:
+            from notif_bus import notify_exam
+            notify_exam(
+                int(exam_id),
+                'agent_alert',
+                'Alerte agent autonome',
+                f"{data['student_name']} — {data.get('alert_type', 'anomalie détectée')}",
+                priority='urgent',
+                tags=['rotating_light'],
+            )
+    except Exception as _ne:
+        _alerts_log.warning('notif_bus agent_alert: %s', _ne)
+
+    return jsonify({'success': True})
 
 
 @proctoring_bp.route('/api/agent/alerts', methods=['GET'])
@@ -2219,13 +2302,10 @@ def agent_get_alerts():
         finally:
             session.close()
         if stale_ids:
-            changed = False
+            _mark_read(stale_ids)
             for a in alerts:
-                if not a.get('read') and a.get('attempt_id') in stale_ids:
+                if a.get('attempt_id') in stale_ids:
                     a['read'] = True
-                    changed = True
-            if changed:
-                _save_alerts(alerts)
 
     unread = [a for a in alerts if not a.get('read')]
     return jsonify({'alerts': unread[-50:], 'total_unread': len(unread)})
@@ -2234,17 +2314,13 @@ def agent_get_alerts():
 @proctoring_bp.route('/api/agent/alerts/read', methods=['POST'])
 @paseto_required
 def agent_mark_read():
-    """Marque des alertes comme lues."""
+    """Marque des alertes comme lues (stocké dans Redis Set)."""
     role = get_current_user_role()
     if role not in ['professor', 'admin', 'surveillant']:
         return jsonify({'error': 'Accès non autorisé'}), 403
     data = request.get_json(silent=True) or {}
-    ids = set(data.get('attempt_ids', []))
-    alerts = _load_alerts()
-    for a in alerts:
-        if a.get('attempt_id') in ids:
-            a['read'] = True
-    _save_alerts(alerts)
+    ids  = set(data.get('attempt_ids', []))
+    _mark_read(ids)
     return jsonify({'success': True})
 
 

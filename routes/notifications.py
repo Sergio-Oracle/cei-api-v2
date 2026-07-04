@@ -3,7 +3,9 @@ Blueprint Notifications.
 
 GET  /api/notifications          — corrections récentes (étudiant)
 PUT  /api/notifications/mark-read — marquer toutes comme lues
+GET  /api/notifications/poll     — long-polling Redis Pub/Sub (max 25 s)
 """
+import os, json, time, logging
 from datetime import datetime, timezone
 from flask import Blueprint, jsonify
 from auth_paseto import paseto_required, get_current_user_id
@@ -12,6 +14,10 @@ from models      import (
     get_session, User, UserRole,
     StudentPaper, ExamAttempt,
 )
+import redis as _redis_lib
+
+_log       = logging.getLogger('cei.notifications')
+_REDIS_URL = os.getenv('REDIS_URL', 'redis://127.0.0.1:6379/0')
 
 notifications_bp = Blueprint('notifications', __name__)
 
@@ -106,3 +112,56 @@ def mark_notifications_read():
         return jsonify({'error': str(e)}), 500
     finally:
         session.close()
+
+
+@notifications_bp.route('/api/notifications/poll', methods=['GET'])
+@paseto_required
+def notification_poll():
+    """
+    Long-polling Redis Pub/Sub — attend au plus 25 s un événement.
+
+    Le client doit se reconnecter immédiatement après chaque réponse
+    (event reçu ou timeout 204). Chaque connexion occupe un thread
+    Gunicorn gthread pendant max 25 s puis le libère.
+
+    Retours :
+      200 { has_event: true,  event: { type, title, message } }
+      204 (corps vide)  — timeout sans événement, le client se reconnecte
+    """
+    user_id = get_current_user_id()
+    channel = f'cei:notif:user:{user_id}'
+    r = pubsub = None
+    try:
+        r = _redis_lib.from_url(
+            _REDIS_URL,
+            decode_responses=True,
+            socket_connect_timeout=2,
+            socket_timeout=2,
+        )
+        pubsub = r.pubsub()
+        pubsub.subscribe(channel)
+
+        # Consommer le message de confirmation d'abonnement
+        pubsub.get_message(timeout=0.1)
+
+        deadline = time.monotonic() + 25.0
+        while time.monotonic() < deadline:
+            msg = pubsub.get_message(timeout=1.0)
+            if msg and msg['type'] == 'message':
+                data = json.loads(msg['data'])
+                return jsonify({'has_event': True, 'event': data})
+
+        return jsonify({'has_event': False}), 204
+
+    except Exception as exc:
+        _log.warning('notification_poll error user=%s: %s', user_id, exc)
+        return jsonify({'has_event': False}), 204
+    finally:
+        try:
+            if pubsub:
+                pubsub.unsubscribe(channel)
+                pubsub.close()
+            if r:
+                r.close()
+        except Exception:
+            pass

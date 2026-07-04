@@ -12,7 +12,55 @@ Production : `https://dev-cei.ddns.net` · Swagger UI : `https://dev-cei.ddns.ne
 
 ---
 
-## Mises à jour — 04/07/2026
+## Mises à jour — 04/07/2026 (session 2 — scalabilité H-scale + notifications)
+
+### Système de notifications temps réel
+
+| Fichier | Rôle |
+|---------|------|
+| `ntfy_client.py` *(nouveau)* | Thread daemon non-bloquant — pousse vers ntfy (push mobile / hors navigateur) |
+| `notif_bus.py` *(nouveau)* | Bus combiné : Redis Pub/Sub + ntfy en 2 threads parallèles |
+| `routes/notifications.py` | Nouveau endpoint `GET /api/notifications/poll` — long-polling Redis 25 s |
+| `proctoring_routes.py` | `notify_exam()` après ban étudiant + après risk_score ≥ 75 |
+| `routes/exams.py` | `notify_user()` après correction IA terminée |
+
+**Architecture** :
+```
+Événement CEI → notif_bus.py
+  ├── Redis Pub/Sub → /api/notifications/poll → badge Header navigateur (< 1 s)
+  └── ntfy server  → useNtfy (SSE) → dashboard surveillant / app mobile
+```
+
+### Scalabilité horizontale — alertes agent
+
+| Fichier | Migration |
+|---------|-----------|
+| `proctoring_routes.py` | `agent_alerts.json` + `fcntl.flock()` → **Redis List** `cei:agent:alerts` (LPUSH/LTRIM) + **Redis Set** `cei:agent:alerts:read` |
+
+Les alertes de l'agent de proctoring autonome sont désormais stockées dans Redis partagé entre tous les workers Gunicorn. Plus de fichier JSON local — le système est prêt pour la scalabilité multi-serveur.
+
+### Scalabilité horizontale — snapshots caméra
+
+| Fichier | Migration |
+|---------|-----------|
+| `s3_client.py` *(nouveau)* | Client boto3 singleton — upload MinIO, URLs pré-signées 1 h |
+| `proctoring_routes.py` | `CameraLog.image_data` (TEXT base64 PostgreSQL) → **MinIO** bucket `cei-snapshots` |
+| `models.py` | `CameraLog.to_dict()` retourne `image_url` (URL pré-signée) au lieu de `image_data` |
+
+Format clé S3 : `snapshots/{exam_id}/{attempt_id}/{timestamp}.jpg`
+Rétrocompat : anciennes entrées avec `image_data` base64 restent accessibles.
+
+### Variables d'environnement ajoutées
+
+```env
+S3_SNAPSHOTS_BUCKET=cei-snapshots   # bucket MinIO dédié aux snapshots caméra
+NTFY_URL=                           # URL ntfy (vide = désactivé)
+NTFY_TOKEN=                         # Token admin ntfy
+```
+
+---
+
+## Mises à jour — 04/07/2026 (session 1 — audit sécurité + correctifs)
 
 ### Correctifs sécurité critiques
 

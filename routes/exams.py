@@ -986,6 +986,20 @@ RAPPEL: Tu DOIS finir par "Note totale: XX.XX/20" """
         session.commit()
         print(f"✅ Auto-correction {attempt_id} terminée : {score}/20")
 
+        # Notification temps réel étudiant : Redis + ntfy
+        try:
+            from notif_bus import notify_user
+            notify_user(
+                attempt.student_id,
+                'correction_done',
+                'Copie corrigée',
+                f'Note : {score:.2f}/20 — {exam.title}',
+                priority='high',
+                tags=['white_check_mark'],
+            )
+        except Exception as _nb_err:
+            print(f"⚠️  notif_bus auto-correction : {_nb_err}")
+
         # Email à l'étudiant
         try:
             if attempt.student.email and '@temp.edu' not in attempt.student.email:

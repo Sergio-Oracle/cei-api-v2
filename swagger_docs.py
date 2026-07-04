@@ -1286,18 +1286,32 @@ OPENAPI_SPEC = {
         "/api/exam_attempts/{attempt_id}/camera_snapshot": {"post": {
             "tags": ["Proctoring"],
             "summary": "Envoyer un snapshot caméra (face_detector.js)",
-            "description": "Enregistre une photo horodatée de la caméra étudiant avec le résultat de la détection de visage.",
+            "description": (
+                "Enregistre une photo horodatée de la caméra étudiant avec le résultat de la détection de visage.\n\n"
+                "**Stockage** : l'image est uploadée vers MinIO (`S3_SNAPSHOTS_BUCKET=cei-snapshots`) "
+                "sous la clé `snapshots/{exam_id}/{attempt_id}/{timestamp}.jpg`. "
+                "La colonne `image_data` (base64 PostgreSQL) n'est plus utilisée pour les nouvelles entrées.\n\n"
+                "**Réponse** : `stored: 's3'` si l'upload a réussi, `'none'` si `image_data` était absent."
+            ),
             "parameters": [{"name": "attempt_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
             "requestBody": {"required": True, "content": {"application/json": {"schema": {
                 "type": "object",
                 "properties": {
-                    "image_data":    {"type": "string", "description": "Image base64 (optionnel)"},
+                    "image_data":    {"type": "string", "description": "Image base64 JPEG (data:image/jpeg;base64,... ou brut). Uploadée vers MinIO."},
+                    "event_type":    {"type": "string", "enum": ["periodic", "face_missing", "multiple_faces"], "description": "Type d'événement"},
                     "face_detected": {"type": "boolean"},
-                    "face_count":    {"type": "integer"},
-                    "confidence":    {"type": "number"}
+                    "faces_count":   {"type": "integer"},
+                    "confidence_score": {"type": "number"}
                 }
             }}}},
-            "responses": {"200": {"description": "Snapshot enregistré"}}
+            "responses": {"200": {"description": "Snapshot enregistré", "content": {"application/json": {"schema": {
+                "type": "object",
+                "properties": {
+                    "success":     {"type": "boolean"},
+                    "snapshot_id": {"type": "integer"},
+                    "stored":      {"type": "string", "enum": ["s3", "none"], "description": "Destination du stockage"}
+                }
+            }}}}}
         }},
         "/api/exam_attempts/{attempt_id}/risk_status": {"get": {
             "tags": ["Surveillant"], "summary": "Score de risque et statut de bannissement (surveillant/prof)",
@@ -1659,7 +1673,14 @@ OPENAPI_SPEC = {
             },
             "get": {
                 "tags": ["Agent autonome"], "summary": "Alertes non lues (dashboard surveillant/prof)",
-                "description": "Retourne les 50 dernières alertes non lues. Appelé par le dashboard toutes les 15 secondes. Requiert un JWT (rôle admin/prof/surveillant).",
+                "description": (
+                    "Retourne les 50 dernières alertes non lues. Requiert un JWT (rôle admin/prof/surveillant).\n\n"
+                    "**Stockage** : Les alertes sont persistées dans une **Redis List** (`cei:agent:alerts`) "
+                    "avec un maximum de 200 entrées. Les attempt_ids lus sont conservés dans un **Redis Set** "
+                    "(`cei:agent:alerts:read`). Plus de fichier `agent_alerts.json` — stockage multi-serveur prêt.\n\n"
+                    "**Push temps réel** : à chaque nouvelle alerte, le bus `notif_bus.py` publie sur "
+                    "`cei:notif:exam:{id}` (long-polling navigateur) ET sur ntfy topic `exam-{id}` (push mobile)."
+                ),
                 "responses": {"200": {"description": "Alertes", "content": {"application/json": {"schema": {
                     "type": "object",
                     "properties": {

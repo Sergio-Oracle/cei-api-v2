@@ -23,7 +23,8 @@ from models import (
     Subject, StudentPaper, Reclamation, CorrectionHistory,
     Formation, ECAssignment, StudentUEEnrollment,
     GradeTranscript, ExamAttempt, ExamActivityLog, CameraLog,
-    ProctorAssignment, ReclamationStatus,
+    ProctorAssignment, ReclamationStatus, TokenBlocklist,
+    OnlineExam, ExamProctor, QuestionBank,
 )
 from utils import send_account_created_email
 
@@ -162,15 +163,14 @@ def get_all_users():
 @admin_users_bp.route('/api/admin/users', methods=['POST'])
 @paseto_required
 def create_user():
+    session = get_session()
     try:
-        session = get_session()
         if not _require_admin(session):
             return jsonify({'error': 'Accès non autorisé'}), 403
 
-        data     = request.json or {}
+        data     = request.get_json(silent=True) or {}
         existing = session.query(User).filter_by(email=data.get('email', '')).first()
         if existing:
-            session.close()
             labels = {'professor': 'un enseignant', 'student': 'un étudiant',
                       'admin': 'un administrateur', 'surveillant': 'un surveillant'}
             label = labels.get(existing.role.value, 'un utilisateur')
@@ -178,7 +178,6 @@ def create_user():
 
         role_str = data.get('role', 'student').upper()
         if role_str not in ['STUDENT', 'PROFESSOR', 'ADMIN', 'SURVEILLANT']:
-            session.close()
             return jsonify({'error': 'Rôle invalide'}), 400
 
         niveau_val = (data.get('niveau') or '').strip().upper() or None
@@ -193,7 +192,7 @@ def create_user():
             niveau=niveau_val,
         )
         session.add(new_user); session.commit()
-        user_dict = new_user.to_dict(); session.close()
+        user_dict = new_user.to_dict()
 
         try:
             send_account_created_email(data['email'], data['full_name'],
@@ -204,29 +203,31 @@ def create_user():
         return jsonify({'success': True, 'message': 'Utilisateur créé avec succès', 'user': user_dict}), 201
     except Exception as e:
         print(f"ERROR create_user: {e}")
+        import traceback; traceback.print_exc()
+        session.rollback()
         return jsonify({'error': str(e)}), 500
+    finally:
+        session.close()
 
 
 # ── Modifier un utilisateur ───────────────────────────────────────────────────
 @admin_users_bp.route('/api/admin/users/<int:target_id>', methods=['PUT'])
 @paseto_required
 def update_user(target_id):
+    session = get_session()
     try:
-        session = get_session()
         if not _require_admin(session):
             return jsonify({'error': 'Accès non autorisé'}), 403
 
         user = session.query(User).filter_by(id=target_id).first()
         if not user:
-            session.close()
             return jsonify({'error': 'Utilisateur non trouvé'}), 404
 
-        data = request.json or {}
+        data = request.get_json(silent=True) or {}
         if 'full_name' in data:
             user.full_name = data['full_name']
         if 'email' in data and data['email'] != user.email:
             if session.query(User).filter_by(email=data['email']).first():
-                session.close()
                 return jsonify({'error': 'Cet email est déjà utilisé'}), 400
             user.email = data['email']
         if data.get('password'):
@@ -242,11 +243,15 @@ def update_user(target_id):
             user.niveau = nv if nv in ['L1', 'L2', 'L3', 'M1', 'M2'] else None
 
         session.commit()
-        user_dict = user.to_dict(); session.close()
+        user_dict = user.to_dict()
         return jsonify({'success': True, 'message': 'Utilisateur modifié avec succès', 'user': user_dict})
     except Exception as e:
         print(f"ERROR update_user: {e}")
+        import traceback; traceback.print_exc()
+        session.rollback()
         return jsonify({'error': str(e)}), 500
+    finally:
+        session.close()
 
 
 # ── Supprimer un utilisateur ──────────────────────────────────────────────────
@@ -267,6 +272,41 @@ def delete_user(target_id):
             session.close()
             return jsonify({'error': 'Utilisateur non trouvé'}), 404
 
+        # ── Dépendances bloquantes ───────────────────────────────────────────
+        # Ces relations ne peuvent être ni supprimées (perte d'audit/de contenu),
+        # ni mises à NULL (colonne NOT NULL) sans casser l'intégrité des données.
+        # On bloque la suppression avec un message clair plutôt que de laisser
+        # PostgreSQL renvoyer une ForeignKeyViolation brute (500 opaque).
+        blocking = []
+        n = session.query(OnlineExam).filter_by(created_by_id=target_id).count()
+        if n:
+            blocking.append(f"{n} examen(s) créé(s)")
+        n = session.query(QuestionBank).filter_by(created_by_id=target_id).count()
+        if n:
+            blocking.append(f"{n} question(s) de banque créée(s)")
+        n = session.query(ExamProctor).filter(or_(
+            ExamProctor.proctor_id == target_id, ExamProctor.assigned_by_id == target_id
+        )).count()
+        if n:
+            blocking.append(f"{n} affectation(s) de surveillance")
+        n = session.query(CorrectionHistory).filter_by(corrector_id=target_id).count()
+        if n:
+            blocking.append(f"{n} correction(s) effectuée(s) (historique)")
+        if blocking:
+            session.close()
+            return jsonify({'error': 'Suppression impossible : ' + ', '.join(blocking) +
+                             ". Réaffectez ou archivez ces éléments avant de supprimer ce compte."}), 409
+
+        # ── Bookkeeping sans valeur d'audit — supprimable/annulable sans risque ─
+        session.query(TokenBlocklist).filter_by(user_id=target_id).delete(synchronize_session=False)
+        session.query(ExamAttempt).filter_by(corrected_by_id=target_id).update(
+            {'corrected_by_id': None}, synchronize_session=False)
+        session.query(GradeTranscript).filter_by(generated_by_id=target_id).update(
+            {'generated_by_id': None}, synchronize_session=False)
+        session.query(ProctorAssignment).filter(or_(
+            ProctorAssignment.proctor_id == target_id, ProctorAssignment.student_id == target_id
+        )).delete(synchronize_session=False)
+
         # Copies de l'étudiant → dépendances en cascade
         paper_ids = [p.id for p in session.query(StudentPaper).filter_by(student_id=target_id).all()]
         if paper_ids:
@@ -282,8 +322,6 @@ def delete_user(target_id):
 
         for r in session.query(Reclamation).filter_by(responded_by_id=target_id).all():
             r.responded_by_id = None
-        for h in session.query(CorrectionHistory).filter_by(corrector_id=target_id).all():
-            h.corrector_id = None
 
         session.query(StudentPaper).filter_by(student_id=target_id).delete()
         for p in session.query(StudentPaper).filter_by(corrected_by_id=target_id).all():

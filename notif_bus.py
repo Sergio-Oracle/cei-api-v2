@@ -79,3 +79,36 @@ def notify_exam(
     payload = {'type': event_type, 'title': title, 'message': message}
     Thread(target=_redis_publish, args=(f'cei:notif:exam:{exam_id}', payload), daemon=True).start()
     _ntfy_push(f'exam-{exam_id}', title, message, priority, tags)
+
+
+def _publish_to_admins(payload: dict) -> None:
+    """Publie sur le canal Redis individuel de chaque administrateur (pour le long-poll)."""
+    try:
+        from models import get_session, User, UserRole
+        session = get_session()
+        try:
+            admin_ids = [u.id for u in session.query(User).filter_by(role=UserRole.ADMIN).all()]
+        finally:
+            session.close()
+        r = _get_redis()
+        for admin_id in admin_ids:
+            r.publish(f'cei:notif:user:{admin_id}', json.dumps(payload))
+    except Exception as exc:
+        _log.warning('notify_admins redis publish failed: %s', exc)
+
+
+def notify_admins(
+    event_type: str,
+    title: str,
+    message: str,
+    priority: str = 'default',
+    tags: list[str] | None = None,
+) -> None:
+    """
+    Notifie tous les administrateurs (alertes infra : panne MinIO, etc.).
+    Canal Redis : cei:notif:user:{admin_id} (un par admin, pour le badge Header)
+    Topic ntfy  : admin-alerts
+    """
+    payload = {'type': event_type, 'title': title, 'message': message}
+    Thread(target=_publish_to_admins, args=(payload,), daemon=True).start()
+    _ntfy_push('admin-alerts', title, message, priority, tags)

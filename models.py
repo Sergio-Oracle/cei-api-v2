@@ -717,7 +717,10 @@ class CameraLog(Base):
 
     def to_dict(self):
         from s3_client import get_snapshot_url
-        if self.image_filename and self.image_filename.startswith('snapshots/'):
+        if self.image_filename and (
+            self.image_filename.startswith('snapshots/') or self.image_filename.startswith('local:')
+        ):
+            # 'snapshots/...' = MinIO (URL pré-signée) ; 'local:...' = fallback disque (route locale)
             image_url  = get_snapshot_url(self.image_filename)
             image_data = None
         else:

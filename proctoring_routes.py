@@ -313,7 +313,13 @@ def save_camera_snapshot(attempt_id):
         )
         session.add(snap)
         session.commit()
-        return jsonify({'success': True, 'snapshot_id': snap.id, 'stored': 's3' if s3_key else 'none'})
+        if s3_key and s3_key.startswith('local:'):
+            stored = 'local_fallback'
+        elif s3_key:
+            stored = 's3'
+        else:
+            stored = 'none'
+        return jsonify({'success': True, 'snapshot_id': snap.id, 'stored': stored})
     finally:
         session.close()
 
@@ -1856,7 +1862,9 @@ def get_exam_recordings(exam_id):
             for snap in snapshots:
                 # Nouvelles entrées : image_filename = clé S3
                 # Anciennes entrées : image_data = base64 (rétrocompat)
-                if snap.image_filename and snap.image_filename.startswith('snapshots/'):
+                if snap.image_filename and (
+                    snap.image_filename.startswith('snapshots/') or snap.image_filename.startswith('local:')
+                ):
                     img = get_snapshot_url(snap.image_filename)
                     img_type = 'url'
                 else:
@@ -1891,6 +1899,60 @@ def get_exam_recordings(exam_id):
         import traceback
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500
+
+
+# ============================================================================
+# SNAPSHOT CAMÉRA — FALLBACK DISQUE LOCAL (si MinIO indisponible)
+# ============================================================================
+
+import re as _re
+from flask import send_file as _send_file
+
+_LOCAL_SNAP_RE = _re.compile(r'^snapshots_fallback/(\d+)/(\d+)/(\d{8}T\d{6})\.jpg$')
+
+
+@proctoring_bp.route('/api/proctoring/snapshot_local/<path:key>', methods=['GET'])
+@paseto_required
+def get_local_snapshot(key):
+    """
+    Sert un snapshot caméra stocké en fallback local (MinIO était indisponible
+    au moment de la capture). Clé attendue : snapshots_fallback/{exam_id}/{attempt_id}/{ts}.jpg
+    """
+    match = _LOCAL_SNAP_RE.match(key)
+    if not match:
+        return jsonify({'error': 'Clé de snapshot invalide'}), 400
+    exam_id, attempt_id = int(match.group(1)), int(match.group(2))
+
+    user_id = get_current_user_id()
+    role = get_current_user_role()
+    session = get_session()
+    try:
+        if role not in ['professor', 'admin', 'surveillant']:
+            return jsonify({'error': 'Accès réservé aux enseignants et surveillants'}), 403
+
+        exam = session.query(OnlineExam).filter_by(id=exam_id).first()
+        if not exam:
+            return jsonify({'error': 'Examen non trouvé'}), 404
+
+        if role == 'professor' and exam.created_by_id != user_id:
+            return jsonify({'error': 'Accès non autorisé'}), 403
+
+        if role == 'surveillant':
+            assigned = session.query(ExamProctor).filter_by(exam_id=exam_id, proctor_id=user_id).first()
+            if not assigned:
+                return jsonify({'error': "Vous n'êtes pas affecté à cet examen"}), 403
+
+        attempt = session.query(ExamAttempt).filter_by(id=attempt_id, exam_id=exam_id).first()
+        if not attempt:
+            return jsonify({'error': 'Tentative non trouvée'}), 404
+    finally:
+        session.close()
+
+    from s3_client import _UPLOAD_FOLDER
+    abs_path = os.path.join(_UPLOAD_FOLDER, key)
+    if not os.path.isfile(abs_path):
+        return jsonify({'error': 'Fichier introuvable'}), 404
+    return _send_file(abs_path, mimetype='image/jpeg')
 
 
 # ============================================================================

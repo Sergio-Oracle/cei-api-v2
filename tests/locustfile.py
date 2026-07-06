@@ -3,15 +3,16 @@ TESTS DE CHARGE — Locust — CEI API v2
 Simule des scénarios réels : admin, professeur, surveillant, étudiant en parallèle.
 
 Lancement :
-    locust -f tests/locustfile.py --host=http://62.171.190.6:8100 \
+    locust -f tests/locustfile.py --host=https://dev-cei.ddns.net \
            --headless -u 100 -r 10 --run-time 2m --html tests/reports/load_report.html
 """
 import json
+import os
 import random
 from locust import HttpUser, task, between, events
 from locust.env import Environment
 
-BASE = "http://62.171.190.6:8100"
+BASE = os.getenv("TEST_BASE_URL", "https://dev-cei.ddns.net")
 EXAM_ID = 4
 
 

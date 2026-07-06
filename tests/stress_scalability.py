@@ -18,7 +18,7 @@ from colorama import Fore, Style, init
 
 init(autoreset=True)
 
-BASE_URL = os.getenv("TEST_BASE_URL", "http://62.171.190.6:8100")
+BASE_URL = os.getenv("TEST_BASE_URL", "https://dev-cei.ddns.net")
 EXAM_ID  = 4
 TIMEOUT  = 15
 

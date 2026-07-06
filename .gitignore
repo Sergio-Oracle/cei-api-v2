@@ -21,6 +21,9 @@ __pycache__/
 static/uploads/
 static/snapshots/
 
+# Exports générés (relevés PDF, etc. — non versionnés)
+exports/
+
 # Base de données locale
 *.db
 *.sqlite

@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # ─── Configuration ────────────────────────────────────────────────────────────
 
-BASE_URL = os.getenv("TEST_BASE_URL", "http://62.171.190.6:8100")
+BASE_URL = os.getenv("TEST_BASE_URL", "https://dev-cei.ddns.net")
 TIMEOUT  = float(os.getenv("TEST_TIMEOUT", "30"))
 
 # Credentials de test (existent déjà en base)
@@ -80,3 +80,15 @@ def assert_json(response):
     assert "application/json" in response.headers.get("content-type", ""), \
         f"Réponse non-JSON: {response.headers.get('content-type')}"
     return response.json()
+
+
+
+
+
+
+
+
+
+
+
+

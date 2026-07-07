@@ -183,6 +183,8 @@ def create_user():
         niveau_val = (data.get('niveau') or '').strip().upper() or None
         if niveau_val and niveau_val not in ['L1', 'L2', 'L3', 'M1', 'M2']:
             niveau_val = None
+        if role_str != 'STUDENT':
+            niveau_val = None  # le niveau (L1..M2) n'a de sens que pour un étudiant
 
         new_user = User(
             email=data['email'],
@@ -240,7 +242,10 @@ def update_user(target_id):
             user.is_active = bool(data['is_active'])
         if 'niveau' in data:
             nv = (data['niveau'] or '').strip().upper() or None
-            user.niveau = nv if nv in ['L1', 'L2', 'L3', 'M1', 'M2'] else None
+            nv = nv if nv in ['L1', 'L2', 'L3', 'M1', 'M2'] else None
+            user.niveau = nv if user.role == UserRole.STUDENT else None
+        elif user.role != UserRole.STUDENT and user.niveau is not None:
+            user.niveau = None  # rôle changé vers non-étudiant : nettoyer un niveau résiduel
 
         session.commit()
         user_dict = user.to_dict()

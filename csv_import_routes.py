@@ -2,6 +2,7 @@
 from flask import jsonify, request, send_file
 from auth_paseto import paseto_required, get_current_user_id
 from flask_bcrypt import Bcrypt
+from threading import Thread
 import pandas as pd
 import io
 import chardet
@@ -225,7 +226,7 @@ def register_csv_routes(app):
 
             created_users = []
             errors = []
-            email_sent_count = 0
+            email_queued_count = 0
 
             for idx, row in df.iterrows():
                 try:
@@ -254,19 +255,19 @@ def register_csv_routes(app):
                     session.add(new_user)
                     session.flush()
 
-                    # Envoyer email (NON BLOQUANT)
+                    # Envoyer email en tâche de fond — un import de N lignes ne doit
+                    # pas attendre N × jusqu'à 30s de SMTP avant de répondre.
                     try:
-                        email_sent = send_account_created_email(
+                        Thread(target=send_account_created_email, kwargs=dict(
                             user_email=row['email'],
                             user_name=row['full_name'],
                             role=row['role'].lower(),
                             temp_password=row['password']
-                        )
-                        if email_sent:
-                            email_sent_count += 1
+                        ), daemon=True).start()
+                        email_queued_count += 1
                     except Exception as email_error:
-                        print(f"⚠️ Erreur envoi email à {row['email']}: {email_error}")
-                        # Ne pas bloquer l'import si email échoue
+                        print(f"⚠️ Erreur mise en file email à {row['email']}: {email_error}")
+                        # Ne pas bloquer l'import si la mise en file échoue
 
                     created_users.append({
                         'full_name': str(row['full_name']).strip(),
@@ -284,7 +285,7 @@ def register_csv_routes(app):
                 'success': True,
                 'created': len(created_users),
                 'errors': len(errors),
-                'emails_sent': email_sent_count,
+                'emails_queued': email_queued_count,
                 'users': created_users,
                 'error_details': errors
             })

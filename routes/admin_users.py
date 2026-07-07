@@ -14,6 +14,7 @@ Routes migrées depuis app.py :
 """
 from flask import Blueprint, request, jsonify
 from sqlalchemy import or_
+from threading import Thread
 
 from extensions import bcrypt
 from auth_paseto import paseto_required, get_current_user_id, get_current_user_role
@@ -197,8 +198,11 @@ def create_user():
         user_dict = new_user.to_dict()
 
         try:
-            send_account_created_email(data['email'], data['full_name'],
-                                       data.get('role', 'student'), data['password'])
+            # Envoi en tâche de fond — l'email de bienvenue (SMTP jusqu'à 2×15s de
+            # timeout) ne doit jamais faire attendre l'admin qui crée le compte.
+            Thread(target=send_account_created_email, args=(
+                data['email'], data['full_name'], data.get('role', 'student'), data['password']
+            ), daemon=True).start()
         except Exception as e:
             print(f"WARNING email: {e}")
 

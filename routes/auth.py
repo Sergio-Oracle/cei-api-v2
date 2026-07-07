@@ -8,6 +8,7 @@ Migré depuis app.py — logique identique, zéro regression.
 """
 from flask import Blueprint, request, jsonify, make_response
 from datetime import datetime, timedelta, timezone
+from threading import Thread
 import os
 
 from extensions import bcrypt, limiter
@@ -32,11 +33,10 @@ auth_bp = Blueprint('auth', __name__)
 @auth_bp.route('/api/auth/register', methods=['POST'])
 @limiter.limit("10 per hour")
 def register():
+    session = get_session()
     try:
-        data    = request.json or {}
-        session = get_session()
+        data = request.get_json(silent=True) or {}
         if session.query(User).filter_by(email=data.get('email', '')).first():
-            session.close()
             return jsonify({'error': 'Cet email est déjà utilisé'}), 400
 
         hashed = bcrypt.generate_password_hash(data['password']).decode('utf-8')
@@ -45,11 +45,15 @@ def register():
             full_name=data['full_name'], role=UserRole.STUDENT,
         )
         session.add(user); session.commit()
-        user_dict = user.to_dict(); session.close()
-        send_account_created_email(data['email'], data['full_name'], 'student')
+        user_dict = user.to_dict()
+        # Envoi en tâche de fond — ne doit pas faire attendre l'étudiant qui s'inscrit.
+        Thread(target=send_account_created_email, args=(data['email'], data['full_name'], 'student'), daemon=True).start()
         return jsonify({'success': True, 'message': 'Inscription réussie', 'user': user_dict}), 201
     except Exception as e:
+        session.rollback()
         return jsonify({'error': str(e)}), 500
+    finally:
+        session.close()
 
 
 # ── Connexion ─────────────────────────────────────────────────────────────────

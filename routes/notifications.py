@@ -45,7 +45,7 @@ def get_notifications():
                 'type':         'online_exam',
                 'title':        exam.title if exam else 'Examen en ligne',
                 'message':      f'Votre copie a été corrigée — note : {att.score:.2f}/20' if att.score is not None else 'Votre copie a été corrigée',
-                'corrected_at': att.corrected_at.isoformat() if att.corrected_at else None,
+                'created_at':   att.corrected_at.isoformat() if att.corrected_at else None,
                 'attempt_id':   att.id,
             })
 
@@ -59,7 +59,7 @@ def get_notifications():
                 'type':         'paper',
                 'title':        subject.title if subject else 'Copie',
                 'message':      f'Votre copie a été corrigée — note : {p.score:.2f}/20' if p.score is not None else 'Votre copie a été corrigée',
-                'corrected_at': p.corrected_at.isoformat() if p.corrected_at else None,
+                'created_at':   p.corrected_at.isoformat() if p.corrected_at else None,
                 'paper_id':     p.id,
             })
 
@@ -79,9 +79,9 @@ def get_notifications():
                 return False
 
         for n in notifications:
-            n['is_read'] = _is_read(n.get('corrected_at'))
+            n['is_read'] = _is_read(n.get('created_at'))
 
-        notifications.sort(key=lambda x: x['corrected_at'] or '', reverse=True)
+        notifications.sort(key=lambda x: x['created_at'] or '', reverse=True)
         unread_count = sum(1 for n in notifications if not n['is_read'])
         return jsonify({
             'notifications': notifications,

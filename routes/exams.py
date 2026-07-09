@@ -2046,9 +2046,17 @@ def get_face_reference_photo(attempt_id):
             event_type='face_reference_captured'
         ).order_by(CameraLog.timestamp.asc()).first()
 
+        if cam and cam.image_filename and (
+            cam.image_filename.startswith('snapshots/') or cam.image_filename.startswith('local:')
+        ):
+            from s3_client import get_snapshot_url
+            url = get_snapshot_url(cam.image_filename)
+            session.close()
+            return jsonify({'image_data': None, 'image_url': url, 'has_photo': bool(url), 'source': 'camera_log'})
+
         if cam and cam.image_data:
             session.close()
-            return jsonify({'image_data': cam.image_data, 'source': 'camera_log'})
+            return jsonify({'image_data': cam.image_data, 'has_photo': True, 'source': 'camera_log'})
 
         # Fallback : chercher dans event_data de ExamActivityLog
         import json as _json
@@ -2062,12 +2070,12 @@ def get_face_reference_photo(attempt_id):
                 if isinstance(parsed, dict) and ('image_data' in parsed or 'photo' in parsed):
                     img = parsed.get('image_data') or parsed.get('photo')
                     session.close()
-                    return jsonify({'image_data': img, 'source': 'activity_log'})
+                    return jsonify({'image_data': img, 'has_photo': True, 'source': 'activity_log'})
             except Exception:
                 pass
 
         session.close()
-        return jsonify({'image_data': None, 'message': 'Photo non disponible (capture non stockée)'})
+        return jsonify({'image_data': None, 'has_photo': False, 'message': 'Photo non disponible (capture non stockée)'})
     except Exception as e:
         try: session.rollback(); session.close()
         except: pass

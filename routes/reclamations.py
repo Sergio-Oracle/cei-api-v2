@@ -219,7 +219,7 @@ def respond_reclamation(rid):
         rec.updated_at       = utcnow()
 
         if mapped == 'resolved' and new_score is not None:
-            paper = session.query(StudentPaper).filter_by(id=rec.paper_id).first()
+            paper = session.query(StudentPaper).filter_by(id=rec.paper_id).first() if rec.paper_id else None
             if paper:
                 session.add(CorrectionHistory(
                     paper_id=paper.id, corrector_id=user_id,
@@ -229,6 +229,14 @@ def respond_reclamation(rid):
                     reason=f"Réclamation acceptée: {response}",
                 ))
                 paper.score = new_score; paper.corrected_at = utcnow()
+            elif rec.attempt_id:
+                attempt = session.query(ExamAttempt).filter_by(id=rec.attempt_id).first()
+                if attempt:
+                    note = f"\n\n[Réclamation acceptée — note modifiée de {attempt.score}/20 à {new_score}/20]\n{response}"
+                    attempt.feedback     = (attempt.feedback or '') + note
+                    attempt.score        = new_score
+                    attempt.corrected_at = utcnow()
+                    attempt.corrected_by_id = user_id
 
         session.commit()
         result = {'id': rec.id, 'status': rec.status.value,

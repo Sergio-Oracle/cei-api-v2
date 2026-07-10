@@ -17,7 +17,7 @@ from agent_proctor.config import (
     CEI_BASE_URL, AGENT_SECRET,
     OLLAMA_URL, OLLAMA_KEY, OLLAMA_MODEL,
     RISK_ALERT, RISK_URGENT,
-    CHECK_INTERVAL, ALERT_COOLDOWN,
+    CHECK_INTERVAL, ALERT_COOLDOWN, SUMMARY_INTERVAL,
 )
 from agent_proctor.email_alerts import send_alert_email, send_summary_email
 
@@ -254,7 +254,7 @@ def _process_exam(exam: dict):
 
 
 def _send_periodic_summaries():
-    """Envoie un rapport toutes les 15 minutes aux enseignants."""
+    """Envoie un rapport périodique aux enseignants (cadence : SUMMARY_INTERVAL)."""
     with _lock:
         snapshot = dict(_exam_stats)
     for exam_id, stats in snapshot.items():
@@ -274,10 +274,10 @@ def run():
     print("  CEI — Agent de Surveillance Autonome")
     print(f"  Plateforme : {CEI_BASE_URL}")
     print(f"  Seuil alerte : {RISK_ALERT}/100 | Urgence : {RISK_URGENT}/100")
-    print(f"  Intervalle  : {CHECK_INTERVAL}s | Cooldown : {ALERT_COOLDOWN}s")
+    print(f"  Intervalle  : {CHECK_INTERVAL}s | Cooldown : {ALERT_COOLDOWN}s | Rapport enseignant : {SUMMARY_INTERVAL}s")
     print("=" * 60)
 
-    summary_interval    = 900  # 15 minutes
+    summary_interval    = SUMMARY_INTERVAL
     last_summary        = time.time()
     total_alerts_session = 0
 

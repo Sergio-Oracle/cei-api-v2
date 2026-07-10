@@ -22,7 +22,8 @@ OLLAMA_KEY     = os.getenv("OLLAMA_API_KEY", "")
 OLLAMA_MODEL   = os.getenv("OLLAMA_MODEL", "qwen3.6:latest")
 
 # Seuils d'alerte
-RISK_ALERT     = int(os.getenv("AGENT_RISK_ALERT",   "60"))  # alerte email
-RISK_URGENT    = int(os.getenv("AGENT_RISK_URGENT",  "80"))  # alerte urgente
-CHECK_INTERVAL = int(os.getenv("AGENT_CHECK_INTERVAL","30"))  # secondes entre analyses
-ALERT_COOLDOWN = int(os.getenv("AGENT_ALERT_COOLDOWN","600")) # 10 min entre 2 alertes/étudiant
+RISK_ALERT       = int(os.getenv("AGENT_RISK_ALERT",       "60"))   # alerte email
+RISK_URGENT       = int(os.getenv("AGENT_RISK_URGENT",      "80"))   # alerte urgente
+CHECK_INTERVAL    = int(os.getenv("AGENT_CHECK_INTERVAL",   "30"))   # secondes entre analyses
+ALERT_COOLDOWN    = int(os.getenv("AGENT_ALERT_COOLDOWN",   "600"))  # 10 min entre 2 alertes/étudiant
+SUMMARY_INTERVAL  = int(os.getenv("AGENT_SUMMARY_INTERVAL", "3600")) # 1h entre 2 rapports enseignant (évite de saturer la boîte mail)

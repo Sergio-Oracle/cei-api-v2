@@ -185,6 +185,7 @@ def _process_exam(exam: dict):
             }
         _exam_stats[exam_id]["total"]  = len(attempts)
         _exam_stats[exam_id]["banned"] = sum(1 for a in attempts if a.get("status") == "banned")
+        _exam_stats[exam_id]["active"] = any(a.get("status") == "in_progress" for a in attempts)
 
     # Filtrer les étudiants à risque non encore en cooldown
     to_alert = []
@@ -254,17 +255,26 @@ def _process_exam(exam: dict):
 
 
 def _send_periodic_summaries():
-    """Envoie un rapport périodique aux enseignants (cadence : SUMMARY_INTERVAL)."""
+    """Envoie un rapport périodique aux enseignants (cadence : SUMMARY_INTERVAL).
+
+    N'envoie que s'il y a des alertes à rapporter. Dès qu'un examen n'a plus
+    aucune tentative en cours (tous les étudiants ont terminé), on envoie au
+    plus un dernier rapport puis on arrête définitivement de le suivre — sinon
+    l'agent continuerait à émettre un rapport par cycle jusqu'à la fin de la
+    fenêtre horaire planifiée de l'examen, même si plus personne ne compose.
+    """
     with _lock:
         snapshot = dict(_exam_stats)
     for exam_id, stats in snapshot.items():
         teacher = stats.get("teacher")
         if teacher and stats.get("alerts", 0) > 0:
             send_summary_email([teacher], stats["title"], stats)
-            # Remettre les compteurs à zéro
             with _lock:
                 if exam_id in _exam_stats:
                     _exam_stats[exam_id]["alerts"] = 0
+        if not stats.get("active", True):
+            with _lock:
+                _exam_stats.pop(exam_id, None)
 
 
 # ── Boucle principale ─────────────────────────────────────────────────────────

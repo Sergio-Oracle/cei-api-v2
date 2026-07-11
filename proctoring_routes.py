@@ -1312,7 +1312,7 @@ def toggle_recording(attempt_id):
                 'access_key': os.environ.get('S3_KEY_ID', ''),
                 'secret':     os.environ.get('S3_KEY_SECRET', ''),
                 'region':     os.environ.get('S3_REGION', 'us-east-1'),
-                'endpoint':   os.environ.get('S3_ENDPOINT', ''),
+                'endpoint':   os.environ.get('S3_PUBLIC_ENDPOINT', os.environ.get('S3_ENDPOINT', '')),
                 'bucket':     os.environ.get('S3_BUCKET', 'livekit-recordings'),
                 'force_path_style': True
             }
@@ -1459,7 +1459,7 @@ def toggle_room_recording(exam_id):
                 'access_key': os.environ.get('S3_KEY_ID', ''),
                 'secret':     os.environ.get('S3_KEY_SECRET', ''),
                 'region':     os.environ.get('S3_REGION', 'us-east-1'),
-                'endpoint':   os.environ.get('S3_ENDPOINT', ''),
+                'endpoint':   os.environ.get('S3_PUBLIC_ENDPOINT', os.environ.get('S3_ENDPOINT', '')),
                 'bucket':     os.environ.get('S3_BUCKET', 'livekit-recordings'),
                 'force_path_style': True
             }
@@ -1640,7 +1640,7 @@ def toggle_group_recording(exam_id):
             'access_key': os.environ.get('S3_KEY_ID', ''),
             'secret':     os.environ.get('S3_KEY_SECRET', ''),
             'region':     os.environ.get('S3_REGION', 'us-east-1'),
-            'endpoint':   os.environ.get('S3_ENDPOINT', ''),
+            'endpoint':   os.environ.get('S3_PUBLIC_ENDPOINT', os.environ.get('S3_ENDPOINT', '')),
             'bucket':     os.environ.get('S3_BUCKET', 'livekit-recordings'),
             'force_path_style': True
         }
@@ -1965,7 +1965,7 @@ def _get_s3_client():
     """Créer un client boto3 configuré pour le MinIO/S3 de l'application."""
     return boto3.client(
         's3',
-        endpoint_url=os.environ.get('S3_ENDPOINT', ''),
+        endpoint_url=os.environ.get('S3_PUBLIC_ENDPOINT', os.environ.get('S3_ENDPOINT', '')),
         aws_access_key_id=os.environ.get('S3_KEY_ID', ''),
         aws_secret_access_key=os.environ.get('S3_KEY_SECRET', ''),
         region_name=os.environ.get('S3_REGION', 'us-east-1'),

@@ -33,6 +33,9 @@ from botocore.client import Config
 _log = logging.getLogger('cei.s3')
 
 _ENDPOINT  = os.getenv('S3_ENDPOINT',          'http://62.171.190.6:9000')
+# Endpoint public (HTTPS, joignable du navigateur) — utilisé uniquement pour
+# générer les URLs présignées. _ENDPOINT reste local pour l'upload.
+_PUBLIC_ENDPOINT = os.getenv('S3_PUBLIC_ENDPOINT', _ENDPOINT)
 _KEY_ID    = os.getenv('S3_KEY_ID',            '')
 _SECRET    = os.getenv('S3_KEY_SECRET',        '')
 _REGION    = os.getenv('S3_REGION',            'us-east-1')
@@ -51,10 +54,23 @@ _DOWN_FLAG_KEY   = 'cei:s3:down'
 
 @lru_cache(maxsize=1)
 def _client():
-    """Client boto3 (singleton, thread-safe en lecture)."""
+    """Client boto3 pour l'upload — endpoint interne (singleton, thread-safe en lecture)."""
     return boto3.client(
         's3',
         endpoint_url=_ENDPOINT,
+        aws_access_key_id=_KEY_ID,
+        aws_secret_access_key=_SECRET,
+        config=Config(signature_version='s3v4'),
+        region_name=_REGION,
+    )
+
+
+@lru_cache(maxsize=1)
+def _public_client():
+    """Client boto3 pour les URLs présignées — endpoint public HTTPS."""
+    return boto3.client(
+        's3',
+        endpoint_url=_PUBLIC_ENDPOINT,
         aws_access_key_id=_KEY_ID,
         aws_secret_access_key=_SECRET,
         config=Config(signature_version='s3v4'),
@@ -184,7 +200,7 @@ def get_snapshot_url(key: str) -> Optional[str]:
     if not _KEY_ID:
         return None
     try:
-        return _client().generate_presigned_url(
+        return _public_client().generate_presigned_url(
             'get_object',
             Params={'Bucket': _SNAP_BUCKET, 'Key': key},
             ExpiresIn=_URL_EXPIRY,

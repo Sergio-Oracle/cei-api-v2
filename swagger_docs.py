@@ -279,8 +279,8 @@ OPENAPI_SPEC = {
         "license": {"name": "MIT", "url": "https://opensource.org/licenses/MIT"}
     },
     "servers": [
-        {"url": "https://dev-cei.ddns.net/api", "description": "Production UNCHK"},
-        {"url": "http://localhost:5000",         "description": "Développement local"}
+        {"url": "https://dev-cei.ddns.net", "description": "Production UNCHK"},
+        {"url": "http://localhost:5000",    "description": "Développement local"}
     ],
     "tags": [
         {"name": "Authentification",         "description": "Connexion PASETO v4, rafraîchissement token, déconnexion, profil, mot de passe"},
@@ -3282,4 +3282,10 @@ def redoc_ui():
 @swagger_bp.route('/api/docs/openapi.json')
 @_require_docs_auth
 def openapi_spec():
-    return jsonify(OPENAPI_SPEC)
+    spec = dict(OPENAPI_SPEC)
+    scheme = 'https' if (request.is_secure or request.headers.get('X-Forwarded-Proto') == 'https') else 'http'
+    current_url = f"{scheme}://{request.host}"
+    spec['servers'] = [{"url": current_url, "description": "Serveur actuel"}] + [
+        s for s in OPENAPI_SPEC['servers'] if s['url'] != current_url
+    ]
+    return jsonify(spec)

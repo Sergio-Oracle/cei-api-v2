@@ -17,7 +17,7 @@ from cache import cache_get, cache_set, cache_delete_pattern, make_key
 from models import (
     get_session,
     User, UserRole,
-    Formation, Semester, UE, EC, ECAssignment, StudentUEEnrollment,
+    Pole, Formation, Semester, UE, EC, ECAssignment, StudentUEEnrollment,
 )
 
 _CACHE_TTL = 300  # 5 minutes — structure académique change rarement
@@ -28,6 +28,7 @@ def _invalidate_academic_cache():
     cache_delete_pattern('cei:*formations*')
     cache_delete_pattern('cei:*semesters*')
     cache_delete_pattern('cei:*ues*')
+    cache_delete_pattern('cei:*poles*')
     cache_delete_pattern('cei:*ecs*')
 
 formations_bp = Blueprint('formations', __name__)
@@ -39,6 +40,122 @@ def _is_admin(session):
         session.close()
         return False, None
     return True, u
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PÔLES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@formations_bp.route('/api/poles', methods=['GET'])
+@paseto_required
+def get_poles():
+    try:
+        key = make_key('poles', 'all')
+        cached = cache_get(key)
+        if cached is not None:
+            return jsonify(cached)
+        session = get_session()
+        poles = session.query(Pole).filter_by(is_active=True).order_by(Pole.code).all()
+        result = [p.to_dict() for p in poles]
+        session.close()
+        cache_set(key, result, ttl=_CACHE_TTL)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@formations_bp.route('/api/poles/<int:pole_id>/formations', methods=['GET'])
+@paseto_required
+def get_pole_formations(pole_id):
+    try:
+        key = make_key('poles', str(pole_id), 'formations')
+        cached = cache_get(key)
+        if cached is not None:
+            return jsonify(cached)
+        session = get_session()
+        formations = session.query(Formation).filter_by(pole_id=pole_id, is_active=True).all()
+        result = [f.to_dict() for f in formations]
+        session.close()
+        cache_set(key, result, ttl=_CACHE_TTL)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@formations_bp.route('/api/admin/poles', methods=['POST'])
+@paseto_required
+def create_pole():
+    try:
+        session = get_session()
+        ok, _ = _is_admin(session)
+        if not ok:
+            return jsonify({'error': 'Accès non autorisé'}), 403
+        data = request.get_json() or {}
+        if not data.get('code') or not data.get('name'):
+            session.close()
+            return jsonify({'error': 'Code et nom requis'}), 400
+        pole = Pole(
+            code=data['code'].strip().upper(),
+            name=data['name'].strip(),
+            description=data.get('description', ''),
+        )
+        session.add(pole)
+        session.commit()
+        result = pole.to_dict()
+        session.close()
+        _invalidate_academic_cache()
+        return jsonify(result), 201
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@formations_bp.route('/api/admin/poles/<int:pid>', methods=['PUT'])
+@paseto_required
+def update_pole(pid):
+    try:
+        session = get_session()
+        ok, _ = _is_admin(session)
+        if not ok:
+            return jsonify({'error': 'Accès non autorisé'}), 403
+        data = request.get_json() or {}
+        pole = session.query(Pole).filter_by(id=pid).first()
+        if not pole:
+            session.close()
+            return jsonify({'error': 'Pôle non trouvé'}), 404
+        if 'name' in data:
+            pole.name = data['name'].strip()
+        if 'description' in data:
+            pole.description = data['description']
+        if 'is_active' in data:
+            pole.is_active = bool(data['is_active'])
+        session.commit()
+        result = pole.to_dict()
+        session.close()
+        _invalidate_academic_cache()
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@formations_bp.route('/api/admin/poles/<int:pid>', methods=['DELETE'])
+@paseto_required
+def delete_pole(pid):
+    try:
+        session = get_session()
+        ok, _ = _is_admin(session)
+        if not ok:
+            return jsonify({'error': 'Accès non autorisé'}), 403
+        pole = session.query(Pole).filter_by(id=pid).first()
+        if not pole:
+            session.close()
+            return jsonify({'error': 'Pôle non trouvé'}), 404
+        pole.is_active = False
+        session.commit()
+        session.close()
+        _invalidate_academic_cache()
+        return jsonify({'message': 'Pôle désactivé'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -184,6 +301,7 @@ def create_formation():
             code=data['code'], name=data['name'],
             level=data.get('level', ''), department=data.get('department', ''),
             description=data.get('description', ''),
+            pole_id=data.get('pole_id') or None,
         )
         session.add(f); session.commit()
         result = f.to_dict(); session.close()
@@ -207,7 +325,7 @@ def update_formation(fid):
             if session.query(Formation).filter_by(code=data['code']).first():
                 session.close(); return jsonify({'error': 'Code déjà utilisé'}), 400
             f.code = data['code']
-        for field in ('name', 'level', 'department', 'description', 'is_active'):
+        for field in ('name', 'level', 'department', 'description', 'is_active', 'pole_id'):
             if field in data: setattr(f, field, data[field])
         session.commit(); result = f.to_dict(); session.close()
         _invalidate_academic_cache()
@@ -309,7 +427,8 @@ def create_ue():
         if not session.query(Semester).filter_by(id=data.get('semester_id')).first():
             session.close(); return jsonify({'error': 'Semestre non trouvé'}), 404
         ue = UE(semester_id=data['semester_id'], code=data['code'],
-                name=data['name'], credits=data.get('credits', 6))
+                name=data['name'], credits=data.get('credits', 6),
+                ue_type=data.get('ue_type', 'obligatoire'))
         session.add(ue); session.commit(); result = ue.to_dict(); session.close()
         _invalidate_academic_cache()
         return jsonify({'success': True, 'ue': result}), 201
@@ -331,7 +450,7 @@ def update_ue(uid):
             if session.query(UE).filter_by(code=data['code']).first():
                 session.close(); return jsonify({'error': 'Code déjà utilisé'}), 400
             ue.code = data['code']
-        for field in ('name', 'credits', 'is_active'):
+        for field in ('name', 'credits', 'ue_type', 'is_active'):
             if field in data: setattr(ue, field, data[field])
         session.commit(); result = ue.to_dict(); session.close()
         _invalidate_academic_cache()
@@ -375,7 +494,9 @@ def create_ec():
         ec = EC(ue_id=data['ue_id'], code=data['code'], name=data['name'],
                 cm=data.get('cm', 0), td=data.get('td', 0), tp=data.get('tp', 0),
                 tpe=data.get('tpe', 0), vht=data.get('vht', 0),
-                coefficient=data.get('coefficient', 1))
+                coefficient=data.get('coefficient', 1),
+                cc_percentage=data.get('cc_percentage', 40),
+                ex_percentage=data.get('ex_percentage', 60))
         session.add(ec); session.commit(); result = ec.to_dict(); session.close()
         _invalidate_academic_cache()
         return jsonify({'success': True, 'ec': result}), 201
@@ -397,7 +518,7 @@ def update_ec(eid):
             if session.query(EC).filter_by(code=data['code']).first():
                 session.close(); return jsonify({'error': 'Code déjà utilisé'}), 400
             ec.code = data['code']
-        for field in ('name', 'cm', 'td', 'tp', 'tpe', 'vht', 'coefficient', 'is_active'):
+        for field in ('name', 'cm', 'td', 'tp', 'tpe', 'vht', 'coefficient', 'cc_percentage', 'ex_percentage', 'is_active'):
             if field in data: setattr(ec, field, data[field])
         session.commit(); result = ec.to_dict(); session.close()
         _invalidate_academic_cache()

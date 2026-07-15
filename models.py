@@ -34,6 +34,31 @@ class ReclamationStatus(enum.Enum):
     REJECTED  = "rejected"
 
 # MODÈLES POUR LA MAQUETTE PÉDAGOGIQUE
+class Pole(Base):
+    """Pôle académique UNCHK (STN, LSHE, SEJA)"""
+    __tablename__ = 'poles'
+
+    id = Column(Integer, primary_key=True)
+    code = Column(String(50), unique=True, nullable=False)
+    name = Column(String(200), nullable=False)
+    description = Column(Text)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    formations = relationship('Formation', back_populates='pole')
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'code': self.code,
+            'name': self.name,
+            'description': self.description,
+            'is_active': self.is_active,
+            'formations_count': len(self.formations) if self.formations else 0,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+        }
+
+
 class Formation(Base):
     """Formation/Programme académique (ex: Master Télécommunications)"""
     __tablename__ = 'formations'
@@ -44,9 +69,11 @@ class Formation(Base):
     level = Column(String(50))
     department = Column(String(100))
     description = Column(Text)
+    pole_id = Column(Integer, ForeignKey('poles.id'), nullable=True)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
+    pole = relationship('Pole', back_populates='formations')
     semesters = relationship('Semester', back_populates='formation', cascade='all, delete-orphan')
 
     def to_dict(self):
@@ -57,6 +84,9 @@ class Formation(Base):
             'level': self.level,
             'department': self.department,
             'description': self.description,
+            'pole_id': self.pole_id,
+            'pole_code': self.pole.code if self.pole else None,
+            'pole_name': self.pole.name if self.pole else None,
             'is_active': self.is_active,
             'semesters_count': len(self.semesters) if self.semesters else 0,
             'created_at': self.created_at.isoformat() if self.created_at else None
@@ -99,12 +129,13 @@ class UE(Base):
     code = Column(String(50), nullable=False, unique=True)
     name = Column(String(200), nullable=False)
     credits = Column(Integer, default=6)
+    ue_type = Column(String(50), default='obligatoire')
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     semester = relationship('Semester', back_populates='ues')
     ecs = relationship('EC', back_populates='ue', cascade='all, delete-orphan')
-    enrollments = relationship('StudentUEEnrollment', back_populates='ue', cascade='all, delete-orphan')  # Nouveau: Inscriptions étudiants
+    enrollments = relationship('StudentUEEnrollment', back_populates='ue', cascade='all, delete-orphan')
 
     def to_dict(self):
         return {
@@ -114,8 +145,9 @@ class UE(Base):
             'code': self.code,
             'name': self.name,
             'credits': self.credits,
+            'ue_type': self.ue_type or 'obligatoire',
             'ecs_count': len(self.ecs) if self.ecs else 0,
-            'students_count': len(self.enrollments) if self.enrollments else 0,  # Nouveau: Nombre d'étudiants inscrits
+            'students_count': len(self.enrollments) if self.enrollments else 0,
             'is_active': self.is_active,
             'created_at': self.created_at.isoformat() if self.created_at else None
         }
@@ -134,16 +166,19 @@ class EC(Base):
     tpe = Column(Integer, default=0)
     vht = Column(Integer, default=0)
     coefficient = Column(Integer, default=1)
+    cc_percentage = Column(Integer, default=40)
+    ex_percentage = Column(Integer, default=60)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     ue = relationship('UE', back_populates='ecs')
     subjects = relationship('Subject', back_populates='ec')
-    assignments = relationship('ECAssignment', back_populates='ec', cascade='all, delete-orphan')  # Nouveau: Affectations professeurs
+    assignments = relationship('ECAssignment', back_populates='ec', cascade='all, delete-orphan')
 
     def to_dict(self):
         semester = self.ue.semester if self.ue else None
         formation = semester.formation if semester else None
+        pole = formation.pole if formation else None
         return {
             'id': self.id,
             'ue_id': self.ue_id,
@@ -157,12 +192,19 @@ class EC(Base):
             'tpe': self.tpe,
             'vht': self.vht,
             'coefficient': self.coefficient,
+            'cc_percentage': self.cc_percentage if self.cc_percentage is not None else 40,
+            'ex_percentage': self.ex_percentage if self.ex_percentage is not None else 60,
             'is_active': self.is_active,
             'assigned_professor_id': self.assignments[0].professor_id if self.assignments else None,
             'assigned_professors': [a.professor_id for a in self.assignments],
+            'pole_id': pole.id if pole else None,
+            'pole_code': pole.code if pole else None,
+            'pole_name': pole.name if pole else None,
             'formation_id': formation.id if formation else None,
             'formation_name': formation.name if formation else None,
             'formation_level': formation.level if formation else None,
+            'semester_id': semester.id if semester else None,
+            'semester_number': semester.number if semester else None,
             'created_at': self.created_at.isoformat() if self.created_at else None
         }
 
@@ -761,6 +803,7 @@ class QuestionBank(Base):
         ue = ec.ue if ec else None
         semester = ue.semester if ue else None
         formation = semester.formation if semester else None
+        pole = formation.pole if formation else None
         return {
             'id': self.id,
             'title': self.title,
@@ -774,9 +817,14 @@ class QuestionBank(Base):
             'ue_id': ue.id if ue else None,
             'ue_code': ue.code if ue else None,
             'ue_name': ue.name if ue else None,
+            'semester_id': semester.id if semester else None,
+            'semester_number': semester.number if semester else None,
             'formation_id': formation.id if formation else None,
             'formation_name': formation.name if formation else None,
             'formation_level': formation.level if formation else None,
+            'pole_id': pole.id if pole else None,
+            'pole_code': pole.code if pole else None,
+            'pole_name': pole.name if pole else None,
             'created_by': self.creator.full_name if self.creator else None,
             'created_at': self.created_at.isoformat() if self.created_at else None,
         }

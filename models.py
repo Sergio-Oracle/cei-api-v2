@@ -483,6 +483,7 @@ class OnlineExam(Base):
     enable_copy_paste = Column(Boolean, default=False)
     enable_right_click = Column(Boolean, default=False)
     randomize_questions = Column(Boolean, default=False)
+    questions_per_page = Column(Integer, default=5)  # Pagination des questions (0 = tout sur une page)
 
     # Seuils de bannissement supplémentaires
     max_no_face_count = Column(Integer, default=10)  # Seuil: nb fois sans visage (-1=désactivé)
@@ -514,6 +515,7 @@ class OnlineExam(Base):
             'enable_copy_paste': self.enable_copy_paste,
             'enable_right_click': self.enable_right_click,
             'randomize_questions': self.randomize_questions,
+            'questions_per_page': self.questions_per_page if self.questions_per_page is not None else 5,
             'max_no_face_count': self.max_no_face_count if self.max_no_face_count is not None else 10,
             'ban_on_devtools': self.ban_on_devtools if self.ban_on_devtools is not None else True,
             'status': self.status.value,

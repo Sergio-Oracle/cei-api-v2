@@ -201,6 +201,7 @@ def create_online_exam():
             enable_copy_paste=data.get('enable_copy_paste', False),
             enable_right_click=data.get('enable_right_click', False),
             randomize_questions=data.get('randomize_questions', False),
+            questions_per_page=data.get('questions_per_page', 5),
             max_no_face_count=data.get('max_no_face_count', 10),
             ban_on_devtools=data.get('ban_on_devtools', True),
             auto_correct=data.get('auto_correct', False),

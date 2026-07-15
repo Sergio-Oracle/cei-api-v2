@@ -23,6 +23,7 @@ from models import (
     ExamProctor, ProctorAssignment, Subject, EC, UE, StudentUEEnrollment,
     ECAssignment
 )
+from cache import cache_get, cache_set
 
 proctoring_bp = Blueprint('proctoring', __name__)
 
@@ -992,6 +993,76 @@ def remove_exam_proctor(exam_id, proctor_id):
         return jsonify({'success': True})
     finally:
         session.close()
+
+
+# ── Bascule dynamique si un surveillant se déconnecte (Notes point 11) ─────────
+# Chaque page de monitoring surveillant envoie un heartbeat périodique. Si un
+# surveillant précédemment actif cesse d'en envoyer pendant HEARTBEAT_TTL
+# secondes, ses étudiants sont automatiquement redistribués aux surveillants
+# encore en ligne sur le même examen — sans action manuelle d'un admin.
+HEARTBEAT_TTL = 90          # secondes sans heartbeat avant de considérer "déconnecté"
+REDISTRIBUTE_COOLDOWN = 600  # évite de redéclencher en boucle pour le même surveillant
+
+
+def _redistribute_attempts_excluding(exam_id, session, exclude_proctor_ids):
+    """Réaffecte les tentatives en cours aux surveillants encore actifs sur cet
+    examen (exclut ceux de exclude_proctor_ids). Retourne True si effectué."""
+    proctors = session.query(ExamProctor).filter_by(exam_id=exam_id).all()
+    active_ids = [ep.proctor_id for ep in proctors if ep.proctor_id not in exclude_proctor_ids]
+    if not active_ids:
+        return False
+    attempts = session.query(ExamAttempt).filter_by(exam_id=exam_id, status=AttemptStatus.IN_PROGRESS).all()
+    if not attempts:
+        return False
+    session.query(ProctorAssignment).filter_by(exam_id=exam_id).delete()
+    for i, attempt in enumerate(attempts):
+        pid = active_ids[i % len(active_ids)]
+        session.add(ProctorAssignment(exam_id=exam_id, proctor_id=pid, student_id=attempt.student_id, attempt_id=attempt.id))
+    session.commit()
+    return True
+
+
+def _check_disconnected_proctors(exam_id, session):
+    """Détecte, parmi les surveillants affectés à l'examen, ceux dont le
+    heartbeat a expiré alors qu'ils avaient déjà été vus en ligne, et
+    déclenche automatiquement la redistribution de leurs étudiants."""
+    proctors = session.query(ExamProctor).filter_by(exam_id=exam_id).all()
+    for p in proctors:
+        seen_key     = f'cei:proctor_seen:{exam_id}:{p.proctor_id}'
+        live_key     = f'cei:proctor_live:{exam_id}:{p.proctor_id}'
+        cooldown_key = f'cei:proctor_redistributed:{exam_id}:{p.proctor_id}'
+        if cache_get(seen_key) and not cache_get(live_key) and not cache_get(cooldown_key):
+            cache_set(cooldown_key, '1', ttl=REDISTRIBUTE_COOLDOWN)
+            redistributed = _redistribute_attempts_excluding(exam_id, session, {p.proctor_id})
+            if redistributed:
+                try:
+                    from notif_bus import notify_exam
+                    notify_exam(exam_id, 'proctor_disconnected',
+                                'Surveillant déconnecté',
+                                f'{p.proctor.full_name if p.proctor else "Un surveillant"} semble déconnecté — ses étudiants ont été réaffectés automatiquement.',
+                                priority='high', tags=['warning'])
+                except Exception:
+                    pass
+
+
+@proctoring_bp.route('/api/online_exams/<int:exam_id>/proctor_heartbeat', methods=['POST'])
+@paseto_required
+def proctor_heartbeat(exam_id):
+    """Appelé périodiquement (ex. toutes les 30s) par la page de monitoring
+    d'un surveillant tant qu'elle reste ouverte. Sert aussi de déclencheur
+    pour détecter si D'AUTRES surveillants de ce même examen ont disparu."""
+    try:
+        proctor_id = get_current_user_id()
+        cache_set(f'cei:proctor_live:{exam_id}:{proctor_id}', '1', ttl=HEARTBEAT_TTL)
+        cache_set(f'cei:proctor_seen:{exam_id}:{proctor_id}', '1', ttl=86400)
+        session = get_session()
+        try:
+            _check_disconnected_proctors(exam_id, session)
+        finally:
+            session.close()
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 
 @proctoring_bp.route('/api/online_exams/<int:exam_id>/distribute_proctors', methods=['POST'])

@@ -693,6 +693,69 @@ class ExamProctor(Base):
         }
 
 
+class ProctorGroup(Base):
+    """Groupe nommé de surveillants, rattachable à un ou plusieurs EC. Quand un
+    examen est créé/activé pour un EC ayant un groupe rattaché, tous les membres
+    du groupe sont automatiquement ajoutés comme ExamProctor sur cet examen."""
+    __tablename__ = 'proctor_groups'
+
+    id = Column(Integer, primary_key=True)
+    name = Column(String(150), nullable=False)
+    created_by_id = Column(Integer, ForeignKey('users.id'), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    created_by = relationship('User', foreign_keys=[created_by_id])
+    members = relationship('ProctorGroupMember', back_populates='group', cascade='all, delete-orphan')
+    ecs = relationship('ProctorGroupEC', back_populates='group', cascade='all, delete-orphan')
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'name': self.name,
+            'created_by': self.created_by.full_name if self.created_by else None,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'members': [m.to_dict() for m in self.members],
+            'ec_ids': [ge.ec_id for ge in self.ecs],
+        }
+
+
+class ProctorGroupMember(Base):
+    __tablename__ = 'proctor_group_members'
+
+    id = Column(Integer, primary_key=True)
+    group_id = Column(Integer, ForeignKey('proctor_groups.id'), nullable=False)
+    proctor_id = Column(Integer, ForeignKey('users.id'), nullable=False)
+    added_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (UniqueConstraint('group_id', 'proctor_id', name='unique_group_proctor'),)
+
+    group = relationship('ProctorGroup', back_populates='members')
+    proctor = relationship('User')
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'proctor_id': self.proctor_id,
+            'proctor_name': self.proctor.full_name if self.proctor else None,
+            'proctor_email': self.proctor.email if self.proctor else None,
+            'proctor_last_login': self.proctor.last_login.isoformat() if self.proctor and self.proctor.last_login else None,
+        }
+
+
+class ProctorGroupEC(Base):
+    """Rattachement d'un groupe de surveillants à un EC."""
+    __tablename__ = 'proctor_group_ecs'
+
+    id = Column(Integer, primary_key=True)
+    group_id = Column(Integer, ForeignKey('proctor_groups.id'), nullable=False)
+    ec_id = Column(Integer, ForeignKey('ecs.id'), nullable=False)
+
+    __table_args__ = (UniqueConstraint('group_id', 'ec_id', name='unique_group_ec'),)
+
+    group = relationship('ProctorGroup', back_populates='ecs')
+    ec = relationship('EC')
+
+
 class ProctorAssignment(Base):
     """Affectation d'un étudiant à un surveillant.
     Pré-affectation (avant l'examen) : student_id défini, attempt_id NULL.

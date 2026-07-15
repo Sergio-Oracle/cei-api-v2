@@ -18,6 +18,7 @@ from models import (
     get_session,
     User, UserRole,
     Pole, Formation, Semester, UE, EC, ECAssignment, StudentUEEnrollment,
+    ProctorGroup, ProctorGroupMember, ProctorGroupEC,
 )
 
 _CACHE_TTL = 300  # 5 minutes — structure académique change rarement
@@ -823,5 +824,171 @@ def remove_student_enrollment(eid):
         if not e: session.close(); return jsonify({'error': 'Inscription non trouvée'}), 404
         session.delete(e); session.commit(); session.close()
         return jsonify({'success': True, 'message': 'Inscription supprimée'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# GROUPES DE SURVEILLANTS ↔ EC (Notes points 6, 7, 9)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@formations_bp.route('/api/admin/proctor_groups', methods=['GET'])
+@paseto_required
+def list_proctor_groups():
+    try:
+        session = get_session()
+        ok, _ = _is_admin(session)
+        if not ok: return jsonify({'error': 'Accès non autorisé'}), 403
+        groups = session.query(ProctorGroup).order_by(ProctorGroup.name).all()
+        result = [g.to_dict() for g in groups]
+        session.close()
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@formations_bp.route('/api/admin/proctor_groups', methods=['POST'])
+@paseto_required
+def create_proctor_group():
+    try:
+        session = get_session()
+        ok, admin = _is_admin(session)
+        if not ok: return jsonify({'error': 'Accès non autorisé'}), 403
+        data = request.json or {}
+        name = (data.get('name') or '').strip()
+        if not name:
+            session.close(); return jsonify({'error': 'Nom du groupe requis'}), 400
+        group = ProctorGroup(name=name, created_by_id=admin.id)
+        session.add(group); session.commit()
+        result = group.to_dict()
+        session.close()
+        return jsonify(result), 201
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@formations_bp.route('/api/admin/proctor_groups/<int:gid>', methods=['PUT'])
+@paseto_required
+def update_proctor_group(gid):
+    try:
+        session = get_session()
+        ok, _ = _is_admin(session)
+        if not ok: return jsonify({'error': 'Accès non autorisé'}), 403
+        group = session.query(ProctorGroup).filter_by(id=gid).first()
+        if not group: session.close(); return jsonify({'error': 'Groupe non trouvé'}), 404
+        data = request.json or {}
+        if 'name' in data and data['name'].strip():
+            group.name = data['name'].strip()
+        session.commit()
+        result = group.to_dict()
+        session.close()
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@formations_bp.route('/api/admin/proctor_groups/<int:gid>', methods=['DELETE'])
+@paseto_required
+def delete_proctor_group(gid):
+    try:
+        session = get_session()
+        ok, _ = _is_admin(session)
+        if not ok: return jsonify({'error': 'Accès non autorisé'}), 403
+        group = session.query(ProctorGroup).filter_by(id=gid).first()
+        if not group: session.close(); return jsonify({'error': 'Groupe non trouvé'}), 404
+        session.delete(group); session.commit(); session.close()
+        return jsonify({'success': True, 'message': 'Groupe supprimé'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@formations_bp.route('/api/admin/proctor_groups/<int:gid>/members', methods=['POST'])
+@paseto_required
+def add_proctor_group_member(gid):
+    try:
+        session = get_session()
+        ok, _ = _is_admin(session)
+        if not ok: return jsonify({'error': 'Accès non autorisé'}), 403
+        group = session.query(ProctorGroup).filter_by(id=gid).first()
+        if not group: session.close(); return jsonify({'error': 'Groupe non trouvé'}), 404
+        data = request.json or {}
+        proctor_ids = data.get('proctor_ids') or ([data['proctor_id']] if data.get('proctor_id') else [])
+        if not proctor_ids:
+            session.close(); return jsonify({'error': 'Surveillant(s) requis'}), 400
+        added, already = 0, 0
+        for pid in proctor_ids:
+            proctor = session.query(User).filter_by(id=pid, role=UserRole.SURVEILLANT).first()
+            if not proctor:
+                continue
+            if session.query(ProctorGroupMember).filter_by(group_id=gid, proctor_id=pid).first():
+                already += 1
+                continue
+            session.add(ProctorGroupMember(group_id=gid, proctor_id=pid))
+            added += 1
+            try:
+                from notif_bus import notify_user
+                notify_user(pid, 'proctor_group_added', 'Ajouté à un groupe de surveillance',
+                             f'Vous avez été ajouté au groupe « {group.name} ».', priority='default', tags=['busts_in_silhouette'])
+            except Exception:
+                pass
+        session.commit()
+        result = group.to_dict()
+        session.close()
+        return jsonify({'success': True, 'added': added, 'already': already, 'group': result}), 201
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@formations_bp.route('/api/admin/proctor_groups/<int:gid>/members/<int:mid>', methods=['DELETE'])
+@paseto_required
+def remove_proctor_group_member(gid, mid):
+    try:
+        session = get_session()
+        ok, _ = _is_admin(session)
+        if not ok: return jsonify({'error': 'Accès non autorisé'}), 403
+        m = session.query(ProctorGroupMember).filter_by(id=mid, group_id=gid).first()
+        if not m: session.close(); return jsonify({'error': 'Membre non trouvé'}), 404
+        session.delete(m); session.commit(); session.close()
+        return jsonify({'success': True, 'message': 'Membre retiré'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@formations_bp.route('/api/admin/proctor_groups/<int:gid>/ecs', methods=['POST'])
+@paseto_required
+def link_proctor_group_ec(gid):
+    try:
+        session = get_session()
+        ok, _ = _is_admin(session)
+        if not ok: return jsonify({'error': 'Accès non autorisé'}), 403
+        group = session.query(ProctorGroup).filter_by(id=gid).first()
+        if not group: session.close(); return jsonify({'error': 'Groupe non trouvé'}), 404
+        data = request.json or {}
+        ec_id = data.get('ec_id')
+        if not ec_id: session.close(); return jsonify({'error': 'EC requis'}), 400
+        if not session.query(EC).filter_by(id=ec_id).first():
+            session.close(); return jsonify({'error': 'EC non trouvé'}), 404
+        if session.query(ProctorGroupEC).filter_by(group_id=gid, ec_id=ec_id).first():
+            session.close(); return jsonify({'error': 'Ce groupe est déjà rattaché à cet EC'}), 400
+        session.add(ProctorGroupEC(group_id=gid, ec_id=ec_id))
+        session.commit()
+        result = group.to_dict()
+        session.close()
+        return jsonify(result), 201
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@formations_bp.route('/api/admin/proctor_groups/<int:gid>/ecs/<int:ec_id>', methods=['DELETE'])
+@paseto_required
+def unlink_proctor_group_ec(gid, ec_id):
+    try:
+        session = get_session()
+        ok, _ = _is_admin(session)
+        if not ok: return jsonify({'error': 'Accès non autorisé'}), 403
+        link = session.query(ProctorGroupEC).filter_by(group_id=gid, ec_id=ec_id).first()
+        if not link: session.close(); return jsonify({'error': 'Rattachement non trouvé'}), 404
+        session.delete(link); session.commit(); session.close()
+        return jsonify({'success': True, 'message': 'Rattachement retiré'})
     except Exception as e:
         return jsonify({'error': str(e)}), 500

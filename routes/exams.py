@@ -21,6 +21,7 @@ from models      import (
     OnlineExam, ExamAttempt, ExamActivityLog, GradeTranscript,
     CameraLog, ExamStatus, AttemptStatus, ExamProctor, ProctorAssignment,
     QuestionBank, EC, ECAssignment, StudentUEEnrollment,
+    ProctorGroupEC, ProctorGroupMember,
 )
 from werkzeug.utils import secure_filename
 from utils import (
@@ -215,8 +216,31 @@ def create_online_exam():
         session.commit()
         exam_dict = exam.to_dict()
         print(f"✅ Examen créé: {exam.title} stocké de {start_time} à {end_time} UTC (durée: {duration_minutes} min)")
+
+        # Auto-assignation des surveillants des groupes rattachés à l'EC du sujet
+        # (Notes point 6/9 — "prévoir les groupes des surveillants par ECs")
+        if subject.ec_id:
+            group_ids = [ge.group_id for ge in session.query(ProctorGroupEC).filter_by(ec_id=subject.ec_id).all()]
+            if group_ids:
+                members = session.query(ProctorGroupMember).filter(ProctorGroupMember.group_id.in_(group_ids)).all()
+                seen_proctor_ids = set()
+                for m in members:
+                    if m.proctor_id in seen_proctor_ids:
+                        continue
+                    seen_proctor_ids.add(m.proctor_id)
+                    if session.query(ExamProctor).filter_by(exam_id=exam.id, proctor_id=m.proctor_id).first():
+                        continue
+                    session.add(ExamProctor(exam_id=exam.id, proctor_id=m.proctor_id, assigned_by_id=user_id))
+                    try:
+                        from notif_bus import notify_user
+                        notify_user(m.proctor_id, 'proctor_assigned', 'Nouvel examen à surveiller',
+                                     f'Vous surveillez « {exam.title} » (groupe).', priority='default', tags=['eyes'])
+                    except Exception:
+                        pass
+                session.commit()
+
         session.close()
-       
+
         return jsonify({'success': True, 'exam': exam_dict}), 201
     except Exception as e:
         print(f"❌ Erreur create_online_exam: {e}")

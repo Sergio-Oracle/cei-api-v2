@@ -955,6 +955,12 @@ def add_exam_proctor(exam_id):
         )
         session.add(ep)
         session.commit()
+        try:
+            from notif_bus import notify_user
+            notify_user(proctor_id, 'proctor_assigned', 'Nouvel examen à surveiller',
+                         f'Vous surveillez « {exam.title} ».', priority='default', tags=['eyes'])
+        except Exception:
+            pass
         return jsonify({'success': True, 'proctor': ep.to_dict()}), 201
     finally:
         session.close()

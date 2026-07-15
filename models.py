@@ -598,7 +598,12 @@ class ExamAttempt(Base):
     feedback = Column(Text)
     corrected_at = Column(DateTime)
     corrected_by_id = Column(Integer, ForeignKey('users.id'))
-    
+
+    # Note importée depuis un fichier Excel/CSV (étudiant n'ayant pas composé
+    # sur la plateforme — épreuve papier ou autre système). Distingue ces
+    # tentatives "fantômes" des compositions réelles dans les listes/exports.
+    imported_grade = Column(Boolean, default=False)
+
     exam = relationship('OnlineExam', back_populates='attempts')
     student = relationship('User', foreign_keys=[student_id])
     corrector = relationship('User', foreign_keys=[corrected_by_id])
@@ -629,6 +634,7 @@ class ExamAttempt(Base):
             'corrector_name': self.corrector.full_name if self.corrector else None,
             'signature_data': self.signature_data,
             'extra_minutes': self.extra_minutes or 0,
+            'imported_grade': self.imported_grade or False,
         }
 
 class ExamActivityLog(Base):

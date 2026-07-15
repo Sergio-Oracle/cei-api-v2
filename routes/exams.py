@@ -1655,6 +1655,123 @@ def export_exam_csv(exam_id):
 
 
 # ============================================================================
+# IMPORT EXCEL/CSV DES NOTES NON COMPOSÉES SUR LA PLATEFORME
+# ============================================================================
+
+@exams_bp.route('/api/online_exams/<int:exam_id>/import-grades', methods=['POST'])
+@paseto_required
+def import_exam_grades(exam_id):
+    """
+    Importe des notes déjà calculées ailleurs (épreuve papier, autre système)
+    pour des étudiants n'ayant pas composé sur la plateforme (Notes point 14).
+    Fichier Excel (.xlsx) ou CSV avec colonnes 'email' et 'note' (0-20).
+    Crée une ExamAttempt marquée imported_grade=True, ou met à jour la note
+    si une tentative existe déjà pour cet étudiant sur cet examen.
+    """
+    import pandas as pd
+    try:
+        user_id = get_current_user_id()
+        session = get_session()
+        user = session.query(User).filter_by(id=user_id).first()
+        if user.role not in [UserRole.PROFESSOR, UserRole.ADMIN]:
+            session.close()
+            return jsonify({'error': 'Accès non autorisé'}), 403
+        exam = session.query(OnlineExam).filter_by(id=exam_id).first()
+        if not exam:
+            session.close()
+            return jsonify({'error': 'Examen non trouvé'}), 404
+        if user.role == UserRole.PROFESSOR and exam.created_by_id != user_id:
+            session.close()
+            return jsonify({'error': 'Accès non autorisé'}), 403
+
+        if 'file' not in request.files:
+            session.close()
+            return jsonify({'error': 'Aucun fichier fourni'}), 400
+        file = request.files['file']
+        if file.filename == '':
+            session.close()
+            return jsonify({'error': 'Aucun fichier sélectionné'}), 400
+
+        filename = file.filename.lower()
+        try:
+            if filename.endswith('.xlsx') or filename.endswith('.xls'):
+                df = pd.read_excel(file)
+            elif filename.endswith('.csv'):
+                df = pd.read_csv(file)
+            else:
+                session.close()
+                return jsonify({'error': 'Format invalide. Utilisez .xlsx, .xls ou .csv'}), 400
+        except Exception as e:
+            session.close()
+            return jsonify({'error': f'Lecture du fichier impossible: {e}'}), 400
+
+        df.columns = [str(c).strip().lower() for c in df.columns]
+        email_col = next((c for c in df.columns if c in ('email', 'e-mail', 'mail')), None)
+        score_col = next((c for c in df.columns if c in ('note', 'score', 'note /20', 'note/20')), None)
+        if not email_col or not score_col:
+            session.close()
+            return jsonify({'error': "Colonnes requises: 'email' et 'note'"}), 400
+
+        imported, updated, errors = [], [], []
+        for idx, row in df.iterrows():
+            line = idx + 2
+            email = str(row[email_col]).strip().lower() if pd.notna(row[email_col]) else ''
+            if not email:
+                errors.append(f"Ligne {line}: email manquant")
+                continue
+            try:
+                score = float(row[score_col])
+            except (ValueError, TypeError):
+                errors.append(f"Ligne {line}: note invalide")
+                continue
+            if not (0 <= score <= 20):
+                errors.append(f"Ligne {line}: note hors intervalle 0-20")
+                continue
+
+            student = session.query(User).filter_by(email=email, role=UserRole.STUDENT).first()
+            if not student:
+                errors.append(f"Ligne {line}: aucun étudiant avec l'email '{email}'")
+                continue
+
+            attempt = session.query(ExamAttempt).filter_by(exam_id=exam_id, student_id=student.id).first()
+            if attempt:
+                attempt.score = score
+                attempt.corrected_at = utcnow()
+                attempt.corrected_by_id = user_id
+                attempt.imported_grade = True
+                updated.append(email)
+            else:
+                attempt = ExamAttempt(
+                    exam_id=exam_id,
+                    student_id=student.id,
+                    status=AttemptStatus.SUBMITTED,
+                    started_at=utcnow(),
+                    submitted_at=utcnow(),
+                    score=score,
+                    corrected_at=utcnow(),
+                    corrected_by_id=user_id,
+                    imported_grade=True,
+                    feedback="Note importée depuis un fichier externe (composition hors plateforme).",
+                )
+                session.add(attempt)
+                imported.append(email)
+
+        session.commit()
+        session.close()
+        return jsonify({
+            'success': True,
+            'created': len(imported),
+            'updated': len(updated),
+            'errors': errors,
+        })
+    except Exception as e:
+        print(f"❌ import_exam_grades {exam_id}: {e}")
+        try: session.rollback(); session.close()
+        except: pass
+        return jsonify({'error': str(e)}), 500
+
+
+# ============================================================================
 # STATISTIQUES PAR EXAMEN
 # ============================================================================
 

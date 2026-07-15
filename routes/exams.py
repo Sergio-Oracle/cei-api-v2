@@ -32,6 +32,7 @@ from services.ai_service import (
     extract_score       as extract_score_from_correction,
     build_correction_prompt as _build_correction_system_prompt,
 )
+from s3_client import upload_answer_file
 
 exams_bp = Blueprint('exams', __name__)
 
@@ -675,6 +676,46 @@ def save_exam_answers(attempt_id):
         return jsonify({'success': True, 'message': 'Réponses sauvegardées'})
     except Exception as e:
         print(f"❌ Erreur save_exam_answers: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@exams_bp.route('/api/exam_attempts/<int:attempt_id>/upload_answer_file', methods=['POST'])
+@paseto_required
+def upload_exam_answer_file(attempt_id):
+    """Upload d'une pièce jointe pour une question de type 'photo' (scan, image...)."""
+    try:
+        user_id = get_current_user_id()
+        session = get_session()
+
+        attempt = session.query(ExamAttempt).filter_by(id=attempt_id, student_id=user_id).first()
+        if not attempt:
+            session.close()
+            return jsonify({'error': 'Tentative non trouvée'}), 404
+        if attempt.status != AttemptStatus.IN_PROGRESS:
+            session.close()
+            return jsonify({'error': 'Impossible de modifier une tentative terminée'}), 400
+
+        if 'file' not in request.files:
+            session.close()
+            return jsonify({'error': 'Aucun fichier fourni'}), 400
+        f = request.files['file']
+        if not f.filename:
+            session.close()
+            return jsonify({'error': 'Nom de fichier vide'}), 400
+
+        exam_id = attempt.exam_id
+        session.close()
+
+        raw = f.read()
+        if len(raw) > 15 * 1024 * 1024:  # 15 Mo max
+            return jsonify({'error': 'Fichier trop volumineux (15 Mo max)'}), 400
+
+        key = upload_answer_file(exam_id, attempt_id, f.filename, raw, f.content_type or 'application/octet-stream')
+        if not key:
+            return jsonify({'error': 'Type de fichier non autorisé (jpg, png, webp, pdf)'}), 400
+
+        return jsonify({'success': True, 'key': key})
+    except Exception as e:
+        print(f"❌ Erreur upload_exam_answer_file: {e}")
         return jsonify({'error': str(e)}), 500
 
 @exams_bp.route('/api/exam_attempts/<int:attempt_id>/log_activity', methods=['POST'])
@@ -2813,98 +2854,91 @@ def generate_full_exam_from_suggestion():
     if question_types:
         exam_type = question_types  # override avec le choix utilisateur
 
-    # Détecter le type d'examen pour choisir le bon template de format
+    # Détecter le(s) type(s) de questions demandés — non exclusifs, un examen
+    # combine souvent plusieurs types (ex: QCM + Vrai/Faux + Ouvertes).
     exam_type_lower = exam_type.lower()
-    has_qcm   = any(k in exam_type_lower for k in ['qcm', 'choix multiple', 'mcq'])
-    has_vf    = any(k in exam_type_lower for k in ['vrai', 'faux', 'vrai/faux', 'v/f'])
-    has_open  = any(k in exam_type_lower for k in ['ouvert', 'open', 'développ', 'court', 'dissertation', 'synthèse', 'problème', 'cas', 'exercice', 'commentaire', 'calcul'])
-    is_qcm    = has_qcm and not has_open and not has_vf
-    is_vf     = has_vf and not has_qcm and not has_open
-    is_mixed  = (has_qcm or has_vf) and has_open or any(k in exam_type_lower for k in ['mixte', 'mix', 'combiné', 'partiel', ',', '+'])
+    has_qcm_multi   = any(k in exam_type_lower for k in ['réponses multiples', 'qcm multi', 'choix multiples multiples'])
+    has_qcm         = (any(k in exam_type_lower for k in ['qcm', 'choix multiple', 'mcq']) and not has_qcm_multi)
+    has_vf          = any(k in exam_type_lower for k in ['vrai', 'faux', 'vrai/faux', 'v/f'])
+    has_appariement = any(k in exam_type_lower for k in ['appariement', 'matching', 'associat'])
+    has_code        = any(k in exam_type_lower for k in ['code', 'programmation', 'algorithme'])
+    has_photo       = any(k in exam_type_lower for k in ['photo', 'scan', 'manuscrit'])
+    has_open        = any(k in exam_type_lower for k in ['ouvert', 'open', 'développ', 'court', 'dissertation', 'synthèse', 'problème', 'cas', 'exercice', 'commentaire', 'calcul'])
+    selected_count  = sum([has_qcm, has_qcm_multi, has_vf, has_appariement, has_code, has_photo, has_open])
+    is_mixed        = selected_count >= 2 or any(k in exam_type_lower for k in ['mixte', 'mix', 'combiné', 'partiel', ',', '+'])
 
-    # Template de format des questions selon le type
-    # ── Templates avec marqueurs de type explicites ──────────────
-    # Le marqueur [QCM], [VF], [OUVERT] est écrit dans le titre de chaque question.
-    # Le parser JavaScript le lit en priorité → classification garantie, sans heuristiques fragiles.
+    # ── Templates avec marqueurs de type explicites ──────────────────────────
+    # Le marqueur [QCM], [VF], [OUVERT], [QCM_MULTI], [APPARIEMENT], [CODE], [PHOTO]
+    # est écrit dans le titre de chaque question. Le parser JavaScript le lit en
+    # priorité → classification garantie côté frontend, sans heuristiques fragiles.
 
-    if is_qcm:
-        questions_format = """Question 1 — [Titre court] ............. (1 pt) [QCM]
+    # (titre_partie, marqueur, gabarit_question, règle_format)
+    _TEMPLATES = {
+        'qcm': ("Questions à Choix Multiples (une seule bonne réponse)", 'QCM',
+            """Question {n} — [Titre court] ............. (1 pt) [QCM]
 [Énoncé de la question, clair et précis]
 A) [Premier choix — description courte, max 15 mots]
 B) [Deuxième choix — description courte, max 15 mots]
 C) [Troisième choix — description courte, max 15 mots]
-D) [Quatrième choix — description courte, max 15 mots]
-
-Question 2 — [Titre court] ............. (1 pt) [QCM]
-[Énoncé]
+D) [Quatrième choix — description courte, max 15 mots]""",
+            "chaque titre QCM se termine par [QCM] ; 4 choix A) B) C) D) courts (max 15 mots), jamais de verbes d'instruction (Définissez, Expliquez...) ; une seule bonne réponse"),
+        'qcm_multi': ("Questions à Choix Multiples (plusieurs bonnes réponses)", 'QCM_MULTI',
+            """Question {n} — [Titre court] ............. (1 pt) [QCM_MULTI]
+[Énoncé précisant qu'il peut y avoir plusieurs bonnes réponses]
 A) [Choix court]
 B) [Choix court]
 C) [Choix court]
 D) [Choix court]
+E) [Choix court]""",
+            "chaque titre se termine par [QCM_MULTI] ; 4 à 6 choix A) B) C)... ; AU MOINS 2 bonnes réponses par question"),
+        'vf': ("Vrai / Faux", 'VF',
+            """Question {n} — [Affirmation à évaluer] ............. (1 pt) [VF]
+Vrai / Faux""",
+            'chaque titre se termine par [VF] ; la ligne suivante est UNIQUEMENT "Vrai / Faux" (rien d\'autre)'),
+        'appariement': ("Appariement", 'APPARIEMENT',
+            """Question {n} — Associez chaque élément de gauche à sa correspondance ............. (2 pts) [APPARIEMENT]
+A. [Terme ou élément 1] → [Définition/correspondance 1]
+B. [Terme ou élément 2] → [Définition/correspondance 2]
+C. [Terme ou élément 3] → [Définition/correspondance 3]
+D. [Terme ou élément 4] → [Définition/correspondance 4]""",
+            "chaque titre se termine par [APPARIEMENT] ; 4 à 6 paires \"A. Gauche → Droite\" (flèche → obligatoire, un seul \"→\" par ligne)"),
+        'code': ("Maths et Programmation", 'CODE',
+            """Question {n} — [Énoncé de l'exercice de calcul/algorithme] ............. (X pts) [CODE]
+[Énoncé complet — formule à démontrer, algorithme à écrire ou problème à résoudre pas à pas]""",
+            "chaque titre se termine par [CODE] ; énoncés d'exercices mathématiques ou de programmation nécessitant une réponse structurée (formules, pseudo-code)"),
+        'photo': ("Réponse par photo / scan", 'PHOTO',
+            """Question {n} — [Énoncé nécessitant un schéma ou une résolution manuscrite] ............. (X pts) [PHOTO]
+[Énoncé demandant explicitement à l'étudiant de photographier/scanner sa réponse manuscrite (schéma, calcul long, dessin technique)]""",
+            "chaque titre se termine par [PHOTO] ; réservé aux questions nécessitant un schéma ou une résolution manuscrite longue"),
+        'open': ("Questions Ouvertes", 'OUVERT',
+            """Question {n} — [Titre court] ............. (X pts) [OUVERT]
+[Énoncé complet, précis et détaillé]""",
+            "chaque titre se termine par [OUVERT] ; énoncés complets et détaillés"),
+    }
+    _selected = [k for k, sel in (('qcm', has_qcm), ('qcm_multi', has_qcm_multi), ('vf', has_vf),
+                                   ('appariement', has_appariement), ('code', has_code),
+                                   ('photo', has_photo), ('open', has_open)) if sel]
+    if not _selected:
+        _selected = ['open']  # comportement historique par défaut
 
-[Continuer ainsi. Chaque question vaut 1 pt, total = 20 pts]"""
-        format_rules = """- OBLIGATOIRE : chaque titre se termine par [QCM]
-- 4 choix A) B) C) D) courts (max 15 mots chacun) — jamais de verbes d'instruction (Définissez, Expliquez...)
-- Une seule bonne réponse
-- 20 questions × 1 pt = 20 pts"""
-
-    elif is_vf:
-        questions_format = """Question 1 — [Affirmation à évaluer] ............. (1 pt) [VF]
-Vrai / Faux
-
-Question 2 — [Affirmation à évaluer] ............. (1 pt) [VF]
-Vrai / Faux
-
-[Continuer ainsi. Total = 20 pts]"""
-        format_rules = """- OBLIGATOIRE : chaque titre se termine par [VF]
-- La ligne suivante est UNIQUEMENT "Vrai / Faux" (rien d'autre)
-- 20 questions × 1 pt = 20 pts"""
-
-    elif is_mixed:
-        questions_format = """Partie I — Questions à Choix Multiples (10 pts)
-
-Question 1 — [Titre] ............. (1 pt) [QCM]
-[Énoncé]
-A) [Choix court]
-B) [Choix court]
-C) [Choix court]
-D) [Choix court]
-
-Question 2 — [Titre] ............. (1 pt) [QCM]
-[Énoncé]
-A) [Choix court]
-B) [Choix court]
-C) [Choix court]
-D) [Choix court]
-
-[... continuer jusqu'à 10 questions QCM ...]
-
-Partie II — Questions Ouvertes (10 pts)
-
-Question 11 — [Titre] ............. (X pts) [OUVERT]
-[Énoncé complet et détaillé]
-
-Question 12 — [Titre] ............. (Y pts) [OUVERT]
-[Énoncé complet et détaillé]
-
-[Continuer. Total des deux parties = 20 pts]"""
-        format_rules = """- OBLIGATOIRE : chaque titre QCM se termine par [QCM], chaque titre ouvert par [OUVERT]
-- Partie I : 10 questions QCM, choix A) B) C) D) courts (max 15 mots)
-- Partie II : questions ouvertes, numérotation continue
-- Total = 20 pts"""
-
+    if not is_mixed and len(_selected) == 1:
+        _title, _marker, _tpl, _rule = _TEMPLATES[_selected[0]]
+        questions_format = "\n\n".join(_tpl.format(n=i) for i in (1, 2)) + "\n\n[Continuer ainsi selon durée et difficulté. Total = 20 pts]"
+        format_rules = f"- OBLIGATOIRE : {_rule}\n- 20 questions au total × points répartis pour totaliser 20 pts"
     else:
-        # Ouvert, dissertation, étude de cas, problème, etc.
-        questions_format = """Question 1 — [Titre court] ............. (X pts) [OUVERT]
-[Énoncé complet, précis et détaillé]
-
-Question 2 — [Titre court] ............. (Y pts) [OUVERT]
-[Énoncé complet, précis et détaillé]
-
-[Continuer selon durée et difficulté. Total = 20 pts]"""
-        format_rules = """- OBLIGATOIRE : chaque titre se termine par [OUVERT]
-- Énoncés complets et détaillés
-- Points somment à 20"""
+        pts_per_part = max(1, 20 // len(_selected))
+        sections = []
+        n_start = 1
+        for k in _selected:
+            _title, _marker, _tpl, _rule = _TEMPLATES[k]
+            sections.append(
+                f"Partie — {_title} ({pts_per_part} pts)\n\n" +
+                "\n\n".join(_tpl.format(n=i) for i in (n_start, n_start+1)) +
+                "\n\n[... continuer cette partie selon durée/difficulté ...]"
+            )
+            n_start += 2
+        questions_format = "\n\n".join(sections) + "\n\n[Numérotation continue d'une partie à l'autre. Total de toutes les parties = 20 pts]"
+        format_rules = "\n".join(f"- Partie {_TEMPLATES[k][0]} : {_TEMPLATES[k][3]}" for k in _selected) + "\n- Total toutes parties confondues = 20 pts"
 
     prompt = f"""Tu es un expert en création d'examens universitaires francophones, compétent dans TOUS les domaines académiques (sciences, droit, médecine, lettres, arts, ingénierie, langues, économie, histoire, philosophie, agronomie, architecture, etc.).
 

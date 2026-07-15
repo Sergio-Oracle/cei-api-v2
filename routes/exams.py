@@ -2525,6 +2525,130 @@ def download_integrity_report(attempt_id):
         return jsonify({'error': str(e)}), 500
 
 
+@exams_bp.route('/api/online_exams/<int:exam_id>/security-report/pdf', methods=['GET'])
+@paseto_required
+def download_exam_security_report(exam_id):
+    """
+    Rapport de sécurité PDF agrégé pour UN examen (toutes ses tentatives) —
+    Notes point 18. Contrairement à admin_security_report (JSON, toutes
+    évaluations confondues) et download_integrity_report (PDF, une seule
+    tentative), ce rapport synthétise les incidents de surveillance de
+    tous les étudiants d'un même examen, triés par risque décroissant.
+    """
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import cm
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+    from reportlab.lib import colors as rl_colors
+    try:
+        user_id = get_current_user_id()
+        session = get_session()
+        user = session.query(User).filter_by(id=user_id).first()
+        if user.role not in [UserRole.PROFESSOR, UserRole.ADMIN]:
+            session.close()
+            return jsonify({'error': 'Accès non autorisé'}), 403
+        exam = session.query(OnlineExam).filter_by(id=exam_id).first()
+        if not exam:
+            session.close()
+            return jsonify({'error': 'Examen non trouvé'}), 404
+        if user.role == UserRole.PROFESSOR and exam.created_by_id != user_id:
+            session.close()
+            return jsonify({'error': 'Accès non autorisé'}), 403
+
+        attempts = session.query(ExamAttempt).options(
+            joinedload(ExamAttempt.student)
+        ).filter_by(exam_id=exam_id).order_by(desc(ExamAttempt.risk_score)).all()
+
+        ids = [a.id for a in attempts]
+        incident_counts = {}
+        if ids:
+            rows = session.query(
+                ExamActivityLog.attempt_id, sa_func.count(ExamActivityLog.id)
+            ).filter(
+                ExamActivityLog.attempt_id.in_(ids),
+                ExamActivityLog.event_type != 'proctor_note'
+            ).group_by(ExamActivityLog.attempt_id).all()
+            incident_counts = {r[0]: r[1] for r in rows}
+
+        session.close()
+
+        buf = io.BytesIO()
+        doc = SimpleDocTemplate(buf, pagesize=A4, leftMargin=1.5*cm, rightMargin=1.5*cm, topMargin=1.5*cm, bottomMargin=1.5*cm)
+        styles = getSampleStyleSheet()
+        title_style = ParagraphStyle('t', parent=styles['Title'], fontSize=16, textColor=rl_colors.HexColor('#1e293b'), spaceAfter=6)
+        h2_style    = ParagraphStyle('h2', parent=styles['Heading2'], fontSize=12, textColor=rl_colors.HexColor('#2563eb'), spaceBefore=14, spaceAfter=4)
+        small       = ParagraphStyle('s', parent=styles['Normal'], fontSize=8, textColor=rl_colors.HexColor('#64748b'))
+        story = []
+
+        story.append(Paragraph('RAPPORT DE SÉCURITÉ — CEI', title_style))
+        story.append(Paragraph(f'Examen : {exam.title}', styles['Heading2']))
+        story.append(Paragraph(f'Généré le {utcnow().strftime("%d/%m/%Y à %H:%M")} UTC', small))
+        story.append(Spacer(1, 12))
+
+        banned = sum(1 for a in attempts if a.status == AttemptStatus.BANNED)
+        risky  = sum(1 for a in attempts if (a.risk_score or 0) >= 70)
+        avg_risk = round(sum(a.risk_score or 0 for a in attempts) / len(attempts), 1) if attempts else 0
+        total_incidents = sum(incident_counts.values())
+
+        story.append(Paragraph('Synthèse', h2_style))
+        summary_data = [
+            ['Participants', str(len(attempts))],
+            ['Exclus (bannis)', str(banned)],
+            ['Risque élevé (≥ 70%)', str(risky)],
+            ['Risque moyen', f'{avg_risk}%'],
+            ['Total incidents', str(total_incidents)],
+        ]
+        st = Table(summary_data, colWidths=[6*cm, 11*cm])
+        st.setStyle(TableStyle([
+            ('BACKGROUND', (0,0), (0,-1), rl_colors.HexColor('#f1f5f9')),
+            ('FONTSIZE', (0,0), (-1,-1), 9),
+            ('GRID', (0,0), (-1,-1), 0.5, rl_colors.HexColor('#e2e8f0')),
+            ('PADDING', (0,0), (-1,-1), 5),
+        ]))
+        story.append(st)
+        story.append(Spacer(1, 10))
+
+        story.append(Paragraph('Détail par étudiant (trié par risque décroissant)', h2_style))
+        rows_data = [['Étudiant', 'Statut', 'Risque', 'Onglets', 'Alertes', 'Incidents', 'Note']]
+        for a in attempts:
+            rows_data.append([
+                a.student.full_name if a.student else '?',
+                a.status.value,
+                f'{a.risk_score or 0}%',
+                str(a.tab_switches or 0),
+                str(a.warnings_count or 0),
+                str(incident_counts.get(a.id, 0)),
+                f'{a.score}/20' if a.score is not None else '—',
+            ])
+        rt = Table(rows_data, colWidths=[5*cm, 2.7*cm, 1.8*cm, 1.8*cm, 1.8*cm, 1.9*cm, 1.8*cm])
+        row_styles = [
+            ('BACKGROUND', (0,0), (-1,0), rl_colors.HexColor('#1e293b')),
+            ('TEXTCOLOR', (0,0), (-1,0), rl_colors.white),
+            ('FONTSIZE', (0,0), (-1,-1), 8),
+            ('GRID', (0,0), (-1,-1), 0.3, rl_colors.HexColor('#e2e8f0')),
+            ('PADDING', (0,0), (-1,-1), 4),
+            ('ROWBACKGROUNDS', (0,1), (-1,-1), [rl_colors.white, rl_colors.HexColor('#f8fafc')]),
+        ]
+        for i, a in enumerate(attempts, start=1):
+            risk_val = a.risk_score or 0
+            color = rl_colors.HexColor('#ef4444') if risk_val >= 70 else rl_colors.HexColor('#f59e0b') if risk_val >= 40 else rl_colors.HexColor('#10b981')
+            row_styles.append(('TEXTCOLOR', (2, i), (2, i), color))
+            row_styles.append(('FONTNAME', (2, i), (2, i), 'Helvetica-Bold'))
+        rt.setStyle(TableStyle(row_styles))
+        story.append(rt)
+
+        doc.build(story)
+        buf.seek(0)
+        safe_title = exam.title.replace(' ', '_')
+        return send_file(buf, mimetype='application/pdf', as_attachment=True,
+                         download_name=f'rapport_securite_{safe_title}_{exam_id}.pdf')
+    except Exception as e:
+        try: session.close()
+        except: pass
+        print(f'Erreur security_report exam {exam_id}: {e}')
+        return jsonify({'error': str(e)}), 500
+
+
 # ============================================================================
 # LOGS ET INCIDENTS DES EXAMENS
 # ============================================================================

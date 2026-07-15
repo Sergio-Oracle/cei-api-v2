@@ -33,6 +33,7 @@ from services.ai_service import (
     build_correction_prompt as _build_correction_system_prompt,
 )
 from s3_client import upload_answer_file
+from routes.question_bank import _similarity, DUPLICATE_THRESHOLD
 
 exams_bp = Blueprint('exams', __name__)
 
@@ -3032,6 +3033,86 @@ Règles ABSOLUES à respecter :
         else:
             user_msg = "Une erreur est survenue lors de la génération. Veuillez réessayer."
         return jsonify({'error': user_msg}), 500
+
+
+@exams_bp.route('/api/subjects/generate-more-questions', methods=['POST'])
+@paseto_required
+def generate_more_questions():
+    """Génère N questions supplémentaires d'un type donné à AJOUTER à un sujet
+    déjà généré (sans le remplacer), en évitant de dupliquer les thèmes déjà
+    couverts. Retourne uniquement le texte des nouvelles questions."""
+    user_id = get_current_user_id()
+    session = get_session()
+    user = session.query(User).filter_by(id=int(user_id)).first()
+    session.close()
+
+    if not user or user.role not in [UserRole.PROFESSOR, UserRole.ADMIN]:
+        return jsonify({'error': 'Accès non autorisé'}), 403
+
+    data = request.get_json() or {}
+    existing_content = (data.get('existing_content') or '').strip()
+    if not existing_content:
+        return jsonify({'error': 'Contenu existant requis'}), 400
+
+    count          = max(1, min(int(data.get('count', 3)), 10))
+    question_type  = (data.get('question_type') or 'QCM').strip()
+    title          = data.get('title', 'Examen')
+    student_level  = data.get('student_level', 'Licence 3')
+    difficulty     = data.get('difficulty', 'Moyen')
+
+    _MARKER_BY_LABEL = {
+        'qcm': 'QCM', 'qcu': 'QCM', 'qcm multiple': 'QCM_MULTI', 'qcm (réponses multiples)': 'QCM_MULTI',
+        'vrai/faux': 'VF', 'vrai / faux': 'VF', 'appariement': 'APPARIEMENT',
+        'maths et programmation': 'CODE', 'maths / programmation': 'CODE', 'code': 'CODE',
+        'photo': 'PHOTO', 'photo / scan': 'PHOTO', 'questions ouvertes': 'OUVERT', 'ouvert': 'OUVERT',
+    }
+    marker = _MARKER_BY_LABEL.get(question_type.lower(), 'QCM')
+
+    # Continuer la numérotation après la dernière question existante
+    existing_numbers = [int(n) for n in re.findall(r'Question\s+(\d{1,3})\s*[—\-–:.]', existing_content)]
+    next_num = (max(existing_numbers) + 1) if existing_numbers else 1
+
+    prompt = f"""Tu es un expert en création d'examens universitaires francophones.
+
+Voici un sujet d'examen déjà généré (titre : {title}, niveau {student_level}, difficulté {difficulty}) :
+
+--- DÉBUT SUJET EXISTANT ---
+{existing_content[:6000]}
+--- FIN SUJET EXISTANT ---
+
+Génère EXACTEMENT {count} NOUVELLES questions de type [{marker}] à AJOUTER à ce sujet.
+
+RÈGLES ABSOLUES :
+- Numérote-les en continuant à partir de {next_num} (Question {next_num}, Question {next_num + 1}, ...)
+- Ces nouvelles questions doivent couvrir des thèmes ou aspects DIFFÉRENTS de ceux déjà présents dans le sujet existant ci-dessus — aucune reformulation ni répétition d'une question déjà posée
+- Chaque titre de question se termine par [{marker}]
+- Respecte STRICTEMENT le même format que les questions [{marker}] déjà visibles dans le sujet existant (nombre de choix, structure des paires, etc.)
+- Réponds UNIQUEMENT avec les {count} nouvelles questions, rien d'autre (pas de titre de section, pas de commentaire, pas de barème)"""
+
+    try:
+        new_questions_text = call_ai_simple(prompt).strip()
+
+        # Vérifier les doublons contre les questions déjà présentes dans le sujet
+        existing_q_texts = re.findall(r'Question\s+\d{1,3}\s*[—\-–:.].*?(?=\nQuestion\s+\d{1,3}\s*[—\-–:.]|\Z)', existing_content, re.S)
+        new_q_texts = re.findall(r'Question\s+\d{1,3}\s*[—\-–:.].*?(?=\nQuestion\s+\d{1,3}\s*[—\-–:.]|\Z)', new_questions_text, re.S)
+        duplicates = []
+        for nq in new_q_texts:
+            for eq in existing_q_texts:
+                sim = _similarity(nq[:300], eq[:300])
+                if sim >= DUPLICATE_THRESHOLD:
+                    duplicates.append({'similarity': round(sim * 100, 1)})
+                    break
+
+        return jsonify({
+            'success': True,
+            'new_content': new_questions_text,
+            'count_generated': len(new_q_texts),
+            'duplicates': duplicates,
+        })
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': 'Erreur lors de la génération des questions supplémentaires'}), 500
 
 
 @exams_bp.route('/api/subjects/create-from-suggestion', methods=['POST'])

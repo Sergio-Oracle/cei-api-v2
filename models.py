@@ -314,6 +314,37 @@ class Subject(Base):
             'created_at': self.created_at.isoformat() if self.created_at else None
         }
 
+
+class SubjectMedia(Base):
+    """Pièce jointe image/audio d'un sujet, référencée dans le texte via un
+    marqueur [IMAGE:xxx]/[AUDIO:xxx] à côté de la question concernée. Upload
+    possible avant la sauvegarde finale du sujet (subject_id nullable — associé
+    après coup via link_key le temps de la composition dans l'écran de preview)."""
+    __tablename__ = 'subject_media'
+
+    id = Column(Integer, primary_key=True)
+    subject_id = Column(Integer, ForeignKey('subjects.id'), nullable=True)
+    link_key = Column(String(64), nullable=True)  # clé temporaire avant sauvegarde du sujet
+    media_type = Column(String(10), nullable=False)  # 'image' | 'audio'
+    filename = Column(String(255), nullable=False)
+    s3_key = Column(String(500), nullable=False)
+    uploaded_by_id = Column(Integer, ForeignKey('users.id'), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    subject = relationship('Subject')
+    uploaded_by = relationship('User')
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'subject_id': self.subject_id,
+            'media_type': self.media_type,
+            'filename': self.filename,
+            's3_key': self.s3_key,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+        }
+
+
 class StudentPaper(Base):
     """Copie d'étudiant - AVEC HASH POUR DÉTECTION DE DOUBLONS"""
     __tablename__ = 'student_papers'

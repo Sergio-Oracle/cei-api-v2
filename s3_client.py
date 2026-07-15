@@ -220,6 +220,45 @@ def upload_answer_file(exam_id: int, attempt_id: int, filename: str, raw: bytes,
         return None
 
 
+_SUBJECT_MEDIA_EXTS = {
+    'image': {'jpg', 'jpeg', 'png', 'webp', 'gif'},
+    'audio': {'mp3', 'wav', 'ogg', 'm4a'},
+}
+
+
+def upload_subject_media(link_key: str, media_type: str, filename: str, raw: bytes, content_type: str = 'application/octet-stream') -> Optional[str]:
+    """
+    Uploade une image ou un fichier audio destiné à être inséré dans un sujet
+    d'examen (Notes points 2/15). link_key identifie la composition en cours
+    (peut être l'id du sujet si déjà créé, ou une clé temporaire côté client
+    avant la sauvegarde finale).
+
+    Clé : subject_media/{link_key}/{ts}_{filename}
+    Retourne None si le type de fichier n'est pas autorisé pour media_type.
+    """
+    ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
+    if ext not in _SUBJECT_MEDIA_EXTS.get(media_type, set()):
+        return None
+    if not _KEY_ID:
+        return None
+
+    ts  = datetime.utcnow().strftime('%Y%m%dT%H%M%S')
+    safe_name = ''.join(c for c in filename if c.isalnum() or c in '._-') or f'file.{ext}'
+    key = f'subject_media/{link_key}/{ts}_{safe_name}'
+
+    try:
+        _client().put_object(
+            Bucket=_SNAP_BUCKET,
+            Key=key,
+            Body=raw,
+            ContentType=content_type,
+        )
+        return key
+    except Exception as exc:
+        _log.warning('S3 subject media upload failed key=%s: %s', key, exc)
+        return None
+
+
 def get_snapshot_url(key: str) -> Optional[str]:
     """
     Génère l'URL d'accès à un snapshot à partir de sa clé.

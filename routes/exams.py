@@ -21,7 +21,7 @@ from models      import (
     OnlineExam, ExamAttempt, ExamActivityLog, GradeTranscript,
     CameraLog, ExamStatus, AttemptStatus, ExamProctor, ProctorAssignment,
     QuestionBank, EC, ECAssignment, StudentUEEnrollment,
-    ProctorGroupEC, ProctorGroupMember,
+    ProctorGroupEC, ProctorGroupMember, SubjectMedia,
 )
 from werkzeug.utils import secure_filename
 from utils import (
@@ -33,7 +33,7 @@ from services.ai_service import (
     extract_score       as extract_score_from_correction,
     build_correction_prompt as _build_correction_system_prompt,
 )
-from s3_client import upload_answer_file
+from s3_client import upload_answer_file, upload_subject_media, get_snapshot_url
 from routes.question_bank import _similarity, DUPLICATE_THRESHOLD
 
 exams_bp = Blueprint('exams', __name__)
@@ -3262,6 +3262,15 @@ def create_subject_from_suggestion():
         session.add(new_subject)
         session.commit()
 
+        # Associer les médias (images/audio) uploadés pendant la composition,
+        # avant que le sujet n'existe encore (Notes points 2/15)
+        link_key = data.get('media_link_key')
+        if link_key:
+            session.query(SubjectMedia).filter_by(link_key=link_key, subject_id=None).update(
+                {'subject_id': new_subject.id}
+            )
+            session.commit()
+
         subject_id      = new_subject.id
         subject_title   = new_subject.title
         subject_content = new_subject.content
@@ -3286,6 +3295,79 @@ def create_subject_from_suggestion():
         print(f"❌ Erreur création sujet from suggestion: {e}")
         _tb.print_exc()
         return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@exams_bp.route('/api/subjects/upload_media', methods=['POST'])
+@paseto_required
+def upload_subject_media_route():
+    """Upload d'une image ou d'un fichier audio à insérer dans un sujet
+    (Notes points 2/15). Utilisable AVANT la sauvegarde finale du sujet via
+    link_key (ex: uuid généré côté client) — associé au sujet définitif via
+    media_link_key lors de l'appel à create-from-suggestion. Si subject_id
+    est fourni (sujet déjà sauvegardé), l'association est immédiate."""
+    try:
+        user_id = get_current_user_id()
+        session = get_session()
+        user = session.query(User).filter_by(id=user_id).first()
+        if not user or user.role not in [UserRole.PROFESSOR, UserRole.ADMIN]:
+            session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
+
+        media_type = (request.form.get('media_type') or '').strip()
+        if media_type not in ('image', 'audio'):
+            session.close(); return jsonify({'error': "media_type doit être 'image' ou 'audio'"}), 400
+
+        link_key   = request.form.get('link_key') or None
+        subject_id = request.form.get('subject_id')
+        subject_id = int(subject_id) if subject_id else None
+        if not link_key and not subject_id:
+            session.close(); return jsonify({'error': 'link_key ou subject_id requis'}), 400
+
+        if 'file' not in request.files:
+            session.close(); return jsonify({'error': 'Aucun fichier fourni'}), 400
+        f = request.files['file']
+        if not f.filename:
+            session.close(); return jsonify({'error': 'Nom de fichier vide'}), 400
+
+        raw = f.read()
+        if len(raw) > 25 * 1024 * 1024:  # 25 Mo max
+            session.close(); return jsonify({'error': 'Fichier trop volumineux (25 Mo max)'}), 400
+
+        key = upload_subject_media(link_key or f'subject_{subject_id}', media_type, f.filename, raw, f.content_type or 'application/octet-stream')
+        if not key:
+            ext_hint = 'jpg, png, webp, gif' if media_type == 'image' else 'mp3, wav, ogg, m4a'
+            session.close(); return jsonify({'error': f'Type de fichier non autorisé pour {media_type} ({ext_hint})'}), 400
+
+        safe_name = ''.join(c for c in f.filename if c.isalnum() or c in '._-') or f.filename
+        media = SubjectMedia(subject_id=subject_id, link_key=link_key, media_type=media_type,
+                              filename=safe_name, s3_key=key, uploaded_by_id=user_id)
+        session.add(media)
+        session.commit()
+        result = media.to_dict()
+        result['marker'] = f"[{'IMAGE' if media_type == 'image' else 'AUDIO'}:{safe_name}]"
+        session.close()
+        return jsonify({'success': True, 'media': result}), 201
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@exams_bp.route('/api/subjects/<int:subject_id>/media', methods=['GET'])
+@paseto_required
+def get_subject_media(subject_id):
+    """Liste les médias d'un sujet avec URL d'accès résolue — utilisé par la
+    page d'examen pour afficher/lire les [IMAGE:...]/[AUDIO:...] du sujet."""
+    try:
+        session = get_session()
+        rows = session.query(SubjectMedia).filter_by(subject_id=subject_id).all()
+        result = []
+        for m in rows:
+            d = m.to_dict()
+            d['url'] = get_snapshot_url(m.s3_key)
+            result.append(d)
+        session.close()
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 
 @exams_bp.route('/api/admin/security_report', methods=['GET'])
 @paseto_required

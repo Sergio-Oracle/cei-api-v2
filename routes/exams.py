@@ -949,6 +949,129 @@ def get_exam_attempt_subject(attempt_id):
         print(f"❌ Erreur get_exam_attempt_subject: {e}")
         return jsonify({'error': str(e)}), 500
 
+def _parse_subject_questions_for_grading(content: str) -> dict:
+    """Extrait num→{type, text, choices:{letter:text}, pairs:[{left,right}]} du
+    contenu brut du sujet — port Python minimal de parseExamBlocks (frontend) pour
+    reconstruire des réponses lisibles par l'IA, notamment pour l'appariement où
+    l'énoncé de la paire de gauche n'est jamais stocké dans les réponses brutes."""
+    Q_RE = re.compile(r'^(?:(?:Question|Q)\.?\s+)?(\d{1,3})\s*[—\-–:.)]\s*(.+)', re.I)
+    TYPE_MARKER = re.compile(r'\[(QCM_MULTI|QCM|VF|OUVERT|SUBOPEN|APPARIEMENT|CODE|PHOTO)\]', re.I)
+    C_RE = re.compile(r'^(?:\(?([A-Fa-f])\)?)\s*[.):\s-]\s+(.+)')
+    PAIR_RE = re.compile(r'^(?:\(?([A-Fa-f])\)?)\s*[.):\s-]\s+(.+?)\s*(?:→|->)\s*(.+)')
+
+    questions = {}
+    lines = content.split('\n')
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+        m = Q_RE.match(line)
+        if not m:
+            i += 1
+            continue
+        num = m.group(1)
+        rest = m.group(2)
+        marker_m = TYPE_MARKER.search(rest)
+        marker = marker_m.group(1).upper() if marker_m else None
+        text = TYPE_MARKER.sub('', rest).strip()
+        i += 1
+        choices, pairs = {}, []
+        while i < len(lines):
+            l = lines[i].strip()
+            if not l:
+                i += 1
+                continue
+            if Q_RE.match(l):
+                break
+            if marker == 'APPARIEMENT':
+                pm = PAIR_RE.match(l)
+                if pm:
+                    pairs.append({'left': pm.group(2).strip(), 'right': pm.group(3).strip()})
+                    i += 1
+                    continue
+            cm = C_RE.match(l)
+            if cm:
+                choices[cm.group(1).upper()] = cm.group(2).strip()
+                i += 1
+                continue
+            i += 1
+        questions[num] = {'marker': marker, 'text': text, 'choices': choices, 'pairs': pairs}
+    return questions
+
+
+def _build_readable_student_answers(subject_content: str, answers_data) -> str:
+    """Reconstruit un texte lisible 'Question N : réponse' à partir des réponses
+    brutes de l'examen en ligne (clés plates pq_N / pq_N_lettre / pq_N_index),
+    en résolvant les lettres/indices vers le texte réel des choix/paires. Corrige
+    le bug où la correction IA recevait un format {qcm:..,texte:..} obsolète, qui
+    ne correspond plus à ce que le frontend envoie réellement depuis longtemps."""
+    if not isinstance(answers_data, dict):
+        return str(answers_data) if answers_data else ''
+
+    questions = _parse_subject_questions_for_grading(subject_content or '')
+    lines = []
+
+    # Regrouper les clés pq_N* par numéro de question
+    nums = sorted({k.split('_')[1] for k in answers_data if k.startswith('pq_') and len(k.split('_')) >= 2},
+                  key=lambda x: int(x) if x.isdigit() else 0)
+
+    for num in nums:
+        q = questions.get(num, {})
+        marker = q.get('marker')
+        qtext = q.get('text', '')
+        direct_key = f'pq_{num}'
+
+        if marker == 'APPARIEMENT' and q.get('pairs'):
+            parts = []
+            for idx, pair in enumerate(q['pairs']):
+                ans = answers_data.get(f'{direct_key}_{idx}', '').strip()
+                if ans:
+                    parts.append(f"  • {pair['left']} → {ans}")
+            if parts:
+                lines.append(f"Question {num} ({qtext}) — Appariements de l'étudiant :\n" + '\n'.join(parts))
+        elif marker == 'SUBOPEN' and q.get('choices'):
+            parts = []
+            for letter, ctext in q['choices'].items():
+                ans = answers_data.get(f'{direct_key}_{letter}', '').strip()
+                if ans:
+                    parts.append(f"  • {ctext} : {ans}")
+            if parts:
+                lines.append(f"Question {num} ({qtext}) :\n" + '\n'.join(parts))
+        elif marker == 'QCM_MULTI':
+            raw = answers_data.get(direct_key, '').strip()
+            if raw:
+                letters = [l.strip() for l in raw.split(',') if l.strip()]
+                resolved = [f"{l}) {q.get('choices', {}).get(l, '')}" for l in letters]
+                lines.append(f"Question {num} ({qtext}) — Réponses cochées : {', '.join(resolved)}")
+        elif marker == 'QCM':
+            raw = answers_data.get(direct_key, '').strip()
+            if raw:
+                ctext = q.get('choices', {}).get(raw, '')
+                lines.append(f"Question {num} ({qtext}) — Réponse : {raw}) {ctext}" if ctext else f"Question {num} ({qtext}) — Réponse : {raw}")
+        else:
+            raw = answers_data.get(direct_key, '').strip()
+            if raw:
+                lines.append(f"Question {num} ({qtext}) — Réponse : {raw}")
+
+    if lines:
+        return '\n\n'.join(lines)
+
+    # Repli : formats hérités ({qcm:.., texte:..}) ou blob déjà textuel
+    qcm_a  = answers_data.get('qcm', {}) if isinstance(answers_data.get('qcm'), dict) else {}
+    text_a = answers_data.get('texte', answers_data.get('text', {}))
+    text_a = text_a if isinstance(text_a, dict) else {}
+    if qcm_a or text_a:
+        legacy_lines = []
+        all_keys = sorted(set(list(qcm_a.keys()) + list(text_a.keys())),
+                           key=lambda x: int(x) if str(x).isdigit() else 0)
+        for k in all_keys:
+            if k in qcm_a:  legacy_lines.append(f"Question {k} : {qcm_a[k]}")
+            if k in text_a: legacy_lines.append(f"Question {k} : {text_a[k]}")
+        return '\n'.join(legacy_lines)
+
+    return (answers_data.get('content') or answers_data.get('reponse') or
+            answers_data.get('answer') or answers_data.get('text') or '')
+
+
 def _run_auto_correction(attempt_id: int):
     """Correction IA automatique dans un thread séparé (session DB indépendante)."""
     session = get_session()
@@ -969,29 +1092,15 @@ def _run_auto_correction(attempt_id: int):
             print(f"⚠️  Auto-correction {attempt_id} : sujet sans contenu, correction ignorée")
             return
 
-        # Extraire les réponses (format examen en ligne : {qcm, texte} ou anciens formats)
+        # Extraire les réponses (clés plates pq_N/pq_N_x réellement envoyées par le
+        # frontend — reconstruites avec le texte des questions/choix/paires pour que
+        # l'IA voie le contexte complet, notamment pour l'appariement)
         try:
             answers_data = json.loads(attempt.answers) if attempt.answers else {}
         except Exception:
             answers_data = {}
 
-        student_answers = ''
-        if isinstance(answers_data, dict):
-            qcm_a  = answers_data.get('qcm',   {})
-            text_a = answers_data.get('texte',  answers_data.get('text', {}))
-            if qcm_a or text_a:
-                lines = []
-                all_keys = sorted(set(list(qcm_a.keys()) + list(text_a.keys())),
-                                   key=lambda x: int(x) if str(x).isdigit() else 0)
-                for k in all_keys:
-                    if k in qcm_a:  lines.append(f"Question {k} : {qcm_a[k]}")
-                    if k in text_a: lines.append(f"Question {k} : {text_a[k]}")
-                student_answers = '\n'.join(lines)
-            else:
-                student_answers = (
-                    answers_data.get('content') or answers_data.get('reponse') or
-                    answers_data.get('answer')  or answers_data.get('text') or ''
-                )
+        student_answers = _build_readable_student_answers(subject.content, answers_data)
         if not student_answers:
             student_answers = attempt.answers or ''
 
@@ -1334,42 +1443,16 @@ def correct_exam_attempt(attempt_id):
         exam = attempt.exam
         subject = exam.subject
         
-        # Extraire les réponses de l'étudiant (plusieurs formats possibles)
+        # Extraire les réponses de l'étudiant (clés plates pq_N/pq_N_x réellement
+        # envoyées par le frontend — reconstruites avec le texte des questions/
+        # choix/paires pour que l'IA voie le contexte complet)
         try:
             answers_data = json.loads(attempt.answers) if attempt.answers else {}
         except Exception:
             answers_data = {}
 
-        student_answers = ''
-
-        if isinstance(answers_data, dict):
-            # Format de l'examen en ligne : { qcm: {"1":"A","2":"Vrai"}, texte: {"3":"...","4":"..."} }
-            qcm_answers  = answers_data.get('qcm', {})
-            text_answers = answers_data.get('texte', answers_data.get('text', {}))
-
-            if qcm_answers or text_answers:
-                lines = []
-                # Rassembler tous les numéros de questions dans l'ordre
-                all_keys = sorted(
-                    set(list(qcm_answers.keys()) + list(text_answers.keys())),
-                    key=lambda x: int(x) if x.isdigit() else 0
-                )
-                for k in all_keys:
-                    if k in qcm_answers:
-                        lines.append(f"Question {k} : {qcm_answers[k]}")
-                    if k in text_answers:
-                        lines.append(f"Question {k} : {text_answers[k]}")
-                student_answers = '\n'.join(lines)
-            else:
-                # Anciens formats : content / reponse / answer
-                student_answers = (
-                    answers_data.get('content') or
-                    answers_data.get('reponse') or
-                    answers_data.get('answer') or
-                    ''
-                )
-        elif isinstance(answers_data, str):
-            student_answers = answers_data
+        student_answers = _build_readable_student_answers(subject.content, answers_data) if isinstance(answers_data, dict) else \
+            (answers_data if isinstance(answers_data, str) else '')
 
         if not student_answers or not student_answers.strip():
             # Tenter le brut si le JSON ne contient rien d'utile

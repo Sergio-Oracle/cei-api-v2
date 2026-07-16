@@ -637,6 +637,45 @@ def enroll_student_to_ue():
         return jsonify({'error': str(e)}), 500
 
 
+@formations_bp.route('/api/admin/student_enrollments/bulk', methods=['POST'])
+@paseto_required
+def enroll_students_bulk():
+    """Inscrit plusieurs étudiants à une même UE en un seul appel (Retour #2)
+    — même logique unitaire que enroll_student_to_ue, bouclée sur une liste
+    de student_ids, pour rendre les inscriptions de classes entières rapides."""
+    try:
+        session = get_session()
+        ok, _ = _is_admin(session)
+        if not ok: return jsonify({'error': 'Accès non autorisé'}), 403
+        data = request.json or {}
+        student_ids = data.get('student_ids') or []
+        ue_id = data.get('ue_id')
+        if not student_ids or not ue_id:
+            session.close(); return jsonify({'error': 'Étudiants et UE requis'}), 400
+        if not session.query(UE).filter_by(id=ue_id).first():
+            session.close(); return jsonify({'error': 'UE non trouvée'}), 404
+
+        enrolled, already, errors = [], [], []
+        for sid in student_ids:
+            student = session.query(User).filter_by(id=sid, role=UserRole.STUDENT).first()
+            if not student:
+                errors.append(f"Étudiant {sid} non trouvé"); continue
+            if session.query(StudentUEEnrollment).filter_by(student_id=sid, ue_id=ue_id).first():
+                already.append(sid); continue
+            session.add(StudentUEEnrollment(student_id=sid, ue_id=ue_id))
+            enrolled.append(sid)
+        session.commit()
+        session.close()
+        return jsonify({
+            'success': True,
+            'enrolled': len(enrolled),
+            'already_enrolled': len(already),
+            'errors': errors,
+        }), 201
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 @formations_bp.route('/api/admin/students/<int:student_id>/enroll', methods=['POST'])
 @paseto_required
 def enroll_student_by_id(student_id):

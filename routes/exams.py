@@ -3795,6 +3795,44 @@ RÈGLES ABSOLUES :
         return jsonify({'error': 'Erreur lors de la génération des questions supplémentaires'}), 500
 
 
+_BANK_TYPE_QUESTION = ('qcm', 'qcm_multi', 'vf', 'appariement', 'open', 'subopen', 'code', 'photo')
+_BANK_TYPE_MAP = {'qcm': 'qcm', 'qcm_multi': 'qcm', 'vf': 'vf'}
+
+
+def _enrich_question_bank_from_subject(session, subject, user_id: int) -> int:
+    """Retour équipe DFIP — ajoute automatiquement les questions d'un sujet
+    validé à la banque de questions (enrichissement sans action manuelle).
+    Ignore les questions déjà ≥95% similaires à une entrée existante — évite
+    de flooder la banque avec des variantes quasi identiques."""
+    blocks = [b for b in _parse_subject_blocks_ordered(subject.content or '') if b.get('type') in _BANK_TYPE_QUESTION]
+    if not blocks:
+        return 0
+    existing_contents = [c for (c,) in session.query(QuestionBank.content).all()]
+    added = 0
+    for b in blocks:
+        lines = [b.get('text') or '']
+        lines.extend(b.get('extraLines') or [])
+        if b.get('choices'):
+            lines.extend(f"{c['letter']}) {c['text']}" for c in b['choices'])
+        if b.get('pairs'):
+            lines.extend(f"{chr(65 + i)}. {p['left']} → {p['right']}" for i, p in enumerate(b['pairs']))
+        content = '\n'.join(l for l in lines if l).strip()
+        if not content:
+            continue
+        if any(_similarity(content, ex) >= DUPLICATE_THRESHOLD for ex in existing_contents):
+            continue
+        session.add(QuestionBank(
+            title=(b.get('text') or f"Question {b.get('num')}")[:80],
+            content=content,
+            question_type=_BANK_TYPE_MAP.get(b['type'], 'open'),
+            ec_id=subject.ec_id,
+            created_by_id=user_id,
+        ))
+        existing_contents.append(content)  # évite d'ajouter 2 quasi-doublons du même sujet
+        added += 1
+    return added
+
+
 @exams_bp.route('/api/subjects/create-from-suggestion', methods=['POST'])
 @paseto_required
 def create_subject_from_suggestion():
@@ -3843,6 +3881,16 @@ def create_subject_from_suggestion():
                 {'subject_id': new_subject.id}
             )
             session.commit()
+
+        # Enrichissement automatique de la banque de questions à partir du
+        # sujet validé — chaque question détectée est ajoutée à la banque
+        # (sauf si déjà ≥95% similaire à une question existante).
+        try:
+            _enrich_question_bank_from_subject(session, new_subject, int(current_user_id))
+            session.commit()
+        except Exception as _enrich_err:
+            print(f"⚠️ Enrichissement banque de questions échoué (non bloquant) : {_enrich_err}")
+            session.rollback()
 
         subject_id      = new_subject.id
         subject_title   = new_subject.title

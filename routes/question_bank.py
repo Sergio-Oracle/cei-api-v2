@@ -6,6 +6,7 @@ POST /api/question_bank
 DELETE /api/question_bank/<id>
 POST /api/question_bank/assemble
 GET  /api/question_bank/duplicates
+POST /api/question_bank/duplicates/auto-clean
 POST /api/question_bank/check_duplicate
 """
 from difflib import SequenceMatcher
@@ -129,6 +130,52 @@ def find_duplicates():
         session.close()
         return jsonify({'duplicates': pairs, 'count': len(pairs)})
     except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@question_bank_bp.route('/api/question_bank/duplicates/auto-clean', methods=['POST'])
+@paseto_required
+def auto_clean_duplicates():
+    """Supprime automatiquement les doublons détectés (≥95% de similarité) —
+    conserve la question la plus ancienne de chaque paire, supprime la plus
+    récente. Répété tant que de nouvelles paires apparaissent (au cas où
+    A≈B≈C), avec une limite de sécurité sur le nombre de passes."""
+    try:
+        user_id = get_current_user_id()
+        session = get_session()
+        user    = session.query(User).filter_by(id=user_id).first()
+        if not user or user.role not in [UserRole.ADMIN, UserRole.PROFESSOR]:
+            session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
+
+        deleted = []
+        for _ in range(10):  # limite de sécurité — évite une boucle infinie
+            questions = session.query(QuestionBank).order_by(QuestionBank.created_at.asc()).all()
+            to_delete_id = None
+            to_delete_title = None
+            for i in range(len(questions)):
+                if to_delete_id:
+                    break
+                for j in range(i + 1, len(questions)):
+                    sim = _similarity(questions[i].content, questions[j].content)
+                    if sim >= DUPLICATE_THRESHOLD:
+                        # questions[i] est la plus ancienne (tri asc) → on garde
+                        # questions[j], la plus récente → on supprime
+                        to_delete_id = questions[j].id
+                        to_delete_title = questions[j].title
+                        break
+            if not to_delete_id:
+                break
+            q = session.query(QuestionBank).filter_by(id=to_delete_id).first()
+            if q:
+                session.delete(q)
+                session.commit()
+                deleted.append({'id': to_delete_id, 'title': to_delete_title})
+
+        session.close()
+        return jsonify({'success': True, 'deleted_count': len(deleted), 'deleted': deleted})
+    except Exception as e:
+        try: session.rollback(); session.close()
+        except: pass
         return jsonify({'error': str(e)}), 500
 
 

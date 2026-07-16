@@ -5,6 +5,7 @@ from flask_bcrypt import Bcrypt
 from threading import Thread
 import pandas as pd
 import io
+import re
 import chardet
 from datetime import datetime
 from models import (
@@ -627,3 +628,190 @@ def register_csv_routes(app):
             return jsonify({'error': str(e)}), 500
         finally:
             session_db.close()
+
+    # ========================================================================
+    # IMPORT EXCEL MAQUETTE — format réel des tableaux UE/EC de l'établissement
+    # (Pôle/Formation déjà créés via l'UI ; ce fichier ajoute UE+EC à UN semestre)
+    # ========================================================================
+
+    def _parse_maquette_excel(file_storage):
+        """Parse un fichier Excel de maquette au format réel fourni par l'école :
+        tableau à 7 colonnes (Code/Nom/Crédit/Type UE, puis Code/Nom/Coef EC),
+        cellules UE fusionnées (répétées seulement à la 1re ligne de chaque
+        groupe d'EC), pourcentages CC/EX imbriqués dans le nom de l'EC
+        (ex: "Fondamentaux de la Communication [CC:40%, EX:60%]")."""
+        df = pd.read_excel(file_storage, header=None, dtype=str)
+
+        # Localise la ligne d'en-têtes (contient "Code" au moins 2 fois) —
+        # tolère un nombre variable de lignes de titre au-dessus
+        header_row = None
+        for i in range(min(8, len(df))):
+            vals = [str(v).strip() for v in df.iloc[i].tolist() if pd.notna(v)]
+            if vals.count('Code') >= 2:
+                header_row = i
+                break
+        if header_row is None:
+            raise ValueError("Impossible de localiser la ligne d'en-têtes (attendu : 'Code' répété pour UE et EC)")
+
+        data = df.iloc[header_row + 1:, :7].copy()
+        data.columns = ['ue_code', 'ue_name', 'ue_credit', 'ue_type', 'ec_code', 'ec_name', 'ec_coef']
+        # Cellules UE fusionnées dans Excel → vides sur les lignes EC suivantes
+        data[['ue_code', 'ue_name', 'ue_credit', 'ue_type']] = data[['ue_code', 'ue_name', 'ue_credit', 'ue_type']].ffill()
+        data = data.dropna(subset=['ec_code', 'ec_name'], how='all')
+
+        cc_ex_re = re.compile(r'\[\s*CC\s*:\s*(\d+)\s*%.*?EX\s*:\s*(\d+)\s*%\s*\]', re.I | re.S)
+
+        ues = {}
+        for _, row in data.iterrows():
+            ue_code = str(row['ue_code']).strip() if pd.notna(row['ue_code']) else None
+            ec_code = str(row['ec_code']).strip() if pd.notna(row['ec_code']) else None
+            if not ue_code or not ec_code or ue_code == 'nan' or ec_code == 'nan':
+                continue
+            if ue_code not in ues:
+                try:
+                    credits = int(float(row['ue_credit'])) if pd.notna(row['ue_credit']) else 6
+                except ValueError:
+                    credits = 6
+                ues[ue_code] = {
+                    'code': ue_code,
+                    'name': str(row['ue_name']).strip() if pd.notna(row['ue_name']) else ue_code,
+                    'credits': credits,
+                    'ue_type': (str(row['ue_type']).strip().lower() if pd.notna(row['ue_type']) else 'obligatoire'),
+                    'ecs': [],
+                }
+            ec_name_raw = (str(row['ec_name']).strip() if pd.notna(row['ec_name']) else ec_code).replace('\n', ' ')
+            m = cc_ex_re.search(ec_name_raw)
+            cc, ex = (int(m.group(1)), int(m.group(2))) if m else (40, 60)
+            ec_name_clean = cc_ex_re.sub('', ec_name_raw).strip()
+            try:
+                coef = int(float(row['ec_coef'])) if pd.notna(row['ec_coef']) else 1
+            except ValueError:
+                coef = 1
+            ues[ue_code]['ecs'].append({
+                'code': ec_code, 'name': ec_name_clean, 'coefficient': coef,
+                'cc_percentage': cc, 'ex_percentage': ex,
+            })
+        return list(ues.values())
+
+    @app.route('/api/admin/maquette/import-excel-preview', methods=['POST'])
+    @paseto_required
+    def preview_maquette_excel():
+        """Analyse un fichier Excel de maquette (format réel école) SANS écrire
+        en base — retourne l'aperçu UE/EC détecté pour validation avant import."""
+        try:
+            current_user_id = get_current_user_id()
+            session_db = get_session()
+            user = session_db.query(User).filter_by(id=current_user_id).first()
+            if not user or user.role != UserRole.ADMIN:
+                session_db.close()
+                return jsonify({'error': 'Accès non autorisé'}), 403
+
+            semester_id = request.form.get('semester_id')
+            semester = session_db.query(Semester).filter_by(id=semester_id).first() if semester_id else None
+            if not semester:
+                session_db.close()
+                return jsonify({'error': 'Semestre cible invalide — sélectionnez le semestre où importer'}), 400
+
+            if 'file' not in request.files:
+                session_db.close()
+                return jsonify({'error': 'Aucun fichier fourni'}), 400
+            file = request.files['file']
+            if not file.filename.lower().endswith(('.xlsx', '.xls')):
+                session_db.close()
+                return jsonify({'error': 'Format invalide. Utilisez un fichier Excel (.xlsx)'}), 400
+
+            ues = _parse_maquette_excel(file)
+            if not ues:
+                session_db.close()
+                return jsonify({'error': "Aucune UE/EC détectée dans le fichier — vérifiez qu'il respecte le format attendu"}), 400
+
+            existing_ue_codes = {u.code for u in session_db.query(UE.code).all()}
+            existing_ec_codes = {e.code for e in session_db.query(EC.code).all()}
+            for u in ues:
+                u['already_exists'] = u['code'] in existing_ue_codes
+                for e in u['ecs']:
+                    e['already_exists'] = e['code'] in existing_ec_codes
+
+            session_db.close()
+            return jsonify({
+                'success': True,
+                'semester_id': semester.id,
+                'semester_name': semester.name,
+                'ues': ues,
+                'ue_count': len(ues),
+                'ec_count': sum(len(u['ecs']) for u in ues),
+            })
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            try: session_db.close()
+            except: pass
+            return jsonify({'error': f"Échec de l'analyse du fichier : {e}"}), 500
+
+    @app.route('/api/admin/maquette/import-excel-confirm', methods=['POST'])
+    @paseto_required
+    def confirm_maquette_excel():
+        """Écrit en base les UE/EC précédemment prévisualisés (aucun re-parsing
+        du fichier — reçoit directement la structure validée par l'admin)."""
+        try:
+            current_user_id = get_current_user_id()
+            session_db = get_session()
+            user = session_db.query(User).filter_by(id=current_user_id).first()
+            if not user or user.role != UserRole.ADMIN:
+                session_db.close()
+                return jsonify({'error': 'Accès non autorisé'}), 403
+
+            data = request.json or {}
+            semester_id = data.get('semester_id')
+            ues = data.get('ues') or []
+            semester = session_db.query(Semester).filter_by(id=semester_id).first() if semester_id else None
+            if not semester:
+                session_db.close()
+                return jsonify({'error': 'Semestre cible invalide'}), 400
+
+            created_ues, created_ecs, skipped = [], [], []
+            for u in ues:
+                ue_code = (u.get('code') or '').strip()
+                if not ue_code:
+                    continue
+                ue = session_db.query(UE).filter_by(code=ue_code).first()
+                if not ue:
+                    ue = UE(semester_id=semester.id, code=ue_code, name=u.get('name') or ue_code,
+                            credits=int(u.get('credits') or 6), ue_type=u.get('ue_type') or 'obligatoire')
+                    session_db.add(ue)
+                    session_db.flush()
+                    created_ues.append(ue_code)
+                for e in (u.get('ecs') or []):
+                    ec_code = (e.get('code') or '').strip()
+                    if not ec_code:
+                        continue
+                    if session_db.query(EC).filter_by(code=ec_code).first():
+                        skipped.append(ec_code)
+                        continue
+                    # Attention : utiliser "or" ici tronquerait un pourcentage
+                    # CC/EX légitimement à 0 (ex: "Legal Tech [CC:0%, EX:100%]"
+                    # dans les maquettes réelles) — il faut un test explicite sur None.
+                    cc_pct = e.get('cc_percentage')
+                    ex_pct = e.get('ex_percentage')
+                    session_db.add(EC(
+                        ue_id=ue.id, code=ec_code, name=e.get('name') or ec_code,
+                        coefficient=int(e.get('coefficient') or 1),
+                        cc_percentage=int(cc_pct) if cc_pct is not None else 40,
+                        ex_percentage=int(ex_pct) if ex_pct is not None else 60,
+                    ))
+                    created_ecs.append(ec_code)
+            session_db.commit()
+            session_db.close()
+            return jsonify({
+                'success': True,
+                'created_ues': len(created_ues),
+                'created_ecs': len(created_ecs),
+                'skipped_existing': len(skipped),
+            })
+        except Exception as e:
+            session_db.rollback()
+            import traceback
+            traceback.print_exc()
+            try: session_db.close()
+            except: pass
+            return jsonify({'error': str(e)}), 500

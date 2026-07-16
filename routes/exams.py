@@ -968,10 +968,75 @@ def get_exam_attempt_subject(attempt_id):
 
         session.close()
         return jsonify(subject_data)
-        
+
     except Exception as e:
         print(f"❌ Erreur get_exam_attempt_subject: {e}")
         return jsonify({'error': str(e)}), 500
+
+
+@exams_bp.route('/api/exam_attempts/<int:attempt_id>/paginated', methods=['GET'])
+@paseto_required
+def get_exam_attempt_paginated(attempt_id):
+    """
+    Pagination des questions façon Moodle (Notes points 22/23) : le découpage
+    en pages et l'ordre (mélange) des questions sont calculés UNE FOIS côté
+    serveur — comme Moodle stocke `quiz_slots.page` en base plutôt que de
+    laisser le client recalculer à chaque rendu — au lieu d'être recalculés
+    côté client à chaque montage du composant (ce qui remélangeait différemment
+    les questions/choix à chaque rechargement de page, un vrai bug corrigé ici).
+
+    Le mélange est déterministe (seed = attempt_id) : stable pour un même
+    étudiant à travers les rechargements, comme une page Moodle assignée une
+    fois pour toutes à une tentative.
+    """
+    try:
+        user_id = get_current_user_id()
+        session = get_session()
+
+        attempt = session.query(ExamAttempt).options(
+            joinedload(ExamAttempt.exam).joinedload(OnlineExam.subject)
+        ).filter_by(id=attempt_id, student_id=user_id).first()
+
+        if not attempt:
+            session.close()
+            return jsonify({'error': 'Tentative non trouvée'}), 404
+
+        exam = attempt.exam
+        subject = exam.subject if exam else None
+        content = _strip_bareme_from_content(subject.content or '') if subject else ''
+
+        blocks = _parse_subject_blocks_ordered(content) if content else []
+
+        p1_types = ('qcm', 'qcm_multi', 'vf', 'appariement')
+        p2_types = ('section', 'open', 'subopen', 'code', 'photo')
+        p1_blocks = [b for b in blocks if b['type'] in p1_types]
+        p2_items  = [b for b in blocks if b['type'] in p2_types]
+
+        if exam and exam.randomize_questions:
+            p1_blocks = _seeded_shuffle(p1_blocks, attempt_id)
+            for b in p1_blocks:
+                if b['type'] in ('qcm', 'qcm_multi') and b.get('choices'):
+                    b['choices'] = _seeded_shuffle(b['choices'], f'{attempt_id}:{b["num"]}')
+            # Partie 2 (questions ouvertes) : jamais mélangée, comme côté client
+
+        per_page = exam.questions_per_page if exam and exam.questions_per_page and exam.questions_per_page > 0 else 0
+        p1_pages = _paginate_moodle_style(p1_blocks, per_page)
+        p2_pages = _paginate_moodle_style(p2_items, per_page)
+
+        session.close()
+        return jsonify({
+            'questions_per_page': per_page,
+            'p1_blocks': p1_blocks,
+            'p2_items': p2_items,
+            'p1_pages': p1_pages,
+            'p2_pages': p2_pages,
+        })
+    except Exception as e:
+        print(f"❌ Erreur get_exam_attempt_paginated: {e}")
+        try: session.close()
+        except: pass
+        return jsonify({'error': str(e)}), 500
+
 
 def _parse_subject_questions_for_grading(content: str) -> dict:
     """Extrait num→{type, text, choices:{letter:text}, pairs:[{left,right}]} du
@@ -1020,6 +1085,184 @@ def _parse_subject_questions_for_grading(content: str) -> dict:
             i += 1
         questions[num] = {'marker': marker, 'text': text, 'choices': choices, 'pairs': pairs}
     return questions
+
+
+# ============================================================================
+# PAGINATION FAÇON MOODLE (Notes points 22/23 — référence : mod_quiz de Moodle
+# 4.4.2, quiz_slots.page + quiz_repaginate_questions() + mod_quiz_get_attempt_data)
+# ============================================================================
+
+def _parse_subject_blocks_ordered(raw: str) -> list:
+    """Port Python fidèle du parser JS `parseExamBlocks` (app/exam/[id]/page.tsx) —
+    reconstruit la séquence ORDONNÉE de blocs (sections + questions typées) du
+    contenu brut d'un sujet, pour permettre une pagination et un mélange calculés
+    côté serveur (source de vérité unique, comme Moodle stocke `quiz_slots.page`
+    plutôt que de laisser le client recalculer)."""
+    VF_RE = re.compile(r'\bvrai\s*[/|ou]\s*faux\b|\bV\s*[/|]\s*F\b', re.I)
+    strip = lambda s: re.sub(r'\s*[*_]{1,2}$', '', re.sub(r'^[*_]{1,2}\s*', '', s.strip())).strip()
+    Q_RE = re.compile(r'^(?:(?:Question|Q)\.?\s+)?(\d{1,2})(?!\s*\.\s*\d)(?:\s*[.:)–—-]|\.\s+|\s{2,})\s*(.+)', re.I)
+    TYPE_MARKER = re.compile(r'\[(QCM_MULTI|QCM|VF|OUVERT|SUBOPEN|APPARIEMENT|CODE|PHOTO|OUVERT[ES]*)\]', re.I)
+    C_RE = re.compile(r'^(?:\(?([A-Fa-f])\)?)\s*[.):\s-]\s+(.+)')
+    PAIR_RE = re.compile(r'^(?:\(?([A-Fa-f])\)?)\s*[.):\s-]\s+(.+?)\s*(?:→|->)\s*(.+)')
+    SEP_RE = re.compile(r'^[-=*─═▬]{3,}$')
+    SECT_RE = re.compile(r'^(?:Partie|Section|Exercice|Part)\s+(?:[IVX]+|\d+)', re.I)
+    INSTR_RE = re.compile(
+        r'^(?:Défini[rz]|Expliqu[eé][rz]?|Décri[vz]|Analys[eé][rz]?|Calcul[eé][rz]?|Rédig[eé][rz]?|'
+        r'Démontr[eé][rz]?|Comment[eé][rz]?|Identifi[eé][rz]?|Justifi[eé][rz]?|Compar[eé][rz]?|'
+        r'Présent[eé][rz]?|Discut[eé][rz]?|Montr[eé][rz]?|Propos[eé][rz]?|Cit[eé][rz]?|Donner?)', re.I)
+    PTS_RE = re.compile(r'\(\s*\d+\s*pts?\s*\)', re.I)
+    MEDIA_RE = re.compile(r'^\[(IMAGE|AUDIO):(.+)\]$', re.I)
+
+    def is_q(l): return bool(Q_RE.match(strip(l)))
+    def is_c(l): return bool(C_RE.match(strip(l))) and len(strip(l)) > 3
+    def is_sep(l): return not l.strip() or bool(SEP_RE.match(l.strip()))
+    def is_sect(l): return bool(SECT_RE.match(strip(l))) and not is_q(l)
+
+    def get_q(l):
+        s = strip(l)
+        m = Q_RE.match(s)
+        if not m:
+            return None
+        marker_m = TYPE_MARKER.search(s)
+        text = TYPE_MARKER.sub('', strip(m.group(2))).strip()
+        return {'num': m.group(1), 'text': text, 'markerType': marker_m.group(1).upper() if marker_m else None}
+
+    def get_c(l):
+        m = C_RE.match(strip(l))
+        return {'letter': m.group(1).upper(), 'text': strip(m.group(2))} if m else None
+
+    def get_pair(l):
+        m = PAIR_RE.match(strip(l))
+        return {'left': strip(m.group(2)), 'right': strip(m.group(3))} if m else None
+
+    lines = raw.split('\n')
+    blocks = []
+    i = 0
+    n = len(lines)
+    while i < n and not is_q(lines[i]):
+        i += 1
+    # préambule ignoré ici (déjà affiché intégralement via le panneau "sujet complet")
+
+    while i < n:
+        if is_sect(lines[i]):
+            blocks.append({'type': 'section', 'title': strip(lines[i])})
+            i += 1
+            continue
+        if is_sep(lines[i]) and not is_q(lines[i]):
+            i += 1
+            continue
+        if not is_q(lines[i]):
+            i += 1
+            continue
+        q = get_q(lines[i])
+        if not q:
+            i += 1
+            continue
+        is_pair_mode = q['markerType'] == 'APPARIEMENT'
+        i += 1
+        extra_lines, choices, pairs = [], [], []
+        while i < n:
+            if is_sep(lines[i]):
+                i += 1
+                if len(choices) >= 2 or len(pairs) >= 2:
+                    break
+                continue
+            if is_sect(lines[i]) and not is_q(lines[i]):
+                break
+            if is_q(lines[i]) and not is_c(lines[i]):
+                break
+            if is_pair_mode:
+                p = get_pair(lines[i])
+                if p:
+                    pairs.append(p)
+                    i += 1
+                elif not pairs:
+                    extra_lines.append(lines[i])
+                    i += 1
+                else:
+                    break
+                continue
+            c = get_c(lines[i])
+            if c:
+                choices.append(c)
+                i += 1
+            elif not choices:
+                extra_lines.append(lines[i])
+                i += 1
+            else:
+                break
+
+        if q['markerType']:
+            btype = {
+                'QCM': 'qcm', 'QCM_MULTI': 'qcm_multi', 'VF': 'vf', 'SUBOPEN': 'subopen',
+                'APPARIEMENT': 'appariement', 'CODE': 'code', 'PHOTO': 'photo',
+            }.get(q['markerType'], 'open')
+        else:
+            has_pts_choices = any(PTS_RE.search(c['text']) for c in choices)
+            has_instr_verbs = any(INSTR_RE.match(c['text']) for c in choices)
+            if (has_pts_choices or has_instr_verbs) and len(choices) >= 1:
+                btype = 'subopen'
+            elif len(choices) >= 2:
+                btype = 'qcm'
+            elif VF_RE.search(q['text']) or VF_RE.search(' '.join(extra_lines)):
+                btype = 'vf'
+            else:
+                btype = 'open'
+
+        media = []
+        clean_extra = []
+        for l in extra_lines:
+            m = MEDIA_RE.match(strip(l))
+            if m:
+                media.append({'type': m.group(1).lower(), 'filename': m.group(2).strip()})
+            else:
+                clean_extra.append(l)
+
+        blocks.append({
+            'type': btype, 'num': q['num'], 'text': q['text'], 'extraLines': clean_extra,
+            'choices': choices, 'pairs': pairs or None, 'media': media or None,
+        })
+    return blocks
+
+
+def _paginate_moodle_style(blocks: list, per_page: int) -> list:
+    """Port Python de `paginateBlocks` (frontend) — groupe N questions par page,
+    MAIS force en plus un saut de page à chaque en-tête de section rencontré,
+    exactement comme `quiz_repaginate_questions()` de Moodle force un saut à
+    chaque `firstslot` de section même si le quota par page n'est pas atteint
+    (mod/quiz/locallib.php:515-544 sur le serveur Moodle de référence)."""
+    if not blocks:
+        return []
+    if not per_page or per_page <= 0:
+        return [blocks]
+    pages, current, q_count = [], [], 0
+    for b in blocks:
+        is_question = b['type'] not in ('section', 'text')
+        if b['type'] == 'section' and current:
+            pages.append(current)
+            current, q_count = [], 0
+        elif is_question and q_count == per_page:
+            pages.append(current)
+            current, q_count = [], 0
+        current.append(b)
+        if is_question:
+            q_count += 1
+    if current:
+        pages.append(current)
+    return pages
+
+
+def _seeded_shuffle(items: list, seed) -> list:
+    """Mélange déterministe — stable pour un même attempt_id à travers les
+    rechargements de page (contrairement au Math.random() côté client qui
+    remélangeait différemment à chaque montage du composant)."""
+    import random as _random
+    rng = _random.Random(seed)
+    shuffled = list(items)
+    for idx in range(len(shuffled) - 1, 0, -1):
+        j = rng.randint(0, idx)
+        shuffled[idx], shuffled[j] = shuffled[j], shuffled[idx]
+    return shuffled
 
 
 def _build_readable_student_answers(subject_content: str, answers_data) -> str:

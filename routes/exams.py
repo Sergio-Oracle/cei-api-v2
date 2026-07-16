@@ -3441,6 +3441,27 @@ def generate_full_exam_from_suggestion():
     detected_domain = suggestion.get('detected_domain', '')
     domain_line = f"- Domaine disciplinaire : {detected_domain}" if detected_domain else ""
 
+    try:
+        question_count = max(1, min(int(suggestion.get('question_count') or 20), 60))
+    except (TypeError, ValueError):
+        question_count = 20
+
+    # Niveaux taxonomiques de Bloom (Retour #5) — ciblent la répartition cognitive
+    # des questions générées ; le professeur les sélectionne dans le formulaire.
+    _BLOOM_LABELS = {
+        'connaissance':  'Connaissance (mémorisation, restitution de faits)',
+        'comprehension': 'Compréhension (expliquer avec ses propres mots)',
+        'application':   'Application (utiliser un concept dans une situation nouvelle)',
+        'analyse':       'Analyse (décomposer, comparer, établir des relations)',
+        'synthese':      'Synthèse (combiner des éléments pour créer quelque chose de nouveau)',
+        'evaluation':    'Évaluation (juger, argumenter, critiquer selon des critères explicites)',
+    }
+    bloom_levels = [b for b in (suggestion.get('bloom_levels') or []) if b in _BLOOM_LABELS]
+    bloom_line = ''
+    if bloom_levels:
+        bloom_line = ("- Niveaux taxonomiques de Bloom à cibler (répartir les questions entre ces niveaux) :\n"
+                       + '\n'.join(f'  • {_BLOOM_LABELS[b]}' for b in bloom_levels))
+
     # Récupérer les types de questions choisis par l'utilisateur (prioritaire sur exam_type de l'IA)
     question_types = suggestion.get('question_types', '')
     if question_types:
@@ -3515,22 +3536,23 @@ D. [Terme ou élément 4] → [Définition/correspondance 4]""",
 
     if not is_mixed and len(_selected) == 1:
         _title, _marker, _tpl, _rule = _TEMPLATES[_selected[0]]
-        questions_format = "\n\n".join(_tpl.format(n=i) for i in (1, 2)) + "\n\n[Continuer ainsi selon durée et difficulté. Total = 20 pts]"
-        format_rules = f"- OBLIGATOIRE : {_rule}\n- 20 questions au total × points répartis pour totaliser 20 pts"
+        questions_format = "\n\n".join(_tpl.format(n=i) for i in (1, 2)) + f"\n\n[Continuer ainsi jusqu'à {question_count} questions au total, selon durée et difficulté. Total des points = 20 pts]"
+        format_rules = f"- OBLIGATOIRE : {_rule}\n- EXACTEMENT {question_count} questions au total, numérotées Question 1 à Question {question_count} × points répartis pour totaliser 20 pts"
     else:
         pts_per_part = max(1, 20 // len(_selected))
+        q_per_part = max(1, question_count // len(_selected))
         sections = []
         n_start = 1
         for k in _selected:
             _title, _marker, _tpl, _rule = _TEMPLATES[k]
             sections.append(
-                f"Partie — {_title} ({pts_per_part} pts)\n\n" +
+                f"Partie — {_title} ({pts_per_part} pts, ~{q_per_part} questions)\n\n" +
                 "\n\n".join(_tpl.format(n=i) for i in (n_start, n_start+1)) +
                 "\n\n[... continuer cette partie selon durée/difficulté ...]"
             )
             n_start += 2
-        questions_format = "\n\n".join(sections) + "\n\n[Numérotation continue d'une partie à l'autre. Total de toutes les parties = 20 pts]"
-        format_rules = "\n".join(f"- Partie {_TEMPLATES[k][0]} : {_TEMPLATES[k][3]}" for k in _selected) + "\n- Total toutes parties confondues = 20 pts"
+        questions_format = "\n\n".join(sections) + f"\n\n[Numérotation continue d'une partie à l'autre. EXACTEMENT {question_count} questions au total. Total de toutes les parties = 20 pts]"
+        format_rules = "\n".join(f"- Partie {_TEMPLATES[k][0]} : {_TEMPLATES[k][3]}" for k in _selected) + f"\n- EXACTEMENT {question_count} questions au total (toutes parties confondues)\n- Total toutes parties confondues = 20 pts"
 
     prompt = f"""Tu es un expert en création d'examens universitaires francophones, compétent dans TOUS les domaines académiques (sciences, droit, médecine, lettres, arts, ingénierie, langues, économie, histoire, philosophie, agronomie, architecture, etc.).
 
@@ -3542,6 +3564,7 @@ Crée un sujet d'examen COMPLET et DÉTAILLÉ avec ces informations :
 - Durée : {duration} minutes
 - Description : {description}
 {domain_line}
+{bloom_line}
 - Thèmes à couvrir :
 {key_points_str}
 {examples_section}
@@ -3605,12 +3628,25 @@ Règles ABSOLUES à respecter :
             content = full_exam_text
             rubric = full_exam_text
 
+        # Retour #10 — vérifier les doublons AVANT validation : questions du lot
+        # généré qui se ressemblent entre elles à ≥95% (même pattern que
+        # generate_more_questions, qui compare contre un sujet déjà existant).
+        q_texts = re.findall(r'Question\s+\d{1,3}\s*[—\-–:.].*?(?=\nQuestion\s+\d{1,3}\s*[—\-–:.]|\Z)', content, re.S)
+        duplicates = []
+        for i in range(len(q_texts)):
+            for j in range(i + 1, len(q_texts)):
+                sim = _similarity(q_texts[i][:300], q_texts[j][:300])
+                if sim >= DUPLICATE_THRESHOLD:
+                    duplicates.append({'similarity': round(sim * 100, 1)})
+                    break
+
         return jsonify({
             'success': True,
             'title': title,
             'content': content,
             'rubric': rubric,
-            'full_text': full_exam_text
+            'full_text': full_exam_text,
+            'duplicates': duplicates,
         })
 
     except Exception as e:

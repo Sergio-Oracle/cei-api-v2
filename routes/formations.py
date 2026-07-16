@@ -565,8 +565,16 @@ def assign_ec_to_professor():
             session.close(); return jsonify({'error': 'Professeur non trouvé'}), 404
         if session.query(ECAssignment).filter_by(ec_id=ec_id, professor_id=prof_id).first():
             session.close(); return jsonify({'error': 'Ce professeur est déjà affecté à cet EC'}), 400
+        ec = session.query(EC).filter_by(id=ec_id).first()
         session.add(ECAssignment(ec_id=ec_id, professor_id=prof_id))
-        session.commit(); session.close()
+        session.commit()
+        try:
+            from notif_bus import notify_user
+            notify_user(prof_id, 'ec_assigned', 'Affecté à un EC',
+                         f'Vous avez été affecté à l\'EC « {ec.code} — {ec.name} ».', priority='default', tags=['books'])
+        except Exception:
+            pass
+        session.close()
         return jsonify({'success': True, 'message': 'EC affecté avec succès'}), 201
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -582,14 +590,22 @@ def assign_ec_by_id(eid):
         data = request.json or {}
         prof_id = data.get('professor_id')
         if not prof_id: session.close(); return jsonify({'error': 'Professeur requis'}), 400
-        if not session.query(EC).filter_by(id=eid).first():
+        ec = session.query(EC).filter_by(id=eid).first()
+        if not ec:
             session.close(); return jsonify({'error': 'EC non trouvé'}), 404
         if not session.query(User).filter_by(id=prof_id, role=UserRole.PROFESSOR).first():
             session.close(); return jsonify({'error': 'Professeur non trouvé'}), 404
         if session.query(ECAssignment).filter_by(ec_id=eid, professor_id=prof_id).first():
             session.close(); return jsonify({'error': 'Ce professeur est déjà affecté à cet EC'}), 400
         session.add(ECAssignment(ec_id=eid, professor_id=prof_id))
-        session.commit(); session.close()
+        session.commit()
+        try:
+            from notif_bus import notify_user
+            notify_user(prof_id, 'ec_assigned', 'Affecté à un EC',
+                         f'Vous avez été affecté à l\'EC « {ec.code} — {ec.name} ».', priority='default', tags=['books'])
+        except Exception:
+            pass
+        session.close()
         return jsonify({'success': True, 'message': 'EC affecté avec succès'}), 201
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -630,8 +646,16 @@ def enroll_student_to_ue():
             session.close(); return jsonify({'error': 'UE non trouvée'}), 404
         if session.query(StudentUEEnrollment).filter_by(student_id=sid, ue_id=uid).first():
             session.close(); return jsonify({'error': 'Étudiant déjà inscrit à cette UE'}), 400
+        ue = session.query(UE).filter_by(id=uid).first()
         session.add(StudentUEEnrollment(student_id=sid, ue_id=uid))
-        session.commit(); session.close()
+        session.commit()
+        try:
+            from notif_bus import notify_user
+            notify_user(sid, 'ue_enrolled', 'Inscription à une UE',
+                         f'Vous avez été inscrit à l\'UE « {ue.code} — {ue.name} ».', priority='default', tags=['bookmark'])
+        except Exception:
+            pass
+        session.close()
         return jsonify({'success': True, 'message': 'Étudiant inscrit avec succès'}), 201
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -652,7 +676,8 @@ def enroll_students_bulk():
         ue_id = data.get('ue_id')
         if not student_ids or not ue_id:
             session.close(); return jsonify({'error': 'Étudiants et UE requis'}), 400
-        if not session.query(UE).filter_by(id=ue_id).first():
+        ue = session.query(UE).filter_by(id=ue_id).first()
+        if not ue:
             session.close(); return jsonify({'error': 'UE non trouvée'}), 404
 
         enrolled, already, errors = [], [], []
@@ -665,6 +690,13 @@ def enroll_students_bulk():
             session.add(StudentUEEnrollment(student_id=sid, ue_id=ue_id))
             enrolled.append(sid)
         session.commit()
+        try:
+            from notif_bus import notify_user
+            for sid in enrolled:
+                notify_user(sid, 'ue_enrolled', 'Inscription à une UE',
+                             f'Vous avez été inscrit à l\'UE « {ue.code} — {ue.name} ».', priority='default', tags=['bookmark'])
+        except Exception:
+            pass
         session.close()
         return jsonify({
             'success': True,
@@ -692,8 +724,16 @@ def enroll_student_by_id(student_id):
             session.close(); return jsonify({'error': 'UE non trouvée'}), 404
         if session.query(StudentUEEnrollment).filter_by(student_id=student_id, ue_id=ue_id).first():
             session.close(); return jsonify({'error': 'Étudiant déjà inscrit à cette UE'}), 400
+        ue = session.query(UE).filter_by(id=ue_id).first()
         session.add(StudentUEEnrollment(student_id=student_id, ue_id=ue_id))
-        session.commit(); session.close()
+        session.commit()
+        try:
+            from notif_bus import notify_user
+            notify_user(student_id, 'ue_enrolled', 'Inscription à une UE',
+                         f'Vous avez été inscrit à l\'UE « {ue.code} — {ue.name} ».', priority='default', tags=['bookmark'])
+        except Exception:
+            pass
+        session.close()
         return jsonify({'success': True, 'message': 'Étudiant inscrit avec succès'}), 201
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -1005,12 +1045,22 @@ def link_proctor_group_ec(gid):
         data = request.json or {}
         ec_id = data.get('ec_id')
         if not ec_id: session.close(); return jsonify({'error': 'EC requis'}), 400
-        if not session.query(EC).filter_by(id=ec_id).first():
+        ec = session.query(EC).filter_by(id=ec_id).first()
+        if not ec:
             session.close(); return jsonify({'error': 'EC non trouvé'}), 404
         if session.query(ProctorGroupEC).filter_by(group_id=gid, ec_id=ec_id).first():
             session.close(); return jsonify({'error': 'Ce groupe est déjà rattaché à cet EC'}), 400
         session.add(ProctorGroupEC(group_id=gid, ec_id=ec_id))
         session.commit()
+        try:
+            from notif_bus import notify_user
+            members = session.query(ProctorGroupMember).filter_by(group_id=gid).all()
+            for m in members:
+                notify_user(m.proctor_id, 'proctor_group_ec_added', 'Nouvel EC couvert par votre groupe',
+                             f'Le groupe « {group.name} » (dont vous faites partie) surveille désormais l\'EC « {ec.code} — {ec.name} ».',
+                             priority='default', tags=['bookmark'])
+        except Exception:
+            pass
         result = group.to_dict()
         session.close()
         return jsonify(result), 201

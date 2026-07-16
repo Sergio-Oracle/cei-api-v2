@@ -428,9 +428,15 @@ def edit_online_exam(exam_id):
                 pass
         if 'duration_minutes' in data:
             exam.duration_minutes = max(5, int(data['duration_minutes']))
+        # Retour #6 — reprogrammation par édition : recalculer end_time à chaque
+        # changement de start_time/duration_minutes (sinon il reste désynchronisé
+        # de la nouvelle date/durée, empêchant l'examen de rester accessible sur
+        # la bonne fenêtre horaire).
+        exam.end_time = exam.start_time + timedelta(minutes=exam.duration_minutes)
         session.commit()
+        result = exam.to_dict()
         session.close()
-        return jsonify({'success': True})
+        return jsonify({'success': True, 'exam': result})
     except Exception as e:
         if session:
             session.rollback()

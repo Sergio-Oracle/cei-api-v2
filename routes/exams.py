@@ -3795,6 +3795,41 @@ RÈGLES ABSOLUES :
         return jsonify({'error': 'Erreur lors de la génération des questions supplémentaires'}), 500
 
 
+@exams_bp.route('/api/subjects/suggest-question-count', methods=['POST'])
+@paseto_required
+def suggest_question_count():
+    """Retour équipe DFIP — l'IA suggère un nombre de questions adapté à la
+    durée/difficulté/niveau, au lieu de laisser le professeur deviner."""
+    user_id = get_current_user_id()
+    session = get_session()
+    user = session.query(User).filter_by(id=int(user_id)).first()
+    session.close()
+    if not user or user.role not in [UserRole.PROFESSOR, UserRole.ADMIN]:
+        return jsonify({'error': 'Accès non autorisé'}), 403
+
+    data = request.get_json(silent=True) or {}
+    duration = int(data.get('duration') or 60)
+    difficulty = data.get('difficulty') or 'Moyen'
+    student_level = data.get('student_level') or 'Licence 3'
+    question_types = data.get('question_types') or 'mixte'
+
+    prompt = f"""Tu es un expert en ingénierie pédagogique universitaire.
+Un examen dure {duration} minutes, niveau {student_level}, difficulté {difficulty}, types de questions : {question_types}.
+En te basant sur le temps de réponse réaliste par question selon son type et la difficulté (une question ouverte prend bien plus de temps qu'un QCM), indique UNIQUEMENT le nombre de questions recommandé pour occuper la durée de l'examen sans que les étudiants ne soient pressés ni n'aient trop de temps libre.
+Réponds STRICTEMENT avec un nombre entier seul, rien d'autre (pas de phrase, pas d'unité)."""
+
+    try:
+        raw = call_ai_simple(prompt).strip()
+        m = re.search(r'\d+', raw)
+        suggested = int(m.group()) if m else max(1, duration // 5)
+        suggested = max(1, min(suggested, 60))
+        return jsonify({'success': True, 'suggested_count': suggested})
+    except Exception as e:
+        # Repli heuristique si l'IA est indisponible — ne bloque jamais l'UI
+        fallback = max(1, min(duration // 5, 60))
+        return jsonify({'success': True, 'suggested_count': fallback, 'fallback': True})
+
+
 _BANK_TYPE_QUESTION = ('qcm', 'qcm_multi', 'vf', 'appariement', 'open', 'subopen', 'code', 'photo')
 _BANK_TYPE_MAP = {'qcm': 'qcm', 'qcm_multi': 'qcm', 'vf': 'vf'}
 

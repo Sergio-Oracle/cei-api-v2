@@ -193,6 +193,27 @@ class SubjectService:
     # ── Delete ────────────────────────────────────────────────────────────────
 
     @staticmethod
+    def update(subject_id: int, user_id: int, role: UserRole,
+               title: Optional[str] = None, content: Optional[str] = None,
+               rubric: Optional[str] = None) -> dict:
+        """Édite un sujet déjà validé — bloqué si un examen lié est déjà
+        actif/clôturé ou a reçu des tentatives (contenu déjà vu/corrigé)."""
+        if role not in (UserRole.ADMIN, UserRole.PROFESSOR):
+            raise PermissionError('Non autorisé')
+        subj = SubjectRepository.find_by_id(subject_id)
+        if not subj:
+            raise LookupError('Sujet non trouvé')
+        if role == UserRole.PROFESSOR and subj.creator_id != user_id:
+            raise PermissionError('Vous ne pouvez modifier que vos propres sujets')
+        if SubjectRepository.has_locked_exam(subject_id):
+            raise PermissionError(
+                "Ce sujet est lié à un examen déjà actif, clôturé ou ayant reçu des "
+                "tentatives — il ne peut plus être modifié pour ne pas désynchroniser "
+                "le contenu vu par les étudiants."
+            )
+        return SubjectRepository.update_content(subject_id, title=title, content=content, rubric=rubric)
+
+    @staticmethod
     def delete(subject_id: int, user_id: int, role: UserRole) -> None:
         if role not in (UserRole.ADMIN, UserRole.PROFESSOR):
             raise PermissionError('Non autorisé')

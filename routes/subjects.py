@@ -66,6 +66,32 @@ def get_subject_detail(subject_id):
         return jsonify({'error': str(e)}), 500
 
 
+# ── Update ─────────────────────────────────────────────────────────────────────
+
+@subjects_bp.route('/api/subjects/<int:subject_id>', methods=['PUT'])
+@paseto_required
+def update_subject(subject_id):
+    """Édite un sujet déjà validé (titre/contenu/barème) — bloqué si un
+    examen lié est déjà actif/clôturé ou a reçu des tentatives."""
+    try:
+        user_id = get_current_user_id()
+        user    = _get_user(user_id)
+        data = request.get_json(silent=True) or {}
+        result = SubjectService.update(
+            subject_id, user_id, user.role,
+            title=data.get('title'), content=data.get('content'), rubric=data.get('rubric'),
+        )
+        return jsonify({'success': True, 'subject': result})
+    except LookupError as e:
+        return jsonify({'error': str(e)}), 404
+    except PermissionError as e:
+        return jsonify({'error': str(e)}), 403
+    except Exception as e:
+        print(f'ERROR update_subject: {e}')
+        import traceback; traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+
 # ── Delete ─────────────────────────────────────────────────────────────────────
 
 @subjects_bp.route('/api/subjects/<int:subject_id>', methods=['DELETE'])

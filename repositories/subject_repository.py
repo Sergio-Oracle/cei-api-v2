@@ -95,6 +95,43 @@ class SubjectRepository:
             if subj:
                 subj.image_url = image_url
 
+    @staticmethod
+    def has_locked_exam(subject_id: int) -> bool:
+        """Un sujet ne doit plus être modifié une fois lié à un examen déjà
+        actif/clôturé ou ayant reçu au moins une tentative — sinon le contenu
+        vu par l'étudiant pendant/après l'examen divergerait de la correction."""
+        session = get_session()
+        try:
+            exams = session.query(OnlineExam).filter_by(subject_id=subject_id).all()
+            for exam in exams:
+                if exam.status.value in ('active', 'closed'):
+                    return True
+                if session.query(ExamAttempt).filter_by(exam_id=exam.id).first():
+                    return True
+            return False
+        finally:
+            session.close()
+
+    @staticmethod
+    def update_content(subject_id: int, title: Optional[str] = None,
+                        content: Optional[str] = None, rubric: Optional[str] = None) -> dict:
+        with db_session() as session:
+            subj = session.query(Subject).options(
+                joinedload(Subject.ec).joinedload(EC.ue),
+                joinedload(Subject.creator),
+            ).filter_by(id=subject_id).first()
+            if not subj:
+                raise LookupError('Sujet non trouvé')
+            if title is not None:
+                subj.title = title
+            if content is not None:
+                subj.content = content
+            if rubric is not None:
+                subj.rubric = rubric
+            session.flush()
+            result = subj.to_dict()
+        return result
+
     # ── Delete ────────────────────────────────────────────────────────────────
 
     @staticmethod

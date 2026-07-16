@@ -223,6 +223,7 @@ def upload_answer_file(exam_id: int, attempt_id: int, filename: str, raw: bytes,
 _SUBJECT_MEDIA_EXTS = {
     'image': {'jpg', 'jpeg', 'png', 'webp', 'gif'},
     'audio': {'mp3', 'wav', 'ogg', 'm4a'},
+    'video': {'mp4', 'webm'},
 }
 
 

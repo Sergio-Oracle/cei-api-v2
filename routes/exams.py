@@ -1111,7 +1111,7 @@ def _parse_subject_blocks_ordered(raw: str) -> list:
         r'Démontr[eé][rz]?|Comment[eé][rz]?|Identifi[eé][rz]?|Justifi[eé][rz]?|Compar[eé][rz]?|'
         r'Présent[eé][rz]?|Discut[eé][rz]?|Montr[eé][rz]?|Propos[eé][rz]?|Cit[eé][rz]?|Donner?)', re.I)
     PTS_RE = re.compile(r'\(\s*\d+\s*pts?\s*\)', re.I)
-    MEDIA_RE = re.compile(r'^\[(IMAGE|AUDIO):(.+)\]$', re.I)
+    MEDIA_RE = re.compile(r'^\[(IMAGE|AUDIO|VIDEO):(.+)\]$', re.I)
 
     def is_q(l): return bool(Q_RE.match(strip(l)))
     def is_c(l): return bool(C_RE.match(strip(l))) and len(strip(l)) > 3
@@ -3833,8 +3833,8 @@ def upload_subject_media_route():
             session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
 
         media_type = (request.form.get('media_type') or '').strip()
-        if media_type not in ('image', 'audio'):
-            session.close(); return jsonify({'error': "media_type doit être 'image' ou 'audio'"}), 400
+        if media_type not in ('image', 'audio', 'video'):
+            session.close(); return jsonify({'error': "media_type doit être 'image', 'audio' ou 'video'"}), 400
 
         link_key   = request.form.get('link_key') or None
         subject_id = request.form.get('subject_id')
@@ -3849,12 +3849,13 @@ def upload_subject_media_route():
             session.close(); return jsonify({'error': 'Nom de fichier vide'}), 400
 
         raw = f.read()
-        if len(raw) > 25 * 1024 * 1024:  # 25 Mo max
-            session.close(); return jsonify({'error': 'Fichier trop volumineux (25 Mo max)'}), 400
+        max_size = 80 * 1024 * 1024 if media_type == 'video' else 25 * 1024 * 1024
+        if len(raw) > max_size:
+            session.close(); return jsonify({'error': f'Fichier trop volumineux ({max_size // (1024*1024)} Mo max)'}), 400
 
         key = upload_subject_media(link_key or f'subject_{subject_id}', media_type, f.filename, raw, f.content_type or 'application/octet-stream')
         if not key:
-            ext_hint = 'jpg, png, webp, gif' if media_type == 'image' else 'mp3, wav, ogg, m4a'
+            ext_hint = {'image': 'jpg, png, webp, gif', 'audio': 'mp3, wav, ogg, m4a', 'video': 'mp4, webm'}[media_type]
             session.close(); return jsonify({'error': f'Type de fichier non autorisé pour {media_type} ({ext_hint})'}), 400
 
         safe_name = ''.join(c for c in f.filename if c.isalnum() or c in '._-') or f.filename
@@ -3863,7 +3864,8 @@ def upload_subject_media_route():
         session.add(media)
         session.commit()
         result = media.to_dict()
-        result['marker'] = f"[{'IMAGE' if media_type == 'image' else 'AUDIO'}:{safe_name}]"
+        _marker_kind = {'image': 'IMAGE', 'audio': 'AUDIO', 'video': 'VIDEO'}[media_type]
+        result['marker'] = f"[{_marker_kind}:{safe_name}]"
         session.close()
         return jsonify({'success': True, 'media': result}), 201
     except Exception as e:

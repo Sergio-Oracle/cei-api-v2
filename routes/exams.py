@@ -3968,6 +3968,15 @@ def admin_security_report():
                 session.close()
                 return jsonify({'event_summary': [], 'high_risk': [], 'banned_count': 0})
 
+        # Filtre par examen — le rapport peut être global ou scopé à un seul
+        # examen (sélecteur côté page Rapport de sécurité)
+        exam_id_filter = request.args.get('exam_id', type=int)
+        if exam_id_filter:
+            if prof_exam_ids is not None and exam_id_filter not in prof_exam_ids:
+                session.close()
+                return jsonify({'error': 'Accès non autorisé à cet examen'}), 403
+            prof_exam_ids = [exam_id_filter]
+
         # Top événements (filtrés si prof)
         log_query = session.query(
             ExamActivityLog.event_type,
@@ -4012,12 +4021,18 @@ def admin_security_report():
             banned_q = banned_q.filter(ExamAttempt.exam_id.in_(prof_exam_ids))
         banned_count = banned_q.count()
 
+        exam_title_filter = None
+        if exam_id_filter:
+            exam_row = session.query(OnlineExam).filter_by(id=exam_id_filter).first()
+            exam_title_filter = exam_row.title if exam_row else None
+
         session.close()
         return jsonify({
             'event_summary':  [{'event': e, 'count': c} for e, c in event_counts],
             'high_risk':      risky_list,
             'banned_count':   banned_count,
-            'total_attempts': session.query(ExamAttempt).count() if False else None
+            'exam_id':        exam_id_filter,
+            'exam_title':     exam_title_filter,
         })
     except Exception as e:
         try: session.rollback(); session.close()

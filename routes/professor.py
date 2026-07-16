@@ -79,18 +79,23 @@ def get_student_online_results():
             existing_rec = session.query(Reclamation).filter_by(
                 attempt_id=att.id, student_id=user_id
             ).first()
+            # Retour #29 — notes masquées à l'étudiant tant que le prof/admin
+            # n'a pas publié les résultats de l'examen (délibération)
+            published = bool(exam.results_published) if exam else True
             results.append({
                 'attempt_id':        att.id,
                 'exam_id':           att.exam_id,
                 'exam_title':        exam.title   if exam    else '—',
                 'subject_title':     subject.title if subject else None,
-                'score':             att.score,
-                'feedback':          att.feedback,
-                'corrected_at':      att.corrected_at.isoformat() if att.corrected_at else None,
+                'score':             att.score if published else None,
+                'feedback':          att.feedback if published else None,
+                'corrected_at':      att.corrected_at.isoformat() if (att.corrected_at and published) else None,
                 'submitted_at':      att.submitted_at.isoformat() if att.submitted_at else None,
                 'auto_correct':      exam.auto_correct if exam else False,
                 'has_reclamation':   existing_rec is not None,
                 'reclamation_status':existing_rec.status.value if existing_rec else None,
+                'results_published': published,
+                'pending_publication': att.score is not None and not published,
             })
 
         session.close()

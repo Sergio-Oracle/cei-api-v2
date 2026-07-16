@@ -523,6 +523,11 @@ class OnlineExam(Base):
     # Correction automatique par IA après soumission (optionnel, configuré par le prof)
     auto_correct = Column(Boolean, default=False)
 
+    # Retour #29 — notes masquées aux étudiants tant que le professeur/admin
+    # n'a pas explicitement publié les résultats (après délibération), même
+    # symétrie que GradeTranscript.is_published pour les relevés de semestre
+    results_published = Column(Boolean, default=False)
+
     status = Column(SQLEnum(ExamStatus), default=ExamStatus.DRAFT)
     created_by_id = Column(Integer, ForeignKey('users.id'), nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -551,6 +556,7 @@ class OnlineExam(Base):
             'ban_on_devtools': self.ban_on_devtools if self.ban_on_devtools is not None else True,
             'status': self.status.value,
             'auto_correct': self.auto_correct if self.auto_correct is not None else False,
+            'results_published': self.results_published or False,
             'creator_name': self.creator.full_name if self.creator else None,
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'is_active': self.status == ExamStatus.ACTIVE,

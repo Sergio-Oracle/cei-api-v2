@@ -910,14 +910,19 @@ def get_exam_attempt_result(attempt_id):
             session.close()
             return jsonify({'error': 'Tentative introuvable'}), 404
         exam = session.query(OnlineExam).filter_by(id=attempt.exam_id).first()
+        # Retour #29 — ne pas afficher la note à l'étudiant avant publication
+        # par le professeur/admin (délibération), même une fois corrigée.
+        published = bool(exam.results_published) if exam else True
         result = {
             'attempt_id':   attempt.id,
             'exam_title':   exam.title if exam else '',
-            'score':        attempt.score,
-            'feedback':     attempt.feedback,
-            'corrected_at': attempt.corrected_at.isoformat() if attempt.corrected_at else None,
+            'score':        attempt.score if published else None,
+            'feedback':     attempt.feedback if published else None,
+            'corrected_at': attempt.corrected_at.isoformat() if (attempt.corrected_at and published) else None,
             'submitted_at': attempt.submitted_at.isoformat() if attempt.submitted_at else None,
             'status':       attempt.status.value,
+            'results_published': published,
+            'pending_publication': attempt.score is not None and not published,
         }
         session.close()
         return jsonify(result)
@@ -2021,6 +2026,43 @@ def import_exam_grades(exam_id):
 
 
 # ============================================================================
+# PUBLICATION DES NOTES (Retour #29 — masquées jusqu'à délibération)
+# ============================================================================
+
+@exams_bp.route('/api/online_exams/<int:exam_id>/publish-results', methods=['PUT'])
+@paseto_required
+def publish_exam_results(exam_id):
+    """Publie ou dépublie les notes d'un examen aux étudiants (après
+    délibération). Tant que non publié, le prof/admin voit toujours les
+    notes (correction/gestion) mais l'étudiant reçoit score=null."""
+    try:
+        user_id = get_current_user_id()
+        session = get_session()
+        user = session.query(User).filter_by(id=user_id).first()
+        if user.role not in [UserRole.PROFESSOR, UserRole.ADMIN]:
+            session.close()
+            return jsonify({'error': 'Accès non autorisé'}), 403
+        exam = session.query(OnlineExam).filter_by(id=exam_id).first()
+        if not exam:
+            session.close()
+            return jsonify({'error': 'Examen non trouvé'}), 404
+        if user.role == UserRole.PROFESSOR and exam.created_by_id != user_id:
+            session.close()
+            return jsonify({'error': 'Accès non autorisé'}), 403
+        data = request.get_json(silent=True) or {}
+        exam.results_published = bool(data.get('published', True))
+        session.commit()
+        published = exam.results_published
+        session.close()
+        return jsonify({'success': True, 'results_published': published})
+    except Exception as e:
+        print(f"❌ publish_exam_results {exam_id}: {e}")
+        try: session.rollback(); session.close()
+        except: pass
+        return jsonify({'error': str(e)}), 500
+
+
+# ============================================================================
 # STATISTIQUES PAR EXAMEN
 # ============================================================================
 
@@ -2333,13 +2375,16 @@ def get_student_exam_history():
         for a in attempts:
             exam = a.exam
             dur  = int((a.submitted_at - a.started_at).total_seconds() / 60) if a.submitted_at and a.started_at else None
+            # Retour #29 — notes masquées tant que le professeur/admin n'a pas
+            # publié les résultats de l'examen (délibération)
+            published = bool(exam.results_published) if exam else True
             history.append({
                 'attempt_id':   a.id,
                 'exam_id':      a.exam_id,
                 'exam_title':   exam.title if exam else '?',
                 'status':       a.status.value,
-                'score':        a.score,
-                'feedback':     a.feedback,
+                'score':        a.score if published else None,
+                'feedback':     a.feedback if published else None,
                 'risk_score':   a.risk_score or 0,
                 'started_at':   a.started_at.isoformat() if a.started_at else None,
                 'submitted_at': a.submitted_at.isoformat() if a.submitted_at else None,
@@ -2347,7 +2392,9 @@ def get_student_exam_history():
                 'tab_switches': a.tab_switches or 0,
                 'warnings':     a.warnings_count or 0,
                 'has_pre_sig':  bool(a.pre_exam_signature_data),
-                'corrected_at': a.corrected_at.isoformat() if a.corrected_at else None,
+                'corrected_at': a.corrected_at.isoformat() if (a.corrected_at and published) else None,
+                'results_published': published,
+                'pending_publication': a.score is not None and not published,
             })
         session.close()
         return jsonify({'history': history, 'total': len(history)})

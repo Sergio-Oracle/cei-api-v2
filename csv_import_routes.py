@@ -9,7 +9,7 @@ import re
 import chardet
 from datetime import datetime
 from models import (
-    User, UserRole, Formation, Semester, UE, EC,
+    User, UserRole, Formation, Semester, UE, EC, Pole,
     get_session
 )
 from utils import send_account_created_email
@@ -94,6 +94,7 @@ def generate_maquette_csv_template():
         'formation_name': ['Master Telecoms', '', '', ''],
         'formation_level': ['Master 1', '', '', ''],
         'formation_department': ['Génie Électrique', '', '', ''],  # ✅ NOUVEAU
+        'pole_code': ['STN', '', '', ''],  # Code d'un pôle déjà créé (STN/LSHE/SEJA...) — sinon la formation reste "Sans pôle"
         'semester_number': ['', '1', '1', '1'],
         'semester_name': ['', 'Semestre 1', '', ''],
         'semester_credits': ['', '30', '', ''],
@@ -469,9 +470,19 @@ def register_csv_routes(app):
                         formation_level = str(row['formation_level']).strip() if pd.notna(row['formation_level']) else ''
                         # ✅ NOUVEAU: Lire le département
                         formation_department = str(row['formation_department']).strip() if pd.notna(row.get('formation_department')) else ''
+                        # Pôle — sans cette colonne, la formation reste "Sans pôle" dans la
+                        # Maquette Pédagogique même si des pôles existent déjà
+                        pole_code = str(row['pole_code']).strip().upper() if pd.notna(row.get('pole_code')) else ''
+                        pole_id = None
+                        if pole_code:
+                            pole = session_db.query(Pole).filter_by(code=pole_code).first()
+                            if pole:
+                                pole_id = pole.id
+                            else:
+                                print(f"   ⚠️  Pôle '{pole_code}' introuvable — formation créée sans pôle")
 
                         print(f"   🎓 Formation: {formation_name} ({formation_code})")
-                        print(f"      → Niveau: {formation_level}, Département: {formation_department}")
+                        print(f"      → Niveau: {formation_level}, Département: {formation_department}, Pôle: {pole_code or '—'}")
 
                         # Vérifier doublon
                         existing = session_db.query(Formation).filter_by(code=formation_code).first()
@@ -484,7 +495,8 @@ def register_csv_routes(app):
                             code=formation_code,
                             name=formation_name,
                             level=formation_level,
-                            department=formation_department  # ✅ AJOUTÉ
+                            department=formation_department,  # ✅ AJOUTÉ
+                            pole_id=pole_id,
                         )
                         session_db.add(formation)
                         session_db.flush()

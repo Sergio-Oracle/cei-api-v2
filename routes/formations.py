@@ -17,7 +17,7 @@ from cache import cache_get, cache_set, cache_delete_pattern, make_key
 from models import (
     get_session,
     User, UserRole,
-    Pole, Formation, Semester, UE, EC, ECAssignment, StudentUEEnrollment,
+    Pole, Niveau, Formation, Semester, UE, EC, ECAssignment, StudentUEEnrollment,
     ProctorGroup, ProctorGroupMember, ProctorGroupEC,
 )
 
@@ -30,6 +30,7 @@ def _invalidate_academic_cache():
     cache_delete_pattern('cei:*semesters*')
     cache_delete_pattern('cei:*ues*')
     cache_delete_pattern('cei:*poles*')
+    cache_delete_pattern('cei:*niveaux*')
     cache_delete_pattern('cei:*ecs*')
 
 formations_bp = Blueprint('formations', __name__)
@@ -155,6 +156,109 @@ def delete_pole(pid):
         session.close()
         _invalidate_academic_cache()
         return jsonify({'message': 'Pôle désactivé'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# NIVEAUX
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@formations_bp.route('/api/niveaux', methods=['GET'])
+@paseto_required
+def get_niveaux():
+    try:
+        key = make_key('niveaux', 'all')
+        cached = cache_get(key)
+        if cached is not None:
+            return jsonify(cached)
+        session = get_session()
+        niveaux = session.query(Niveau).filter_by(is_active=True).order_by(Niveau.code).all()
+        result = [n.to_dict() for n in niveaux]
+        session.close()
+        cache_set(key, result, ttl=_CACHE_TTL)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@formations_bp.route('/api/admin/niveaux', methods=['POST'])
+@paseto_required
+def create_niveau():
+    try:
+        session = get_session()
+        ok, _ = _is_admin(session)
+        if not ok:
+            return jsonify({'error': 'Accès non autorisé'}), 403
+        data = request.get_json() or {}
+        if not data.get('code') or not data.get('name'):
+            session.close()
+            return jsonify({'error': 'Code et nom requis'}), 400
+        niveau = Niveau(
+            code=data['code'].strip().upper(),
+            name=data['name'].strip(),
+            description=data.get('description', ''),
+        )
+        session.add(niveau)
+        session.commit()
+        result = niveau.to_dict()
+        session.close()
+        _invalidate_academic_cache()
+        return jsonify(result), 201
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@formations_bp.route('/api/admin/niveaux/<int:nid>', methods=['PUT'])
+@paseto_required
+def update_niveau(nid):
+    try:
+        session = get_session()
+        ok, _ = _is_admin(session)
+        if not ok:
+            return jsonify({'error': 'Accès non autorisé'}), 403
+        data = request.get_json() or {}
+        niveau = session.query(Niveau).filter_by(id=nid).first()
+        if not niveau:
+            session.close()
+            return jsonify({'error': 'Niveau non trouvé'}), 404
+        if 'name' in data:
+            niveau.name = data['name'].strip()
+        if 'description' in data:
+            niveau.description = data['description']
+        if 'is_active' in data:
+            niveau.is_active = bool(data['is_active'])
+        session.commit()
+        # Garder la colonne Formation.level (texte) synchronisée pour tout le
+        # code existant qui la lit encore directement.
+        if 'name' in data:
+            session.query(Formation).filter_by(niveau_id=nid).update({'level': niveau.name})
+            session.commit()
+        result = niveau.to_dict()
+        session.close()
+        _invalidate_academic_cache()
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@formations_bp.route('/api/admin/niveaux/<int:nid>', methods=['DELETE'])
+@paseto_required
+def delete_niveau(nid):
+    try:
+        session = get_session()
+        ok, _ = _is_admin(session)
+        if not ok:
+            return jsonify({'error': 'Accès non autorisé'}), 403
+        niveau = session.query(Niveau).filter_by(id=nid).first()
+        if not niveau:
+            session.close()
+            return jsonify({'error': 'Niveau non trouvé'}), 404
+        niveau.is_active = False
+        session.commit()
+        session.close()
+        _invalidate_academic_cache()
+        return jsonify({'message': 'Niveau désactivé'})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
@@ -298,11 +402,18 @@ def create_formation():
         if session.query(Formation).filter_by(code=data.get('code', '')).first():
             session.close()
             return jsonify({'error': 'Code formation déjà utilisé'}), 400
+        niveau_id = data.get('niveau_id') or None
+        level = data.get('level', '')
+        if niveau_id:
+            niveau = session.query(Niveau).filter_by(id=niveau_id).first()
+            if niveau:
+                level = niveau.name
         f = Formation(
             code=data['code'], name=data['name'],
-            level=data.get('level', ''), department=data.get('department', ''),
+            level=level, department=data.get('department', ''),
             description=data.get('description', ''),
             pole_id=data.get('pole_id') or None,
+            niveau_id=niveau_id,
         )
         session.add(f); session.commit()
         result = f.to_dict(); session.close()
@@ -328,6 +439,12 @@ def update_formation(fid):
             f.code = data['code']
         for field in ('name', 'level', 'department', 'description', 'is_active', 'pole_id'):
             if field in data: setattr(f, field, data[field])
+        if 'niveau_id' in data:
+            f.niveau_id = data['niveau_id'] or None
+            if f.niveau_id:
+                niveau = session.query(Niveau).filter_by(id=f.niveau_id).first()
+                if niveau:
+                    f.level = niveau.name
         session.commit(); result = f.to_dict(); session.close()
         _invalidate_academic_cache()
         return jsonify({'success': True, 'formation': result})

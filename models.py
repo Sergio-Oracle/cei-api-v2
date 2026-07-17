@@ -59,6 +59,32 @@ class Pole(Base):
         }
 
 
+class Niveau(Base):
+    """Niveau académique UNCHK (Licence 1, Licence 2, ..., Master 2) — même
+    principe que Pole : liste gérée plutôt que texte libre sur la Formation."""
+    __tablename__ = 'niveaux'
+
+    id = Column(Integer, primary_key=True)
+    code = Column(String(50), unique=True, nullable=False)
+    name = Column(String(200), nullable=False)
+    description = Column(Text)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    formations = relationship('Formation', back_populates='niveau')
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'code': self.code,
+            'name': self.name,
+            'description': self.description,
+            'is_active': self.is_active,
+            'formations_count': len(self.formations) if self.formations else 0,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+        }
+
+
 class Formation(Base):
     """Formation/Programme académique (ex: Master Télécommunications)"""
     __tablename__ = 'formations'
@@ -66,7 +92,11 @@ class Formation(Base):
     id = Column(Integer, primary_key=True)
     code = Column(String(50), unique=True, nullable=False)
     name = Column(String(200), nullable=False)
+    # Conservé pour compatibilité avec tout le code existant qui lit level en
+    # texte simple (filtres en cascade, affichage) — synchronisé automatiquement
+    # depuis niveau.name dès que niveau_id est renseigné (routes/formations.py).
     level = Column(String(50))
+    niveau_id = Column(Integer, ForeignKey('niveaux.id'), nullable=True)
     department = Column(String(100))
     description = Column(Text)
     pole_id = Column(Integer, ForeignKey('poles.id'), nullable=True)
@@ -74,6 +104,7 @@ class Formation(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     pole = relationship('Pole', back_populates='formations')
+    niveau = relationship('Niveau', back_populates='formations')
     semesters = relationship('Semester', back_populates='formation', cascade='all, delete-orphan')
 
     def to_dict(self):
@@ -82,6 +113,9 @@ class Formation(Base):
             'code': self.code,
             'name': self.name,
             'level': self.level,
+            'niveau_id': self.niveau_id,
+            'niveau_code': self.niveau.code if self.niveau else None,
+            'niveau_name': self.niveau.name if self.niveau else None,
             'department': self.department,
             'description': self.description,
             'pole_id': self.pole_id,

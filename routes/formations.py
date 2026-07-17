@@ -167,11 +167,21 @@ def delete_pole(pid):
         if not pole:
             session.close()
             return jsonify({'error': 'Pôle non trouvé'}), 404
-        pole.is_active = False
+        # Suppression définitive : le Pôle et ses Niveaux (métadonnée légère)
+        # sont supprimés, mais les Formations qui en dépendaient sont
+        # seulement détachées (niveau_id/pole_id → NULL) — jamais supprimées,
+        # pour ne pas perdre de données académiques (semestres/UE/EC/notes).
+        niveau_ids = [n.id for n in session.query(Niveau).filter_by(pole_id=pid).all()]
+        if niveau_ids:
+            session.query(Formation).filter(Formation.niveau_id.in_(niveau_ids)).update(
+                {'niveau_id': None, 'pole_id': None}, synchronize_session=False)
+            session.query(Niveau).filter_by(pole_id=pid).delete(synchronize_session=False)
+        session.query(Formation).filter_by(pole_id=pid).update({'pole_id': None}, synchronize_session=False)
+        session.delete(pole)
         session.commit()
         session.close()
         _invalidate_academic_cache()
-        return jsonify({'message': 'Pôle désactivé'})
+        return jsonify({'message': 'Pôle et ses niveaux supprimés'})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
@@ -314,11 +324,15 @@ def delete_niveau(nid):
         if not niveau:
             session.close()
             return jsonify({'error': 'Niveau non trouvé'}), 404
-        niveau.is_active = False
+        # Suppression définitive du Niveau — les Formations qui en dépendaient
+        # sont détachées (niveau_id/pole_id → NULL), jamais supprimées.
+        session.query(Formation).filter_by(niveau_id=nid).update(
+            {'niveau_id': None, 'pole_id': None}, synchronize_session=False)
+        session.delete(niveau)
         session.commit()
         session.close()
         _invalidate_academic_cache()
-        return jsonify({'message': 'Niveau désactivé'})
+        return jsonify({'message': 'Niveau supprimé'})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 

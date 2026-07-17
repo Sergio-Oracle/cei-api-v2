@@ -182,6 +182,24 @@ def get_niveaux():
         return jsonify({'error': str(e)}), 500
 
 
+@formations_bp.route('/api/poles/<int:pole_id>/niveaux', methods=['GET'])
+@paseto_required
+def get_pole_niveaux(pole_id):
+    try:
+        key = make_key('poles', str(pole_id), 'niveaux')
+        cached = cache_get(key)
+        if cached is not None:
+            return jsonify(cached)
+        session = get_session()
+        niveaux = session.query(Niveau).filter_by(pole_id=pole_id, is_active=True).order_by(Niveau.code).all()
+        result = [n.to_dict() for n in niveaux]
+        session.close()
+        cache_set(key, result, ttl=_CACHE_TTL)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 @formations_bp.route('/api/admin/niveaux', methods=['POST'])
 @paseto_required
 def create_niveau():
@@ -194,10 +212,18 @@ def create_niveau():
         if not data.get('code') or not data.get('name'):
             session.close()
             return jsonify({'error': 'Code et nom requis'}), 400
+        if not data.get('pole_id'):
+            session.close()
+            return jsonify({'error': 'Pôle requis (hiérarchie Pôle → Niveau → Formation)'}), 400
+        code = data['code'].strip().upper()
+        if session.query(Niveau).filter_by(pole_id=data['pole_id'], code=code).first():
+            session.close()
+            return jsonify({'error': 'Ce code de niveau existe déjà pour ce pôle'}), 400
         niveau = Niveau(
-            code=data['code'].strip().upper(),
+            code=code,
             name=data['name'].strip(),
             description=data.get('description', ''),
+            pole_id=data['pole_id'],
         )
         session.add(niveau)
         session.commit()
@@ -226,13 +252,20 @@ def update_niveau(nid):
             niveau.name = data['name'].strip()
         if 'description' in data:
             niveau.description = data['description']
+        if 'pole_id' in data:
+            niveau.pole_id = data['pole_id'] or None
         if 'is_active' in data:
             niveau.is_active = bool(data['is_active'])
         session.commit()
-        # Garder la colonne Formation.level (texte) synchronisée pour tout le
-        # code existant qui la lit encore directement.
+        # Garder Formation.level (texte) et Formation.pole_id (dénormalisé)
+        # synchronisés pour tout le code existant qui les lit directement.
+        updates = {}
         if 'name' in data:
-            session.query(Formation).filter_by(niveau_id=nid).update({'level': niveau.name})
+            updates['level'] = niveau.name
+        if 'pole_id' in data:
+            updates['pole_id'] = niveau.pole_id
+        if updates:
+            session.query(Formation).filter_by(niveau_id=nid).update(updates)
             session.commit()
         result = niveau.to_dict()
         session.close()
@@ -402,17 +435,21 @@ def create_formation():
         if session.query(Formation).filter_by(code=data.get('code', '')).first():
             session.close()
             return jsonify({'error': 'Code formation déjà utilisé'}), 400
+        # Hiérarchie Pôle → Niveau → Formation : le pôle n'est plus saisi
+        # directement, il est dérivé du niveau choisi (niveau.pole_id).
         niveau_id = data.get('niveau_id') or None
         level = data.get('level', '')
+        pole_id = data.get('pole_id') or None
         if niveau_id:
             niveau = session.query(Niveau).filter_by(id=niveau_id).first()
             if niveau:
                 level = niveau.name
+                pole_id = niveau.pole_id
         f = Formation(
             code=data['code'], name=data['name'],
             level=level, department=data.get('department', ''),
             description=data.get('description', ''),
-            pole_id=data.get('pole_id') or None,
+            pole_id=pole_id,
             niveau_id=niveau_id,
         )
         session.add(f); session.commit()
@@ -439,12 +476,17 @@ def update_formation(fid):
             f.code = data['code']
         for field in ('name', 'level', 'department', 'description', 'is_active', 'pole_id'):
             if field in data: setattr(f, field, data[field])
+        # Hiérarchie Pôle → Niveau → Formation : quand le niveau change, le
+        # pôle (et level texte) sont dérivés du niveau, pas saisis directement.
         if 'niveau_id' in data:
             f.niveau_id = data['niveau_id'] or None
             if f.niveau_id:
                 niveau = session.query(Niveau).filter_by(id=f.niveau_id).first()
                 if niveau:
                     f.level = niveau.name
+                    f.pole_id = niveau.pole_id
+            else:
+                f.pole_id = None
         session.commit(); result = f.to_dict(); session.close()
         _invalidate_academic_cache()
         return jsonify({'success': True, 'formation': result})

@@ -46,6 +46,7 @@ class Pole(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     formations = relationship('Formation', back_populates='pole')
+    niveaux = relationship('Niveau', back_populates='pole', order_by='Niveau.code')
 
     def to_dict(self):
         return {
@@ -60,17 +61,21 @@ class Pole(Base):
 
 
 class Niveau(Base):
-    """Niveau académique UNCHK (Licence 1, Licence 2, ..., Master 2) — même
-    principe que Pole : liste gérée plutôt que texte libre sur la Formation."""
+    """Niveau académique UNCHK (Licence 1, Licence 2, ..., Master 2), rattaché à
+    un Pôle — hiérarchie : Pôle → Niveau → Formation → Semestre → UE → EC.
+    Le code n'est plus unique globalement (ex: "L1" peut exister sous STN ET
+    sous LSHE) : l'unicité est appliquée par (pole_id, code) côté route."""
     __tablename__ = 'niveaux'
 
     id = Column(Integer, primary_key=True)
-    code = Column(String(50), unique=True, nullable=False)
+    code = Column(String(50), nullable=False)
     name = Column(String(200), nullable=False)
     description = Column(Text)
+    pole_id = Column(Integer, ForeignKey('poles.id'), nullable=True)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
+    pole = relationship('Pole', back_populates='niveaux')
     formations = relationship('Formation', back_populates='niveau')
 
     def to_dict(self):
@@ -79,6 +84,9 @@ class Niveau(Base):
             'code': self.code,
             'name': self.name,
             'description': self.description,
+            'pole_id': self.pole_id,
+            'pole_code': self.pole.code if self.pole else None,
+            'pole_name': self.pole.name if self.pole else None,
             'is_active': self.is_active,
             'formations_count': len(self.formations) if self.formations else 0,
             'created_at': self.created_at.isoformat() if self.created_at else None,
@@ -99,6 +107,11 @@ class Formation(Base):
     niveau_id = Column(Integer, ForeignKey('niveaux.id'), nullable=True)
     department = Column(String(100))
     description = Column(Text)
+    # Hiérarchie : Pôle → Niveau → Formation. pole_id n'est plus saisi
+    # directement — il est dérivé de niveau.pole_id à chaque création/mise à
+    # jour (routes/formations.py) et conservé ici en colonne dénormalisée
+    # pour que les filtres/regroupements par pôle existants (get_pole_formations,
+    # affichage "Formations par pôle") n'aient pas besoin d'un JOIN.
     pole_id = Column(Integer, ForeignKey('poles.id'), nullable=True)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)

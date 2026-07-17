@@ -9,7 +9,7 @@ import re
 import chardet
 from datetime import datetime
 from models import (
-    User, UserRole, Formation, Semester, UE, EC, Pole,
+    User, UserRole, Formation, Semester, UE, EC, Pole, Niveau,
     get_session
 )
 from utils import send_account_created_email
@@ -87,14 +87,22 @@ def generate_users_csv_template():
     return output
 
 def generate_maquette_csv_template():
-    """Générer template CSV pour import maquette - ✅ AVEC DÉPARTEMENT"""
+    """Générer template CSV pour import maquette — respecte la hiérarchie
+    complète Pôle → Niveau → Formation → Semestre → UE → EC. Le Pôle et le
+    Niveau sont auto-créés à la volée s'ils n'existent pas encore (avec le
+    nom/description fournis), pour ne pas obliger à les créer à part avant
+    d'importer."""
     template_data = {
         'type': ['formation', 'semester', 'ue', 'ec'],
+        'pole_code': ['STN', '', '', ''],  # Pôle — créé automatiquement s'il n'existe pas encore (avec pole_name/pole_description)
+        'pole_name': ['Sciences et Technologies du Numérique', '', '', ''],
+        'pole_description': ['', '', '', ''],
+        'niveau_code': ['M1', '', '', ''],  # Niveau — rattaché au pôle ci-dessus, créé automatiquement s'il n'existe pas encore
+        'niveau_name': ['Master 1', '', '', ''],
+        'niveau_description': ['', '', '', ''],
         'formation_code': ['MASTER_TR', 'MASTER_TR', 'MASTER_TR', 'MASTER_TR'],
         'formation_name': ['Master Telecoms', '', '', ''],
-        'formation_level': ['Master 1', '', '', ''],
-        'formation_department': ['Génie Électrique', '', '', ''],  # ✅ NOUVEAU
-        'pole_code': ['STN', '', '', ''],  # Code d'un pôle déjà créé (STN/LSHE/SEJA...) — sinon la formation reste "Sans pôle"
+        'formation_department': ['Génie Électrique', '', '', ''],
         'semester_number': ['', '1', '1', '1'],
         'semester_name': ['', 'Semestre 1', '', ''],
         'semester_credits': ['', '30', '', ''],
@@ -463,26 +471,57 @@ def register_csv_routes(app):
                     row_type = str(row['type']).strip().lower()
                     print(f"📍 Ligne {index+2}: type={row_type}")
 
-                    # === FORMATION - ✅ AVEC DÉPARTEMENT ===
+                    # === FORMATION — respecte la hiérarchie Pôle → Niveau → Formation ===
                     if row_type == 'formation':
                         formation_code = str(row['formation_code']).strip()
                         formation_name = str(row['formation_name']).strip()
-                        formation_level = str(row['formation_level']).strip() if pd.notna(row['formation_level']) else ''
-                        # ✅ NOUVEAU: Lire le département
                         formation_department = str(row['formation_department']).strip() if pd.notna(row.get('formation_department')) else ''
-                        # Pôle — sans cette colonne, la formation reste "Sans pôle" dans la
-                        # Maquette Pédagogique même si des pôles existent déjà
-                        pole_code = str(row['pole_code']).strip().upper() if pd.notna(row.get('pole_code')) else ''
-                        pole_id = None
+
+                        def _cell(col):
+                            return str(row[col]).strip() if pd.notna(row.get(col)) else ''
+
+                        pole_code = _cell('pole_code').upper()
+                        pole_name = _cell('pole_name')
+                        pole_description = _cell('pole_description')
+                        niveau_code = _cell('niveau_code').upper()
+                        niveau_name = _cell('niveau_name')
+                        niveau_description = _cell('niveau_description')
+
+                        # Pôle : auto-créé s'il n'existe pas encore et qu'un nom est fourni
+                        pole = None
                         if pole_code:
                             pole = session_db.query(Pole).filter_by(code=pole_code).first()
-                            if pole:
-                                pole_id = pole.id
-                            else:
-                                print(f"   ⚠️  Pôle '{pole_code}' introuvable — formation créée sans pôle")
+                            if not pole:
+                                if pole_name:
+                                    pole = Pole(code=pole_code, name=pole_name, description=pole_description)
+                                    session_db.add(pole)
+                                    session_db.flush()
+                                    print(f"   ➕ Pôle '{pole_code}' créé ({pole_name})")
+                                else:
+                                    print(f"   ⚠️  Pôle '{pole_code}' introuvable et pole_name absent — formation créée sans pôle")
+
+                        # Niveau : rattaché au pôle ci-dessus, auto-créé s'il n'existe pas encore
+                        # pour CE pôle (le même code peut exister sous plusieurs pôles)
+                        niveau = None
+                        if niveau_code and pole:
+                            niveau = session_db.query(Niveau).filter_by(code=niveau_code, pole_id=pole.id).first()
+                            if not niveau:
+                                if niveau_name:
+                                    niveau = Niveau(code=niveau_code, name=niveau_name, description=niveau_description, pole_id=pole.id)
+                                    session_db.add(niveau)
+                                    session_db.flush()
+                                    print(f"   ➕ Niveau '{niveau_code}' créé sous {pole_code} ({niveau_name})")
+                                else:
+                                    print(f"   ⚠️  Niveau '{niveau_code}' introuvable et niveau_name absent — formation créée sans niveau")
+                        elif niveau_code and not pole:
+                            print(f"   ⚠️  niveau_code '{niveau_code}' fourni sans pole_code résolu — niveau ignoré")
+
+                        # pole_id/level dérivés du niveau (même règle que routes/formations.py)
+                        pole_id = niveau.pole_id if niveau else (pole.id if pole else None)
+                        formation_level = niveau.name if niveau else ''
 
                         print(f"   🎓 Formation: {formation_name} ({formation_code})")
-                        print(f"      → Niveau: {formation_level}, Département: {formation_department}, Pôle: {pole_code or '—'}")
+                        print(f"      → Pôle: {pole_code or '—'}, Niveau: {niveau_code or '—'} ({formation_level or '—'}), Département: {formation_department}")
 
                         # Vérifier doublon
                         existing = session_db.query(Formation).filter_by(code=formation_code).first()
@@ -495,8 +534,9 @@ def register_csv_routes(app):
                             code=formation_code,
                             name=formation_name,
                             level=formation_level,
-                            department=formation_department,  # ✅ AJOUTÉ
+                            department=formation_department,
                             pole_id=pole_id,
+                            niveau_id=niveau.id if niveau else None,
                         )
                         session_db.add(formation)
                         session_db.flush()

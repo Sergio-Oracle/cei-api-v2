@@ -116,6 +116,55 @@ def generate_maquette_csv_template():
     output.seek(0)
     return output
 
+
+def generate_maquette_excel_template():
+    """Génère un fichier Excel modèle au format réel de l'établissement
+    (colonnes Code/Nom/Crédit/Type UE puis Code/Nom/Coef EC, cellules UE
+    fusionnées, pourcentages CC/EX imbriqués dans le nom de l'EC) — pour que
+    l'admin remplisse directement dans la structure attendue par l'import."""
+    from openpyxl import Workbook
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Maquette"
+
+    ws.merge_cells('A1:G1')
+    ws['A1'] = "Nom de la formation (à adapter — cette ligne n'est pas importée)"
+
+    ws.merge_cells('A2:D2')
+    ws['A2'] = "Unité d'Enseignement (UE)"
+    ws.merge_cells('E2:G2')
+    ws['E2'] = "Élément constitutif (EC)"
+
+    headers = ['Code', 'Nom', 'Crédit', 'Type', 'Code', 'Nom', 'Coef.']
+    for i, h in enumerate(headers, start=1):
+        ws.cell(row=3, column=i, value=h)
+
+    # UE d'exemple avec 3 EC — cellules UE fusionnées sur les 3 lignes
+    ws.merge_cells('A4:A6'); ws['A4'] = 'UE231'
+    ws.merge_cells('B4:B6'); ws['B4'] = "Nom de l'UE"
+    ws.merge_cells('C4:C6'); ws['C4'] = 8
+    ws.merge_cells('D4:D6'); ws['D4'] = 'Obligatoire'
+    ws['E4'] = 'EC2311'; ws['F4'] = "Nom de l'EC 1 [CC:40%, EX:60%]"; ws['G4'] = 1
+    ws['E5'] = 'EC2312'; ws['F5'] = "Nom de l'EC 2 [CC:0%, EX:100%]"; ws['G5'] = 1
+    ws['E6'] = 'EC2313'; ws['F6'] = "Nom de l'EC 3 [CC:40%, EX:60%]"; ws['G6'] = 1
+
+    # Deuxième UE d'exemple avec 2 EC
+    ws.merge_cells('A7:A8'); ws['A7'] = 'UE232'
+    ws.merge_cells('B7:B8'); ws['B7'] = "Nom d'une deuxième UE"
+    ws.merge_cells('C7:C8'); ws['C7'] = 6
+    ws.merge_cells('D7:D8'); ws['D7'] = 'Obligatoire'
+    ws['E7'] = 'EC2321'; ws['F7'] = "Nom de l'EC 1 [CC:40%, EX:60%]"; ws['G7'] = 2
+    ws['E8'] = 'EC2322'; ws['F8'] = "Nom de l'EC 2 [CC:40%, EX:60%]"; ws['G8'] = 1
+
+    for col, width in zip('ABCDEFG', [12, 30, 9, 13, 12, 42, 8]):
+        ws.column_dimensions[col].width = width
+
+    output = io.BytesIO()
+    wb.save(output)
+    output.seek(0)
+    return output
+
 # ============================================================================
 # ROUTES TÉLÉCHARGEMENT TEMPLATES ET IMPORTS
 # ============================================================================
@@ -175,6 +224,30 @@ def register_csv_routes(app):
             )
         except Exception as e:
             print(f"❌ Erreur download_maquette_csv_template: {e}")
+            return jsonify({'error': str(e)}), 500
+
+    @app.route('/api/admin/maquette/excel-template', methods=['GET'])
+    @paseto_required
+    def download_maquette_excel_template():
+        """Télécharger le template Excel (format réel école) pour l'import UE/EC"""
+        try:
+            user_id = get_current_user_id()
+            session = get_session()
+            user = session.query(User).filter_by(id=user_id).first()
+            if not user or user.role != UserRole.ADMIN:
+                session.close()
+                return jsonify({'error': 'Accès non autorisé'}), 403
+            session.close()
+
+            xlsx_file = generate_maquette_excel_template()
+            return send_file(
+                xlsx_file,
+                mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                as_attachment=True,
+                download_name=f'template_maquette_excel_{datetime.now().strftime("%Y%m%d")}.xlsx'
+            )
+        except Exception as e:
+            print(f"❌ Erreur download_maquette_excel_template: {e}")
             return jsonify({'error': str(e)}), 500
 
     # ========================================================================

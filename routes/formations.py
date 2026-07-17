@@ -96,8 +96,24 @@ def create_pole():
         if not data.get('code') or not data.get('name'):
             session.close()
             return jsonify({'error': 'Code et nom requis'}), 400
+        code = data['code'].strip().upper()
+        existing = session.query(Pole).filter_by(code=code).first()
+        if existing:
+            if existing.is_active:
+                session.close()
+                return jsonify({'error': 'Ce code de pôle existe déjà'}), 400
+            # Pôle désactivé (supprimé) avec ce code — le réactiver plutôt que
+            # de heurter la contrainte unique en base sur une nouvelle ligne.
+            existing.name = data['name'].strip()
+            existing.description = data.get('description', '')
+            existing.is_active = True
+            session.commit()
+            result = existing.to_dict()
+            session.close()
+            _invalidate_academic_cache()
+            return jsonify(result), 200
         pole = Pole(
-            code=data['code'].strip().upper(),
+            code=code,
             name=data['name'].strip(),
             description=data.get('description', ''),
         )
@@ -216,9 +232,20 @@ def create_niveau():
             session.close()
             return jsonify({'error': 'Pôle requis (hiérarchie Pôle → Niveau → Formation)'}), 400
         code = data['code'].strip().upper()
-        if session.query(Niveau).filter_by(pole_id=data['pole_id'], code=code).first():
+        existing = session.query(Niveau).filter_by(pole_id=data['pole_id'], code=code).first()
+        if existing:
+            if existing.is_active:
+                session.close()
+                return jsonify({'error': 'Ce code de niveau existe déjà pour ce pôle'}), 400
+            # Niveau désactivé (supprimé) avec ce code sous ce pôle — le réactiver
+            existing.name = data['name'].strip()
+            existing.description = data.get('description', '')
+            existing.is_active = True
+            session.commit()
+            result = existing.to_dict()
             session.close()
-            return jsonify({'error': 'Ce code de niveau existe déjà pour ce pôle'}), 400
+            _invalidate_academic_cache()
+            return jsonify(result), 200
         niveau = Niveau(
             code=code,
             name=data['name'].strip(),

@@ -57,13 +57,22 @@ _SCHEMAS = {
     "User": {
         "type": "object",
         "properties": {
-            "id":         {"type": "integer"},
-            "email":      {"type": "string", "example": "user@ec2lt.sn"},
-            "full_name":  {"type": "string", "example": "Moussa Diallo"},
-            "role":       {"type": "string", "enum": ["admin","professor","surveillant","student"]},
-            "is_active":  {"type": "boolean"},
-            "has_email":  {"type": "boolean"},
-            "created_at": {"type": "string", "format": "date-time"}
+            "id":              {"type": "integer"},
+            "email":           {"type": "string", "example": "user@ec2lt.sn"},
+            "full_name":       {"type": "string", "example": "Moussa Diallo"},
+            "role":            {"type": "string", "enum": ["admin","professor","surveillant","student"]},
+            "niveau":          {"type": "string", "description": "Étudiant seulement. Code court (ex: 'L3') — dérivé automatiquement de formation.niveau.code quand formation_id est renseigné ; sinon texte libre parmi L1/L2/L3/M1/M2.", "example": "L3"},
+            "niveau_name":     {"type": "string", "description": "Nom complet du niveau dérivé de la formation (ex: 'Licence 3'), absent si aucune formation n'est rattachée."},
+            "formation_id":    {"type": "integer", "description": "Étudiant seulement. Rattacher une formation inscrit automatiquement l'étudiant à toutes les UE de cette formation."},
+            "formation_code":  {"type": "string", "example": "L3-TR-DEV"},
+            "formation_name":  {"type": "string"},
+            "pole_code":       {"type": "string", "description": "Dérivé de la formation rattachée", "example": "STN"},
+            "pole_name":       {"type": "string"},
+            "is_active":       {"type": "boolean"},
+            "email_verified":  {"type": "boolean"},
+            "has_email":       {"type": "boolean"},
+            "created_at":      {"type": "string", "format": "date-time"},
+            "last_login":      {"type": "string", "format": "date-time"}
         }
     },
     "Subject": {
@@ -124,14 +133,53 @@ _SCHEMAS = {
             "submitted_at":   {"type": "string", "format": "date-time"}
         }
     },
+    "Pole": {
+        "type": "object",
+        "description": "Pôle académique UNCHK — racine de la hiérarchie Pôle → Niveau → Formation.",
+        "properties": {
+            "id":               {"type": "integer"},
+            "code":             {"type": "string", "example": "STN"},
+            "name":             {"type": "string", "example": "Sciences et Technologies du Numérique"},
+            "description":      {"type": "string"},
+            "is_active":        {"type": "boolean"},
+            "formations_count": {"type": "integer", "description": "Nombre de formations rattachées (via un Niveau de ce pôle)"},
+            "created_at":       {"type": "string", "format": "date-time"}
+        }
+    },
+    "Niveau": {
+        "type": "object",
+        "description": "Niveau académique (Licence 1..Master 2), rattaché à un Pôle. Le code n'est pas unique globalement — seulement par pôle (ex: 'L1' peut exister sous STN ET sous LSHE).",
+        "properties": {
+            "id":               {"type": "integer"},
+            "code":             {"type": "string", "example": "L3"},
+            "name":             {"type": "string", "example": "Licence 3"},
+            "description":      {"type": "string"},
+            "pole_id":          {"type": "integer"},
+            "pole_code":        {"type": "string", "example": "STN"},
+            "pole_name":        {"type": "string"},
+            "is_active":        {"type": "boolean"},
+            "formations_count": {"type": "integer"},
+            "created_at":       {"type": "string", "format": "date-time"}
+        }
+    },
     "Formation": {
         "type": "object",
         "properties": {
-            "id":             {"type": "integer"},
-            "name":           {"type": "string", "example": "Licence Informatique"},
-            "code":           {"type": "string", "example": "LI"},
-            "description":    {"type": "string"},
-            "duration_years": {"type": "integer", "example": 3}
+            "id":              {"type": "integer"},
+            "code":            {"type": "string", "example": "L3-TR-DEV"},
+            "name":            {"type": "string", "example": "Licence 3 Telecoms-DevOps"},
+            "level":           {"type": "string", "description": "Texte synchronisé automatiquement depuis niveau.name — ne pas définir directement, dérivé de niveau_id", "example": "Licence 3"},
+            "department":      {"type": "string", "example": "Trunc Commun"},
+            "description":     {"type": "string"},
+            "niveau_id":       {"type": "integer", "description": "Niveau de rattachement — détermine aussi pole_id (dérivé, non saisi directement)"},
+            "niveau_code":     {"type": "string", "example": "L3"},
+            "niveau_name":     {"type": "string", "example": "Licence 3"},
+            "pole_id":         {"type": "integer", "description": "Dérivé de niveau.pole_id — ne pas définir directement"},
+            "pole_code":       {"type": "string", "example": "STN"},
+            "pole_name":       {"type": "string"},
+            "is_active":       {"type": "boolean"},
+            "semesters_count": {"type": "integer"},
+            "created_at":      {"type": "string", "format": "date-time"}
         }
     },
     "Semester": {
@@ -168,6 +216,30 @@ _SCHEMAS = {
             "tpe":         {"type": "integer", "description": "Travail Personnel Étudiant"},
             "vht":         {"type": "integer", "description": "Volume Horaire Total"},
             "is_active":   {"type": "boolean"}
+        }
+    },
+    "ProctorGroup": {
+        "type": "object",
+        "description": "Groupe de surveillants rattaché à un ou plusieurs EC — chaque membre est automatiquement affecté à tout nouvel examen créé pour ces EC.",
+        "properties": {
+            "id":         {"type": "integer"},
+            "name":       {"type": "string", "example": "Surveillants Informatique L1"},
+            "created_by": {"type": "string", "description": "Nom de l'admin ayant créé le groupe"},
+            "created_at": {"type": "string", "format": "date-time"},
+            "ec_ids":     {"type": "array", "items": {"type": "integer"}},
+            "members": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "id":                     {"type": "integer", "description": "id de la ligne d'appartenance au groupe"},
+                        "proctor_id":             {"type": "integer"},
+                        "proctor_name":           {"type": "string"},
+                        "proctor_email":          {"type": "string"},
+                        "proctor_last_login":     {"type": "string", "format": "date-time", "nullable": True}
+                    }
+                }
+            }
         }
     },
     "Reclamation": {
@@ -285,7 +357,8 @@ OPENAPI_SPEC = {
     "tags": [
         {"name": "Authentification",         "description": "Connexion PASETO v4, rafraîchissement token, déconnexion, profil, mot de passe"},
         {"name": "Administration",           "description": "Tableau de bord admin, utilisateurs, historique"},
-        {"name": "Académique",               "description": "Formations, semestres, UE, EC, inscriptions, affectations"},
+        {"name": "Académique",               "description": "Pôles, Niveaux, Formations, semestres, UE, EC, inscriptions, affectations — hiérarchie Pôle → Niveau → Formation → Semestre → UE → EC"},
+        {"name": "Groupes Surveillants",      "description": "Groupes de surveillants rattachés à un ou plusieurs EC — affectation automatique à chaque nouvel examen créé pour ces EC"},
         {"name": "Import CSV",               "description": "Import en masse d'utilisateurs et de maquette pédagogique"},
         {"name": "Sujets",                   "description": "Upload et gestion des sujets d'examen"},
         {"name": "Copies",                   "description": "Upload, correction IA et export des copies étudiants"},
@@ -460,17 +533,21 @@ OPENAPI_SPEC = {
             },
             "post": {
                 "tags": ["Administration"], "summary": "Créer un utilisateur (admin)",
+                "description": "Envoie automatiquement un email 'compte créé' avec les identifiants en tâche de fond. Pour un étudiant, formation_id rattache l'étudiant à sa Formation (hiérarchie Pôle → Niveau → Formation) et l'inscrit automatiquement à toutes les UE de cette formation.",
                 "requestBody": {"required": True, "content": {"application/json": {"schema": {
                     "type": "object", "required": ["email","full_name","role","password"],
                     "properties": {
-                        "email":      {"type": "string"},
-                        "full_name":  {"type": "string"},
-                        "role":       {"type": "string", "enum": ["professor","surveillant","student"]},
-                        "password":   {"type": "string"},
-                        "send_email": {"type": "boolean", "default": True}
+                        "email":        {"type": "string"},
+                        "full_name":    {"type": "string"},
+                        "role":         {"type": "string", "enum": ["professor","surveillant","student","admin"]},
+                        "password":     {"type": "string"},
+                        "niveau":       {"type": "string", "enum": ["L1","L2","L3","M1","M2"], "description": "Étudiant seulement. Fallback texte libre — ignoré/écrasé si formation_id est fourni (le niveau est alors dérivé de la formation)."},
+                        "formation_id": {"type": "integer", "description": "Étudiant seulement. Rattache à une Formation et inscrit automatiquement à toutes ses UE."}
                     }
                 }}}},
-                "responses": {"201": {"description": "Utilisateur créé"}, "409": {"description": "Email déjà utilisé"}}
+                "responses": {"201": {"description": "Utilisateur créé", "content": {"application/json": {"schema": {
+                    "type": "object", "properties": {"success": {"type": "boolean"}, "message": {"type": "string"}, "user": {"$ref": "#/components/schemas/User"}}
+                }}}}, "400": {"description": "Email déjà utilisé ou rôle invalide"}}
             }
         },
         "/api/admin/users/{target_user_id}": {
@@ -480,11 +557,13 @@ OPENAPI_SPEC = {
                 "requestBody": {"content": {"application/json": {"schema": {
                     "type": "object",
                     "properties": {
-                        "full_name": {"type": "string"},
-                        "email":     {"type": "string"},
-                        "role":      {"type": "string", "enum": ["admin","professor","surveillant","student"]},
-                        "password":  {"type": "string"},
-                        "is_active": {"type": "boolean"}
+                        "full_name":    {"type": "string"},
+                        "email":        {"type": "string"},
+                        "role":         {"type": "string", "enum": ["admin","professor","surveillant","student"]},
+                        "password":     {"type": "string"},
+                        "is_active":    {"type": "boolean"},
+                        "niveau":       {"type": "string", "enum": ["L1","L2","L3","M1","M2"]},
+                        "formation_id": {"type": "integer", "description": "Change/ajoute la formation — réinscrit automatiquement aux UE manquantes (n'enlève jamais une inscription existante). Envoyer null pour détacher la formation."}
                     }
                 }}}},
                 "responses": {"200": {"description": "Mis à jour"}, "404": {"$ref": "#/components/responses/NotFound"}}
@@ -499,10 +578,14 @@ OPENAPI_SPEC = {
         "/api/admin/users/student-no-email": {"post": {
             "tags": ["Administration"],
             "summary": "Créer un étudiant sans adresse email (admin)",
-            "description": "Crée un compte étudiant avec une adresse @noemail.local générée automatiquement. Utile pour les étudiants sans email personnel.",
+            "description": "Crée un compte étudiant avec une adresse @no-email.cei.local générée automatiquement. Utile pour les étudiants sans email personnel.",
             "requestBody": {"required": True, "content": {"application/json": {"schema": {
                 "type": "object", "required": ["full_name"],
-                "properties": {"full_name": {"type": "string", "example": "Amadou Ba"}}
+                "properties": {
+                    "full_name":    {"type": "string", "example": "Amadou Ba"},
+                    "niveau":       {"type": "string", "enum": ["L1","L2","L3","M1","M2"], "description": "Fallback texte libre — ignoré si formation_id est fourni"},
+                    "formation_id": {"type": "integer", "description": "Rattache à une Formation et inscrit automatiquement à toutes ses UE"}
+                }
             }}}},
             "responses": {
                 "201": {"description": "Étudiant créé", "content": {"application/json": {"schema": {
@@ -575,8 +658,106 @@ OPENAPI_SPEC = {
         }},
 
         # ══════════════════════════════════════════════════════════════════════
-        # ACADÉMIQUE — Formations / Semestres / UE / EC / Inscriptions
+        # ACADÉMIQUE — Pôles / Niveaux / Formations / Semestres / UE / EC
+        # Hiérarchie : Pôle → Niveau → Formation → Semestre → UE → EC
         # ══════════════════════════════════════════════════════════════════════
+
+        "/api/poles": {"get": {
+            "tags": ["Académique"], "summary": "Liste des pôles actifs",
+            "responses": {"200": {"description": "Pôles", "content": {"application/json": {"schema": {
+                "type": "array", "items": {"$ref": "#/components/schemas/Pole"}
+            }}}}}
+        }},
+        "/api/poles/{pole_id}/formations": {"get": {
+            "tags": ["Académique"], "summary": "Formations d'un pôle (via leurs niveaux)",
+            "parameters": [{"name": "pole_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+            "responses": {"200": {"description": "Formations", "content": {"application/json": {"schema": {
+                "type": "array", "items": {"$ref": "#/components/schemas/Formation"}
+            }}}}}
+        }},
+        "/api/poles/{pole_id}/niveaux": {"get": {
+            "tags": ["Académique"], "summary": "Niveaux d'un pôle",
+            "parameters": [{"name": "pole_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+            "responses": {"200": {"description": "Niveaux", "content": {"application/json": {"schema": {
+                "type": "array", "items": {"$ref": "#/components/schemas/Niveau"}
+            }}}}}
+        }},
+        "/api/admin/poles": {"post": {
+            "tags": ["Académique"], "summary": "Créer un pôle (admin)",
+            "requestBody": {"required": True, "content": {"application/json": {"schema": {
+                "type": "object", "required": ["code", "name"],
+                "properties": {
+                    "code":        {"type": "string", "example": "STN"},
+                    "name":        {"type": "string", "example": "Sciences et Technologies du Numérique"},
+                    "description": {"type": "string"}
+                }
+            }}}},
+            "responses": {
+                "201": {"description": "Pôle créé", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Pole"}}}},
+                "200": {"description": "Pôle réactivé (un pôle désactivé avec ce code existait déjà)"}
+            }
+        }},
+        "/api/admin/poles/{pid}": {
+            "put": {
+                "tags": ["Académique"], "summary": "Modifier un pôle (admin)",
+                "parameters": [{"name": "pid", "in": "path", "required": True, "schema": {"type": "integer"}}],
+                "requestBody": {"content": {"application/json": {"schema": {
+                    "type": "object",
+                    "properties": {"name": {"type": "string"}, "description": {"type": "string"}, "is_active": {"type": "boolean"}}
+                }}}},
+                "responses": {"200": {"description": "Pôle mis à jour"}}
+            },
+            "delete": {
+                "tags": ["Académique"], "summary": "Supprimer un pôle et ses niveaux (admin)",
+                "description": "Suppression définitive du pôle et de ses niveaux (cascade). Les formations qui en dépendaient sont détachées (niveau_id/pole_id → NULL), jamais supprimées.",
+                "parameters": [{"name": "pid", "in": "path", "required": True, "schema": {"type": "integer"}}],
+                "responses": {"200": {"description": "Supprimé"}, "404": {"$ref": "#/components/responses/NotFound"}}
+            }
+        },
+        "/api/niveaux": {"get": {
+            "tags": ["Académique"], "summary": "Liste de tous les niveaux actifs (tous pôles confondus)",
+            "responses": {"200": {"description": "Niveaux", "content": {"application/json": {"schema": {
+                "type": "array", "items": {"$ref": "#/components/schemas/Niveau"}
+            }}}}}
+        }},
+        "/api/admin/niveaux": {"post": {
+            "tags": ["Académique"], "summary": "Créer un niveau, rattaché à un pôle (admin)",
+            "requestBody": {"required": True, "content": {"application/json": {"schema": {
+                "type": "object", "required": ["code", "name", "pole_id"],
+                "properties": {
+                    "code":        {"type": "string", "example": "L3", "description": "Unique par pôle, pas globalement (ex: 'L1' peut exister sous 2 pôles différents)"},
+                    "name":        {"type": "string", "example": "Licence 3"},
+                    "description": {"type": "string"},
+                    "pole_id":     {"type": "integer"}
+                }
+            }}}},
+            "responses": {
+                "201": {"description": "Niveau créé", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Niveau"}}}},
+                "200": {"description": "Niveau réactivé (un niveau désactivé avec ce code existait déjà sous ce pôle)"},
+                "400": {"description": "pole_id manquant, ou code déjà utilisé (actif) sous ce pôle"}
+            }
+        }},
+        "/api/admin/niveaux/{nid}": {
+            "put": {
+                "tags": ["Académique"], "summary": "Modifier un niveau (admin)",
+                "description": "Changer le nom ou le pôle synchronise automatiquement level/pole_id sur toutes les formations rattachées.",
+                "parameters": [{"name": "nid", "in": "path", "required": True, "schema": {"type": "integer"}}],
+                "requestBody": {"content": {"application/json": {"schema": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"}, "description": {"type": "string"},
+                        "pole_id": {"type": "integer"}, "is_active": {"type": "boolean"}
+                    }
+                }}}},
+                "responses": {"200": {"description": "Niveau mis à jour"}}
+            },
+            "delete": {
+                "tags": ["Académique"], "summary": "Supprimer un niveau (admin)",
+                "description": "Suppression définitive. Les formations qui en dépendaient sont détachées (niveau_id/pole_id → NULL), jamais supprimées.",
+                "parameters": [{"name": "nid", "in": "path", "required": True, "schema": {"type": "integer"}}],
+                "responses": {"200": {"description": "Supprimé"}, "404": {"$ref": "#/components/responses/NotFound"}}
+            }
+        },
 
         "/api/formations": {"get": {
             "tags": ["Académique"], "summary": "Liste des formations",
@@ -614,16 +795,20 @@ OPENAPI_SPEC = {
         }},
         "/api/admin/formations": {"post": {
             "tags": ["Académique"], "summary": "Créer une formation (admin)",
+            "description": "pole_id/level ne se saisissent pas directement : ils sont dérivés de niveau_id (niveau.pole_id / niveau.name).",
             "requestBody": {"required": True, "content": {"application/json": {"schema": {
-                "type": "object", "required": ["name"],
+                "type": "object", "required": ["code", "name"],
                 "properties": {
-                    "name":           {"type": "string", "example": "Licence Informatique"},
-                    "code":           {"type": "string", "example": "LI3"},
-                    "description":    {"type": "string"},
-                    "duration_years": {"type": "integer", "example": 3}
+                    "code":        {"type": "string", "example": "L3-TR-DEV"},
+                    "name":        {"type": "string", "example": "Licence 3 Telecoms-DevOps"},
+                    "niveau_id":   {"type": "integer", "description": "Détermine aussi le pôle (dérivé de niveau.pole_id) et level (dérivé de niveau.name)"},
+                    "department":  {"type": "string", "example": "Trunc Commun"},
+                    "description": {"type": "string"}
                 }
             }}}},
-            "responses": {"201": {"description": "Formation créée"}}
+            "responses": {"201": {"description": "Formation créée", "content": {"application/json": {"schema": {
+                "type": "object", "properties": {"success": {"type": "boolean"}, "formation": {"$ref": "#/components/schemas/Formation"}}
+            }}}}}
         }},
         "/api/admin/formations/{formation_id}": {
             "put": {
@@ -633,7 +818,8 @@ OPENAPI_SPEC = {
                     "type": "object",
                     "properties": {
                         "name": {"type": "string"}, "code": {"type": "string"},
-                        "description": {"type": "string"}, "duration_years": {"type": "integer"}
+                        "niveau_id": {"type": "integer", "description": "Change de niveau → pole_id et level resynchronisés automatiquement"},
+                        "department": {"type": "string"}, "description": {"type": "string"}, "is_active": {"type": "boolean"}
                     }
                 }}}},
                 "responses": {"200": {"description": "Formation mise à jour"}}
@@ -803,6 +989,80 @@ OPENAPI_SPEC = {
         }},
 
         # ══════════════════════════════════════════════════════════════════════
+        # GROUPES SURVEILLANTS
+        # ══════════════════════════════════════════════════════════════════════
+
+        "/api/admin/proctor_groups": {
+            "get": {
+                "tags": ["Groupes Surveillants"], "summary": "Liste des groupes de surveillants",
+                "responses": {"200": {"description": "Groupes", "content": {"application/json": {"schema": {
+                    "type": "array", "items": {"$ref": "#/components/schemas/ProctorGroup"}
+                }}}}}
+            },
+            "post": {
+                "tags": ["Groupes Surveillants"], "summary": "Créer un groupe de surveillants (admin)",
+                "requestBody": {"required": True, "content": {"application/json": {"schema": {
+                    "type": "object", "required": ["name"],
+                    "properties": {"name": {"type": "string", "example": "Surveillants Informatique L1"}}
+                }}}},
+                "responses": {"201": {"description": "Groupe créé", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ProctorGroup"}}}}, "400": {"description": "Nom requis"}}
+            }
+        },
+        "/api/admin/proctor_groups/{gid}": {
+            "put": {
+                "tags": ["Groupes Surveillants"], "summary": "Renommer un groupe (admin)",
+                "parameters": [{"name": "gid", "in": "path", "required": True, "schema": {"type": "integer"}}],
+                "requestBody": {"content": {"application/json": {"schema": {
+                    "type": "object", "properties": {"name": {"type": "string"}}
+                }}}},
+                "responses": {"200": {"description": "Groupe mis à jour"}}
+            },
+            "delete": {
+                "tags": ["Groupes Surveillants"], "summary": "Supprimer un groupe (admin)",
+                "parameters": [{"name": "gid", "in": "path", "required": True, "schema": {"type": "integer"}}],
+                "responses": {"200": {"description": "Supprimé"}, "404": {"$ref": "#/components/responses/NotFound"}}
+            }
+        },
+        "/api/admin/proctor_groups/{gid}/members": {"post": {
+            "tags": ["Groupes Surveillants"], "summary": "Ajouter des surveillants à un groupe (admin)",
+            "description": "Notifie automatiquement chaque surveillant ajouté.",
+            "parameters": [{"name": "gid", "in": "path", "required": True, "schema": {"type": "integer"}}],
+            "requestBody": {"required": True, "content": {"application/json": {"schema": {
+                "type": "object", "required": ["proctor_ids"],
+                "properties": {"proctor_ids": {"type": "array", "items": {"type": "integer"}}}
+            }}}},
+            "responses": {"200": {"description": "Membres ajoutés", "content": {"application/json": {"schema": {
+                "type": "object", "properties": {"group": {"$ref": "#/components/schemas/ProctorGroup"}}
+            }}}}}
+        }},
+        "/api/admin/proctor_groups/{gid}/members/{mid}": {"delete": {
+            "tags": ["Groupes Surveillants"], "summary": "Retirer un membre d'un groupe (admin)",
+            "parameters": [
+                {"name": "gid", "in": "path", "required": True, "schema": {"type": "integer"}},
+                {"name": "mid", "in": "path", "required": True, "schema": {"type": "integer"}, "description": "id de la ligne d'appartenance (pas l'id du surveillant)"}
+            ],
+            "responses": {"200": {"description": "Retiré"}}
+        }},
+        "/api/admin/proctor_groups/{gid}/ecs": {"post": {
+            "tags": ["Groupes Surveillants"], "summary": "Rattacher un EC à un groupe (admin)",
+            "description": "Tout examen créé pour cet EC affectera automatiquement tous les membres du groupe.",
+            "parameters": [{"name": "gid", "in": "path", "required": True, "schema": {"type": "integer"}}],
+            "requestBody": {"required": True, "content": {"application/json": {"schema": {
+                "type": "object", "required": ["ec_id"],
+                "properties": {"ec_id": {"type": "integer"}}
+            }}}},
+            "responses": {"200": {"description": "EC rattaché", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ProctorGroup"}}}}}
+        }},
+        "/api/admin/proctor_groups/{gid}/ecs/{ec_id}": {"delete": {
+            "tags": ["Groupes Surveillants"], "summary": "Détacher un EC d'un groupe (admin)",
+            "parameters": [
+                {"name": "gid", "in": "path", "required": True, "schema": {"type": "integer"}},
+                {"name": "ec_id", "in": "path", "required": True, "schema": {"type": "integer"}}
+            ],
+            "responses": {"200": {"description": "Détaché"}}
+        }},
+
+        # ══════════════════════════════════════════════════════════════════════
         # IMPORT CSV
         # ══════════════════════════════════════════════════════════════════════
 
@@ -820,7 +1080,7 @@ OPENAPI_SPEC = {
         "/api/admin/maquette/csv-template": {"get": {
             "tags": ["Import CSV"],
             "summary": "Télécharger le template CSV pour la maquette pédagogique",
-            "description": "Retourne un CSV avec les colonnes : formation, semestre, UE, EC, coefficient, crédits.",
+            "description": "Colonnes : type, pole_code, pole_name, pole_description, niveau_code, niveau_name, niveau_description, formation_code, formation_name, formation_department, semester_number, semester_name, semester_credits, ue_code, ue_name, ue_credits, ec_code, ec_name, ec_cm, ec_td, ec_tp, ec_tpe, ec_vht, ec_coefficient. Un Pôle ou Niveau qui n'existe pas encore (code + nom renseignés) est créé automatiquement à l'import.",
             "responses": {
                 "200": {
                     "description": "Fichier CSV template",
@@ -850,7 +1110,7 @@ OPENAPI_SPEC = {
         "/api/admin/maquette/import-csv": {"post": {
             "tags": ["Import CSV"],
             "summary": "Importer la maquette pédagogique depuis un fichier CSV",
-            "description": "Crée la hiérarchie Formation → Semestres → UE → EC depuis un fichier CSV.",
+            "description": "Crée la hiérarchie Pôle → Niveau → Formation → Semestre → UE → EC depuis un fichier CSV. Pôle et Niveau sont créés automatiquement s'ils n'existent pas encore.",
             "requestBody": {"required": True, "content": {"multipart/form-data": {"schema": {
                 "type": "object", "required": ["file"],
                 "properties": {"file": {"type": "string", "format": "binary"}}
@@ -859,13 +1119,69 @@ OPENAPI_SPEC = {
                 "200": {"description": "Maquette importée", "content": {"application/json": {"schema": {
                     "type": "object",
                     "properties": {
-                        "formations_created": {"type": "integer"},
-                        "ues_created":        {"type": "integer"},
-                        "ecs_created":        {"type": "integer"},
-                        "errors":             {"type": "array", "items": {"type": "string"}}
+                        "success": {"type": "boolean"}, "message": {"type": "string"},
+                        "created": {"type": "object", "properties": {
+                            "formations": {"type": "integer"}, "semesters": {"type": "integer"},
+                            "ues": {"type": "integer"}, "ecs": {"type": "integer"}
+                        }},
+                        "errors": {"type": "array", "items": {"type": "string"}}
                     }
                 }}}}
             }
+        }},
+        "/api/admin/maquette/excel-template": {"get": {
+            "tags": ["Import CSV"],
+            "summary": "Télécharger le template Excel au format officiel de l'établissement",
+            "description": "Colonnes UE (Code/Nom/Crédit/Type) fusionnées puis EC (Code/Nom/Coef.), pourcentages CC/EX entre crochets dans le nom de l'EC — ex: 'Introduction à la sociologie [CC:40%, EX:60%]'.",
+            "responses": {"200": {"description": "Fichier Excel template", "content": {
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": {"schema": {"type": "string", "format": "binary"}}
+            }}}
+        }},
+        "/api/admin/maquette/import-excel-preview": {"post": {
+            "tags": ["Import CSV"],
+            "summary": "Prévisualiser un import Excel UE/EC pour un semestre existant",
+            "description": "Analyse le fichier sans rien écrire en base — signale les UE/EC déjà existants (already_exists) qui seront ignorés à la confirmation.",
+            "requestBody": {"required": True, "content": {"multipart/form-data": {"schema": {
+                "type": "object", "required": ["semester_id", "file"],
+                "properties": {
+                    "semester_id": {"type": "integer", "description": "Semestre cible — doit déjà exister (créé via Pôle → Niveau → Formation → Semestre)"},
+                    "file":        {"type": "string", "format": "binary"}
+                }
+            }}}},
+            "responses": {"200": {"description": "Aperçu", "content": {"application/json": {"schema": {
+                "type": "object",
+                "properties": {
+                    "success": {"type": "boolean"}, "semester_id": {"type": "integer"}, "semester_name": {"type": "string"},
+                    "ue_count": {"type": "integer"}, "ec_count": {"type": "integer"},
+                    "ues": {"type": "array", "items": {"type": "object", "properties": {
+                        "code": {"type": "string"}, "name": {"type": "string"}, "credits": {"type": "integer"},
+                        "ue_type": {"type": "string"}, "already_exists": {"type": "boolean"},
+                        "ecs": {"type": "array", "items": {"type": "object", "properties": {
+                            "code": {"type": "string"}, "name": {"type": "string"}, "coefficient": {"type": "integer"},
+                            "cc_percentage": {"type": "integer"}, "ex_percentage": {"type": "integer"}, "already_exists": {"type": "boolean"}
+                        }}}
+                    }}}
+                }
+            }}}}}
+        }},
+        "/api/admin/maquette/import-excel-confirm": {"post": {
+            "tags": ["Import CSV"],
+            "summary": "Confirmer un import Excel prévisualisé (crée réellement les UE/EC)",
+            "description": "Prend en entrée exactement le tableau 'ues' renvoyé par import-excel-preview (éventuellement édité) ; les entrées already_exists=true sont ignorées.",
+            "requestBody": {"required": True, "content": {"application/json": {"schema": {
+                "type": "object", "required": ["semester_id", "ues"],
+                "properties": {
+                    "semester_id": {"type": "integer"},
+                    "ues": {"type": "array", "items": {"type": "object"}, "description": "Format identique à la réponse de import-excel-preview"}
+                }
+            }}}},
+            "responses": {"200": {"description": "Import confirmé", "content": {"application/json": {"schema": {
+                "type": "object",
+                "properties": {
+                    "success": {"type": "boolean"}, "created_ues": {"type": "integer"},
+                    "created_ecs": {"type": "integer"}, "skipped_existing": {"type": "integer"}
+                }
+            }}}}}
         }},
 
         # ══════════════════════════════════════════════════════════════════════

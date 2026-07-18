@@ -22,7 +22,7 @@ from models import (
     get_session,
     User, UserRole,
     Subject, StudentPaper, Reclamation, CorrectionHistory,
-    Formation, ECAssignment, StudentUEEnrollment,
+    Formation, Semester, UE, ECAssignment, StudentUEEnrollment,
     GradeTranscript, ExamAttempt, ExamActivityLog, CameraLog,
     ProctorAssignment, ReclamationStatus, TokenBlocklist,
     OnlineExam, ExamProctor, QuestionBank,
@@ -39,6 +39,27 @@ def _require_admin(session):
         session.close()
         return None
     return user
+
+
+def _link_student_to_formation(session, student, formation_id):
+    """Rattache un étudiant à une Formation (hiérarchie Pôle → Niveau →
+    Formation → Semestre → UE) : renseigne formation_id, synchronise le texte
+    niveau depuis formation.niveau.code (même principe que Formation.level
+    synchronisé depuis niveau.name), et inscrit l'étudiant à toutes les UE de
+    la formation (sans jamais retirer une inscription existante)."""
+    formation = session.query(Formation).filter_by(id=formation_id).first()
+    if not formation:
+        return 0
+    student.formation_id = formation_id
+    if formation.niveau:
+        student.niveau = formation.niveau.code[:5]
+    added = 0
+    for sem in session.query(Semester).filter_by(formation_id=formation_id).all():
+        for ue in session.query(UE).filter_by(semester_id=sem.id).all():
+            if not session.query(StudentUEEnrollment).filter_by(student_id=student.id, ue_id=ue.id).first():
+                session.add(StudentUEEnrollment(student_id=student.id, ue_id=ue.id))
+                added += 1
+    return added
 
 
 # ── Dashboard ─────────────────────────────────────────────────────────────────
@@ -181,11 +202,14 @@ def create_user():
         if role_str not in ['STUDENT', 'PROFESSOR', 'ADMIN', 'SURVEILLANT']:
             return jsonify({'error': 'Rôle invalide'}), 400
 
+        # Niveau texte libre — fallback seulement si aucune Formation n'est
+        # choisie (formation_id ci-dessous prime et dérive le vrai niveau via
+        # la hiérarchie Pôle → Niveau → Formation).
         niveau_val = (data.get('niveau') or '').strip().upper() or None
         if niveau_val and niveau_val not in ['L1', 'L2', 'L3', 'M1', 'M2']:
             niveau_val = None
         if role_str != 'STUDENT':
-            niveau_val = None  # le niveau (L1..M2) n'a de sens que pour un étudiant
+            niveau_val = None  # le niveau n'a de sens que pour un étudiant
 
         new_user = User(
             email=data['email'],
@@ -194,7 +218,14 @@ def create_user():
             role=UserRole[role_str],
             niveau=niveau_val,
         )
-        session.add(new_user); session.commit()
+        session.add(new_user)
+        session.flush()  # attribue new_user.id, nécessaire pour lier une formation
+
+        formation_id = data.get('formation_id')
+        if formation_id and role_str == 'STUDENT':
+            _link_student_to_formation(session, new_user, formation_id)
+
+        session.commit()
         user_dict = new_user.to_dict()
 
         try:
@@ -250,6 +281,13 @@ def update_user(target_id):
             user.niveau = nv if user.role == UserRole.STUDENT else None
         elif user.role != UserRole.STUDENT and user.niveau is not None:
             user.niveau = None  # rôle changé vers non-étudiant : nettoyer un niveau résiduel
+
+        if 'formation_id' in data and user.role == UserRole.STUDENT:
+            formation_id = data['formation_id'] or None
+            if formation_id:
+                _link_student_to_formation(session, user, formation_id)
+            else:
+                user.formation_id = None
 
         session.commit()
         user_dict = user.to_dict()
@@ -435,7 +473,14 @@ def create_student_no_email():
             niveau=niveau_val,
             has_email=False,
         )
-        session.add(new_user); session.commit()
+        session.add(new_user)
+        session.flush()
+
+        formation_id = data.get('formation_id')
+        if formation_id:
+            _link_student_to_formation(session, new_user, formation_id)
+
+        session.commit()
         user_dict = new_user.to_dict(); session.close()
         return jsonify({
             'success': True,

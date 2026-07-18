@@ -302,6 +302,7 @@ class User(Base):
 
     formation_id = Column(Integer, ForeignKey('formations.id'), nullable=True)  # formation principale de l'étudiant
 
+    formation = relationship('Formation')
     created_subjects = relationship('Subject', foreign_keys='Subject.creator_id', back_populates='creator')
     student_papers = relationship('StudentPaper', foreign_keys='StudentPaper.student_id', back_populates='student')
     corrected_papers = relationship('StudentPaper', foreign_keys='StudentPaper.corrected_by_id', back_populates='corrector')
@@ -311,12 +312,23 @@ class User(Base):
     ue_enrollments = relationship('StudentUEEnrollment', back_populates='student')  # Nouveau: UEs inscrites
 
     def to_dict(self):
+        # Hiérarchie Pôle → Niveau → Formation : quand l'étudiant est rattaché à
+        # une Formation, son niveau "réel" est celui du Niveau de cette Formation
+        # (self.niveau reste le texte libre saisi manuellement en fallback quand
+        # aucune formation n'est encore choisie).
+        f = self.formation
         return {
             'id': self.id,
             'email': self.email,
             'full_name': self.full_name,
             'role': self.role.value,
-            'niveau': self.niveau,
+            'niveau': (f.niveau.code if f and f.niveau else None) or self.niveau,
+            'niveau_name': f.niveau.name if f and f.niveau else None,
+            'formation_id': self.formation_id,
+            'formation_code': f.code if f else None,
+            'formation_name': f.name if f else None,
+            'pole_code': f.pole.code if f and f.pole else None,
+            'pole_name': f.pole.name if f and f.pole else None,
             'is_active': self.is_active,
             'email_verified': self.email_verified,
             'created_at': self.created_at.isoformat() if self.created_at else None,

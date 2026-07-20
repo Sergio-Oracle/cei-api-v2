@@ -1093,10 +1093,10 @@ OPENAPI_SPEC = {
         "/api/admin/users/import-csv": {"post": {
             "tags": ["Import CSV"],
             "summary": "Importer des utilisateurs en masse depuis un fichier CSV",
-            "description": "Crée les comptes utilisateurs en masse. Envoie un email de bienvenue à chaque utilisateur avec email valide.",
+            "description": "Crée les comptes utilisateurs en masse. Envoie un email de bienvenue à chaque utilisateur avec email valide. Colonne optionnelle formation_code (étudiants uniquement) : rattache immédiatement l'étudiant à sa Formation (Pôle/Niveau dérivés) et l'inscrit à toutes les UE de cette formation — sans elle, l'étudiant est créé sans rattachement (badge \"Sans pôle\").",
             "requestBody": {"required": True, "content": {"multipart/form-data": {"schema": {
                 "type": "object", "required": ["file"],
-                "properties": {"file": {"type": "string", "format": "binary", "description": "Fichier CSV (colonnes : full_name, email, role, password)"}}
+                "properties": {"file": {"type": "string", "format": "binary", "description": "Fichier CSV (colonnes : full_name, email, role, password, formation_code [optionnel, étudiants])"}}
             }}}},
             "responses": {
                 "200": {"description": "Import terminé", "content": {"application/json": {"schema": {

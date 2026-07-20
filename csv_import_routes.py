@@ -9,10 +9,30 @@ import re
 import chardet
 from datetime import datetime
 from models import (
-    User, UserRole, Formation, Semester, UE, EC, Pole, Niveau,
+    User, UserRole, Formation, Semester, UE, EC, Pole, Niveau, StudentUEEnrollment,
     get_session
 )
 from utils import send_account_created_email
+
+
+def _link_student_to_formation_by_code(session_db, student, formation_code):
+    """Rattache un étudiant importé par CSV à une Formation via son code
+    (colonne optionnelle formation_code) — même logique que
+    admin_users._link_student_to_formation : synchronise le niveau et inscrit
+    l'étudiant à toutes les UE de la formation (sans jamais retirer une
+    inscription existante). Sans cette colonne, un import CSV créait des
+    étudiants sans aucun rattachement Pôle/Niveau/Formation."""
+    formation = session_db.query(Formation).filter_by(code=formation_code.strip()).first()
+    if not formation:
+        return None
+    student.formation_id = formation.id
+    if formation.niveau:
+        student.niveau = formation.niveau.code[:5]
+    for sem in session_db.query(Semester).filter_by(formation_id=formation.id).all():
+        for ue in session_db.query(UE).filter_by(semester_id=sem.id).all():
+            if not session_db.query(StudentUEEnrollment).filter_by(student_id=student.id, ue_id=ue.id).first():
+                session_db.add(StudentUEEnrollment(student_id=student.id, ue_id=ue.id))
+    return formation
 
 bcrypt = Bcrypt()
 
@@ -77,7 +97,8 @@ def generate_users_csv_template():
         'full_name': ['Jean Dupont', 'Marie Martin'],
         'email': ['jean.dupont@exemple.com', 'marie.martin@exemple.com'],
         'password': ['MotDePasse123', 'MotDePasse456'],
-        'role': ['student', 'professor']
+        'role': ['student', 'professor'],
+        'formation_code': ['L2-MIC', ''],  # optionnel — code de la Formation (étudiants uniquement) ; voir /api/admin/maquette/csv-template pour la liste des codes
     }
 
     df = pd.DataFrame(template_data)
@@ -337,6 +358,18 @@ def register_csv_routes(app):
 
                     session.add(new_user)
                     session.flush()
+
+                    # Rattachement Pôle → Niveau → Formation dès l'import — colonne
+                    # optionnelle, uniquement pour les étudiants (sans elle, un
+                    # import CSV créait des comptes jamais rattachés à aucune
+                    # formation, cf. badge "Sans pôle").
+                    formation_code = ''
+                    if 'formation_code' in df.columns and pd.notna(row.get('formation_code')):
+                        formation_code = str(row['formation_code']).strip()
+                    if formation_code and role_str == 'STUDENT':
+                        formation = _link_student_to_formation_by_code(session, new_user, formation_code)
+                        if not formation:
+                            errors.append(f"Ligne {idx+2}: formation_code '{formation_code}' introuvable — utilisateur créé sans formation")
 
                     # Envoyer email en tâche de fond — un import de N lignes ne doit
                     # pas attendre N × jusqu'à 30s de SMTP avant de répondre.

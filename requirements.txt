@@ -3,6 +3,7 @@ gunicorn
 flask-compress
 anthropic
 google-genai
+faster-whisper
 anyio
 bcrypt
 blinker

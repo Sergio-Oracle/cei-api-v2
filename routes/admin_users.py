@@ -427,6 +427,9 @@ def get_students_list():
                 'formation_id':   getattr(s, 'formation_id', None),
                 'formation_name': f.name if f else None,
                 'formation_code': f.code if f else None,
+                'pole_id':        f.pole_id if f else None,
+                'pole_code':      f.pole.code if f and f.pole else None,
+                'pole_name':      f.pole.name if f and f.pole else None,
             })
         session.close()
         return jsonify(result)

@@ -950,6 +950,35 @@ def enroll_students_bulk():
         return jsonify({'error': str(e)}), 500
 
 
+@formations_bp.route('/api/admin/student_enrollments/bulk_remove', methods=['POST'])
+@paseto_required
+def unenroll_students_bulk():
+    """Désinscrit plusieurs étudiants d'une même UE en un seul appel —
+    symétrique de enroll_students_bulk, pour retirer en masse (ex: erreur
+    d'affectation, changement de maquette)."""
+    try:
+        session = get_session()
+        ok, _ = _is_admin(session)
+        if not ok: return jsonify({'error': 'Accès non autorisé'}), 403
+        data = request.json or {}
+        student_ids = data.get('student_ids') or []
+        ue_id = data.get('ue_id')
+        if not student_ids or not ue_id:
+            session.close(); return jsonify({'error': 'Étudiants et UE requis'}), 400
+
+        removed = 0
+        for sid in student_ids:
+            e = session.query(StudentUEEnrollment).filter_by(student_id=sid, ue_id=ue_id).first()
+            if e:
+                session.delete(e)
+                removed += 1
+        session.commit()
+        session.close()
+        return jsonify({'success': True, 'removed': removed}), 200
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 @formations_bp.route('/api/admin/students/<int:student_id>/enroll', methods=['POST'])
 @paseto_required
 def enroll_student_by_id(student_id):

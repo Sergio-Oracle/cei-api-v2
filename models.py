@@ -384,11 +384,16 @@ class SubjectMedia(Base):
     id = Column(Integer, primary_key=True)
     subject_id = Column(Integer, ForeignKey('subjects.id'), nullable=True)
     link_key = Column(String(64), nullable=True)  # clé temporaire avant sauvegarde du sujet
-    media_type = Column(String(10), nullable=False)  # 'image' | 'audio'
+    media_type = Column(String(10), nullable=False)  # 'image' | 'audio' | 'video'
     filename = Column(String(255), nullable=False)
     s3_key = Column(String(500), nullable=False)
     uploaded_by_id = Column(Integer, ForeignKey('users.id'), nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
+    # Consigne de l'enseignant + analyse IA du contenu du média, capturées à
+    # l'upload — permettent à la génération du sujet de savoir comment exploiter
+    # ce média dans les questions (au lieu d'une simple insertion décorative).
+    instructions = Column(Text, nullable=True)
+    ai_analysis = Column(Text, nullable=True)
 
     subject = relationship('Subject')
     uploaded_by = relationship('User')
@@ -400,6 +405,8 @@ class SubjectMedia(Base):
             'media_type': self.media_type,
             'filename': self.filename,
             's3_key': self.s3_key,
+            'instructions': self.instructions,
+            'ai_analysis': self.ai_analysis,
             'created_at': self.created_at.isoformat() if self.created_at else None,
         }
 

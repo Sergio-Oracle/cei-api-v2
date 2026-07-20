@@ -30,10 +30,11 @@ from utils import (
 from services.ai_service import (
     call_ai             as call_claude,
     call_ai_simple,
+    analyze_media,
     extract_score       as extract_score_from_correction,
     build_correction_prompt as _build_correction_system_prompt,
 )
-from s3_client import upload_answer_file, upload_subject_media, get_snapshot_url
+from s3_client import upload_subject_media, get_snapshot_url
 from routes.question_bank import _similarity, DUPLICATE_THRESHOLD
 
 exams_bp = Blueprint('exams', __name__)
@@ -709,46 +710,6 @@ def save_exam_answers(attempt_id):
         print(f"❌ Erreur save_exam_answers: {e}")
         return jsonify({'error': str(e)}), 500
 
-@exams_bp.route('/api/exam_attempts/<int:attempt_id>/upload_answer_file', methods=['POST'])
-@paseto_required
-def upload_exam_answer_file(attempt_id):
-    """Upload d'une pièce jointe pour une question de type 'photo' (scan, image...)."""
-    try:
-        user_id = get_current_user_id()
-        session = get_session()
-
-        attempt = session.query(ExamAttempt).filter_by(id=attempt_id, student_id=user_id).first()
-        if not attempt:
-            session.close()
-            return jsonify({'error': 'Tentative non trouvée'}), 404
-        if attempt.status != AttemptStatus.IN_PROGRESS:
-            session.close()
-            return jsonify({'error': 'Impossible de modifier une tentative terminée'}), 400
-
-        if 'file' not in request.files:
-            session.close()
-            return jsonify({'error': 'Aucun fichier fourni'}), 400
-        f = request.files['file']
-        if not f.filename:
-            session.close()
-            return jsonify({'error': 'Nom de fichier vide'}), 400
-
-        exam_id = attempt.exam_id
-        session.close()
-
-        raw = f.read()
-        if len(raw) > 15 * 1024 * 1024:  # 15 Mo max
-            return jsonify({'error': 'Fichier trop volumineux (15 Mo max)'}), 400
-
-        key = upload_answer_file(exam_id, attempt_id, f.filename, raw, f.content_type or 'application/octet-stream')
-        if not key:
-            return jsonify({'error': 'Type de fichier non autorisé (jpg, png, webp, pdf)'}), 400
-
-        return jsonify({'success': True, 'key': key})
-    except Exception as e:
-        print(f"❌ Erreur upload_exam_answer_file: {e}")
-        return jsonify({'error': str(e)}), 500
-
 @exams_bp.route('/api/exam_attempts/<int:attempt_id>/log_activity', methods=['POST'])
 @paseto_required
 def log_exam_activity(attempt_id):
@@ -1019,7 +980,7 @@ def get_exam_attempt_paginated(attempt_id):
         blocks = _parse_subject_blocks_ordered(content) if content else []
 
         p1_types = ('qcm', 'qcm_multi', 'vf', 'appariement')
-        p2_types = ('section', 'open', 'subopen', 'code', 'photo')
+        p2_types = ('section', 'open', 'subopen', 'code')
         p1_blocks = [b for b in blocks if b['type'] in p1_types]
         p2_items  = [b for b in blocks if b['type'] in p2_types]
 
@@ -1055,7 +1016,7 @@ def _parse_subject_questions_for_grading(content: str) -> dict:
     reconstruire des réponses lisibles par l'IA, notamment pour l'appariement où
     l'énoncé de la paire de gauche n'est jamais stocké dans les réponses brutes."""
     Q_RE = re.compile(r'^(?:(?:Question|Q)\.?\s+)?(\d{1,3})\s*[—\-–:.)]\s*(.+)', re.I)
-    TYPE_MARKER = re.compile(r'\[(QCM_MULTI|QCM|VF|OUVERT|SUBOPEN|APPARIEMENT|CODE|PHOTO)\]', re.I)
+    TYPE_MARKER = re.compile(r'\[(QCM_MULTI|QCM|VF|OUVERT|SUBOPEN|APPARIEMENT|CODE)\]', re.I)
     C_RE = re.compile(r'^(?:\(?([A-Fa-f])\)?)\s*[.):\s-]\s+(.+)')
     PAIR_RE = re.compile(r'^(?:\(?([A-Fa-f])\)?)\s*[.):\s-]\s+(.+?)\s*(?:→|->)\s*(.+)')
 
@@ -1112,7 +1073,7 @@ def _parse_subject_blocks_ordered(raw: str) -> list:
     VF_RE = re.compile(r'\bvrai\s*[/|ou]\s*faux\b|\bV\s*[/|]\s*F\b', re.I)
     strip = lambda s: re.sub(r'\s*[*_]{1,2}$', '', re.sub(r'^[*_]{1,2}\s*', '', s.strip())).strip()
     Q_RE = re.compile(r'^(?:(?:Question|Q)\.?\s+)?(\d{1,2})(?!\s*\.\s*\d)(?:\s*[.:)–—-]|\.\s+|\s{2,})\s*(.+)', re.I)
-    TYPE_MARKER = re.compile(r'\[(QCM_MULTI|QCM|VF|OUVERT|SUBOPEN|APPARIEMENT|CODE|PHOTO|OUVERT[ES]*)\]', re.I)
+    TYPE_MARKER = re.compile(r'\[(QCM_MULTI|QCM|VF|OUVERT|SUBOPEN|APPARIEMENT|CODE|OUVERT[ES]*)\]', re.I)
     C_RE = re.compile(r'^(?:\(?([A-Fa-f])\)?)\s*[.):\s-]\s+(.+)')
     PAIR_RE = re.compile(r'^(?:\(?([A-Fa-f])\)?)\s*[.):\s-]\s+(.+?)\s*(?:→|->)\s*(.+)')
     SEP_RE = re.compile(r'^[-=*─═▬]{3,}$')
@@ -1206,7 +1167,7 @@ def _parse_subject_blocks_ordered(raw: str) -> list:
         if q['markerType']:
             btype = {
                 'QCM': 'qcm', 'QCM_MULTI': 'qcm_multi', 'VF': 'vf', 'SUBOPEN': 'subopen',
-                'APPARIEMENT': 'appariement', 'CODE': 'code', 'PHOTO': 'photo',
+                'APPARIEMENT': 'appariement', 'CODE': 'code',
             }.get(q['markerType'], 'open')
         else:
             has_pts_choices = any(PTS_RE.search(c['text']) for c in choices)
@@ -3515,6 +3476,29 @@ def generate_full_exam_from_suggestion():
         bloom_line = ("- Niveaux taxonomiques de Bloom à cibler (répartir les questions entre ces niveaux) :\n"
                        + '\n'.join(f'  • {_BLOOM_LABELS[b]}' for b in bloom_levels))
 
+    # Médias (image/audio/vidéo) joints par l'enseignant AVANT génération — déjà
+    # analysés par l'IA (services.ai_service.analyze_media) au moment de l'upload.
+    # On transmet l'analyse + la consigne de l'enseignant pour que l'IA sache
+    # exactement comment exploiter le média dans une question, et lui demande
+    # d'insérer elle-même le marqueur exact au bon endroit (Retour équipe DFIP —
+    # remplace l'insertion manuelle post-génération dans l'aperçu).
+    media_items = [m for m in (suggestion.get('media') or []) if isinstance(m, dict) and m.get('marker')]
+    media_line = ''
+    if media_items:
+        media_desc = []
+        for m in media_items:
+            marker = str(m.get('marker', ''))[:120]
+            analysis = str(m.get('analysis', ''))[:800]
+            instr = str(m.get('instructions', '')).strip()
+            entry = f"  • Marqueur {marker} — {analysis}"
+            if instr:
+                entry += f"\n    Consigne de l'enseignant : {instr}"
+            media_desc.append(entry)
+        media_line = ("- Médias fournis par l'enseignant à intégrer dans le sujet — pour chacun, rédige la "
+                       "question la plus pertinente en te basant sur son analyse et la consigne, puis insère "
+                       "le marqueur EXACT, seul sur sa propre ligne, juste après l'énoncé de cette question :\n"
+                       + '\n'.join(media_desc))
+
     # Récupérer les types de questions choisis par l'utilisateur (prioritaire sur exam_type de l'IA)
     question_types = suggestion.get('question_types', '')
     if question_types:
@@ -3528,13 +3512,12 @@ def generate_full_exam_from_suggestion():
     has_vf          = any(k in exam_type_lower for k in ['vrai', 'faux', 'vrai/faux', 'v/f'])
     has_appariement = any(k in exam_type_lower for k in ['appariement', 'matching', 'associat'])
     has_code        = any(k in exam_type_lower for k in ['code', 'programmation', 'algorithme'])
-    has_photo       = any(k in exam_type_lower for k in ['photo', 'scan', 'manuscrit'])
     has_open        = any(k in exam_type_lower for k in ['ouvert', 'open', 'développ', 'court', 'dissertation', 'synthèse', 'problème', 'cas', 'exercice', 'commentaire', 'calcul'])
-    selected_count  = sum([has_qcm, has_qcm_multi, has_vf, has_appariement, has_code, has_photo, has_open])
+    selected_count  = sum([has_qcm, has_qcm_multi, has_vf, has_appariement, has_code, has_open])
     is_mixed        = selected_count >= 2 or any(k in exam_type_lower for k in ['mixte', 'mix', 'combiné', 'partiel', ',', '+'])
 
     # ── Templates avec marqueurs de type explicites ──────────────────────────
-    # Le marqueur [QCM], [VF], [OUVERT], [QCM_MULTI], [APPARIEMENT], [CODE], [PHOTO]
+    # Le marqueur [QCM], [VF], [OUVERT], [QCM_MULTI], [APPARIEMENT], [CODE]
     # est écrit dans le titre de chaque question. Le parser JavaScript le lit en
     # priorité → classification garantie côté frontend, sans heuristiques fragiles.
 
@@ -3572,10 +3555,6 @@ D. [Terme ou élément 4] → [Définition/correspondance 4]""",
             """Question {n} — [Énoncé de l'exercice de calcul/algorithme] ............. (X pts) [CODE]
 [Énoncé complet — formule à démontrer, algorithme à écrire ou problème à résoudre pas à pas]""",
             "chaque titre se termine par [CODE] ; énoncés d'exercices mathématiques ou de programmation nécessitant une réponse structurée (formules, pseudo-code)"),
-        'photo': ("Réponse par photo / scan", 'PHOTO',
-            """Question {n} — [Énoncé nécessitant un schéma ou une résolution manuscrite] ............. (X pts) [PHOTO]
-[Énoncé demandant explicitement à l'étudiant de photographier/scanner sa réponse manuscrite (schéma, calcul long, dessin technique)]""",
-            "chaque titre se termine par [PHOTO] ; réservé aux questions nécessitant un schéma ou une résolution manuscrite longue"),
         'open': ("Questions Ouvertes", 'OUVERT',
             """Question {n} — [Titre court] ............. (X pts) [OUVERT]
 [Énoncé complet, précis et détaillé]""",
@@ -3583,7 +3562,7 @@ D. [Terme ou élément 4] → [Définition/correspondance 4]""",
     }
     _selected = [k for k, sel in (('qcm', has_qcm), ('qcm_multi', has_qcm_multi), ('vf', has_vf),
                                    ('appariement', has_appariement), ('code', has_code),
-                                   ('photo', has_photo), ('open', has_open)) if sel]
+                                   ('open', has_open)) if sel]
     if not _selected:
         _selected = ['open']  # comportement historique par défaut
 
@@ -3618,6 +3597,7 @@ Crée un sujet d'examen COMPLET et DÉTAILLÉ avec ces informations :
 - Description : {description}
 {domain_line}
 {bloom_line}
+{media_line}
 - Thèmes à couvrir :
 {key_points_str}
 {examples_section}
@@ -3658,7 +3638,7 @@ TOTAL : 20 / 20 points
 Règles ABSOLUES à respecter :
 {format_rules}
 - Langage académique et rigoureux en français
-- Questions adaptées au niveau {student_level} et à {duration} minutes de composition"""
+- Questions adaptées au niveau {student_level} et à {duration} minutes de composition{"" if not media_items else chr(10) + "- Chaque marqueur média listé ci-dessus DOIT apparaître EXACTEMENT UNE FOIS, tel quel, seul sur sa ligne, juste après l'énoncé de la question qui l'exploite"}"""
 
     try:
         full_exam_text = call_ai_simple(prompt)
@@ -3744,7 +3724,7 @@ def generate_more_questions():
         'qcm': 'QCM', 'qcu': 'QCM', 'qcm multiple': 'QCM_MULTI', 'qcm (réponses multiples)': 'QCM_MULTI',
         'vrai/faux': 'VF', 'vrai / faux': 'VF', 'appariement': 'APPARIEMENT',
         'maths et programmation': 'CODE', 'maths / programmation': 'CODE', 'code': 'CODE',
-        'photo': 'PHOTO', 'photo / scan': 'PHOTO', 'questions ouvertes': 'OUVERT', 'ouvert': 'OUVERT',
+        'questions ouvertes': 'OUVERT', 'ouvert': 'OUVERT',
     }
     marker = _MARKER_BY_LABEL.get(question_type.lower(), 'QCM')
 
@@ -3830,7 +3810,7 @@ Réponds STRICTEMENT avec un nombre entier seul, rien d'autre (pas de phrase, pa
         return jsonify({'success': True, 'suggested_count': fallback, 'fallback': True})
 
 
-_BANK_TYPE_QUESTION = ('qcm', 'qcm_multi', 'vf', 'appariement', 'open', 'subopen', 'code', 'photo')
+_BANK_TYPE_QUESTION = ('qcm', 'qcm_multi', 'vf', 'appariement', 'open', 'subopen', 'code')
 _BANK_TYPE_MAP = {'qcm': 'qcm', 'qcm_multi': 'qcm', 'vf': 'vf'}
 
 
@@ -3956,11 +3936,13 @@ def create_subject_from_suggestion():
 @exams_bp.route('/api/subjects/upload_media', methods=['POST'])
 @paseto_required
 def upload_subject_media_route():
-    """Upload d'une image ou d'un fichier audio à insérer dans un sujet
-    (Notes points 2/15). Utilisable AVANT la sauvegarde finale du sujet via
-    link_key (ex: uuid généré côté client) — associé au sujet définitif via
-    media_link_key lors de l'appel à create-from-suggestion. Si subject_id
-    est fourni (sujet déjà sauvegardé), l'association est immédiate."""
+    """Upload d'une image/audio/vidéo à insérer dans un sujet, analysée par
+    l'IA selon la consigne de l'enseignant (Retour équipe DFIP) pour qu'elle
+    sache comment l'exploiter dans les questions générées. Utilisable AVANT
+    la sauvegarde finale du sujet via link_key (ex: uuid généré côté client)
+    — associé au sujet définitif via media_link_key lors de l'appel à
+    create-from-suggestion. Si subject_id est fourni (sujet déjà sauvegardé),
+    l'association est immédiate."""
     try:
         user_id = get_current_user_id()
         session = get_session()
@@ -3972,7 +3954,8 @@ def upload_subject_media_route():
         if media_type not in ('image', 'audio', 'video'):
             session.close(); return jsonify({'error': "media_type doit être 'image', 'audio' ou 'video'"}), 400
 
-        link_key   = request.form.get('link_key') or None
+        link_key     = request.form.get('link_key') or None
+        instructions = (request.form.get('instructions') or '').strip()
         subject_id = request.form.get('subject_id')
         subject_id = int(subject_id) if subject_id else None
         if not link_key and not subject_id:
@@ -3995,8 +3978,10 @@ def upload_subject_media_route():
             session.close(); return jsonify({'error': f'Type de fichier non autorisé pour {media_type} ({ext_hint})'}), 400
 
         safe_name = ''.join(c for c in f.filename if c.isalnum() or c in '._-') or f.filename
+        analysis = analyze_media(media_type, raw, safe_name, f.content_type or '', instructions)
         media = SubjectMedia(subject_id=subject_id, link_key=link_key, media_type=media_type,
-                              filename=safe_name, s3_key=key, uploaded_by_id=user_id)
+                              filename=safe_name, s3_key=key, uploaded_by_id=user_id,
+                              instructions=instructions or None, ai_analysis=analysis)
         session.add(media)
         session.commit()
         result = media.to_dict()

@@ -143,6 +143,28 @@ def _call_ollama(system_prompt: str, user_message: str, temperature: float,
     return content
 
 
+def _call_ollama_vision(raw: bytes, instructions: str) -> str:
+    """Analyse d'image via le modèle Ollama rapide (gemma3, multimodal) — seul
+    fournisseur d'analyse média réellement configuré en l'absence de clé
+    Anthropic/Gemini."""
+    if not _ollama_key or not _ollama_url:
+        raise Exception("Ollama non configuré")
+    import base64
+    import requests as _req
+    b64 = base64.b64encode(raw).decode()
+    resp = _req.post(
+        f"{_ollama_url}/api/chat",
+        headers={"Authorization": f"Bearer {_ollama_key}", "Content-Type": "application/json"},
+        json={"model": OLLAMA_MODEL_FAST, "stream": False, "think": False,
+              "messages": [{"role": "user", "content": _media_analysis_prompt(instructions), "images": [b64]}],
+              "options": {"temperature": 0.2, "num_predict": 500}},
+        timeout=90,
+    )
+    resp.raise_for_status()
+    content = resp.json()["message"]["content"]
+    return re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL).strip()
+
+
 # ── API publique ──────────────────────────────────────────────────────────────
 
 def call_ai(system_prompt: str, user_message: str,
@@ -189,6 +211,94 @@ def call_ai(system_prompt: str, user_message: str,
 def call_ai_simple(prompt: str) -> str:
     """Appel IA sans system prompt (tâches simples)."""
     return call_ai("", prompt, temperature=0.2, max_tokens=4000)
+
+
+# ── Analyse multimodale (image/audio/vidéo) ─────────────────────────────────
+# Utilisée quand un enseignant joint un média à un sujet AVANT génération : le
+# média est réellement analysé par l'IA (pas seulement stocké) pour qu'elle
+# sache comment l'exploiter dans les questions générées.
+
+_MEDIA_ANALYZE_MAX_BYTES = 15 * 1024 * 1024  # au-delà, on saute l'analyse (coût/latence/limites API)
+_IMAGE_MIME_OK = {'image/jpeg', 'image/png', 'image/gif', 'image/webp'}
+_MEDIA_MIME_GUESS = {
+    'jpg': 'image/jpeg', 'jpeg': 'image/jpeg', 'png': 'image/png', 'gif': 'image/gif', 'webp': 'image/webp',
+    'mp3': 'audio/mpeg', 'wav': 'audio/wav', 'ogg': 'audio/ogg', 'm4a': 'audio/mp4',
+    'mp4': 'video/mp4', 'webm': 'video/webm',
+}
+
+
+def _media_analysis_prompt(instructions: str) -> str:
+    consigne = instructions.strip() if instructions and instructions.strip() else \
+        "(aucune consigne particulière — propose la meilleure exploitation pédagogique possible)"
+    return (
+        "Tu es un assistant pédagogique qui aide un enseignant universitaire à intégrer un média "
+        "(image, audio ou vidéo) dans un sujet d'examen. Analyse précisément ce que contient ce fichier, "
+        "puis explique en 3-5 phrases concrètes comment l'exploiter dans une ou plusieurs questions "
+        "d'examen (ce qu'il montre/dit, quels concepts il permet d'évaluer, quelle consigne poser aux "
+        "étudiants). Consigne de l'enseignant pour ce média : " + consigne
+    )
+
+
+def _call_anthropic_image_analysis(raw: bytes, mime_type: str, instructions: str) -> str:
+    import base64
+    b64 = base64.b64encode(raw).decode()
+    message = _anthropic_client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=500,
+        messages=[{
+            "role": "user",
+            "content": [
+                {"type": "image", "source": {"type": "base64", "media_type": mime_type, "data": b64}},
+                {"type": "text", "text": _media_analysis_prompt(instructions)},
+            ],
+        }],
+        timeout=60,
+    )
+    return message.content[0].text
+
+
+def _call_gemini_media_analysis(raw: bytes, mime_type: str, instructions: str) -> str:
+    from google.genai import types as genai_types
+    if not _gemini_clients:
+        raise Exception("Aucune clé Gemini configurée")
+    gc = _next_gemini_client()
+    part = genai_types.Part.from_bytes(data=raw, mime_type=mime_type)
+    response = gc.models.generate_content(
+        model=GEMINI_MODEL, contents=[part, _media_analysis_prompt(instructions)])
+    return response.text
+
+
+def analyze_media(media_type: str, raw: bytes, filename: str, content_type: str, instructions: str) -> str:
+    """Analyse un média fourni par l'enseignant avant la génération d'un sujet
+    (Retour équipe DFIP — insertion d'images/audio/vidéo pour accompagner les
+    questions). Retourne une description textuelle exploitable par le prompt de
+    génération. Ne lève jamais d'exception — un message explicatif est retourné
+    en cas d'échec, pour ne jamais bloquer l'upload du média."""
+    if len(raw) > _MEDIA_ANALYZE_MAX_BYTES:
+        return "Analyse automatique indisponible (fichier trop volumineux) — le média sera tout de même inséré dans le sujet."
+
+    ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
+    mime = content_type or ''
+
+    try:
+        if media_type == 'image':
+            if mime not in _IMAGE_MIME_OK:
+                mime = _MEDIA_MIME_GUESS.get(ext, 'image/jpeg')
+            if _anthropic_client:
+                return _call_anthropic_image_analysis(raw, mime, instructions)
+            if _gemini_clients:
+                return _call_gemini_media_analysis(raw, mime, instructions)
+            if _ollama_key and _ollama_url:
+                return _call_ollama_vision(raw, instructions)
+        else:
+            if not mime or mime == 'application/octet-stream':
+                mime = _MEDIA_MIME_GUESS.get(ext, 'application/octet-stream')
+            if _gemini_clients:
+                return _call_gemini_media_analysis(raw, mime, instructions)
+        return "Analyse automatique indisponible (aucun service IA compatible configuré) — le média sera tout de même inséré dans le sujet."
+    except Exception as e:
+        print(f"WARNING analyse média échouée ({media_type}/{filename}): {e}")
+        return "Analyse automatique indisponible — le média sera tout de même inséré dans le sujet."
 
 
 def build_correction_prompt(title: str = "", content_preview: str = "") -> str:

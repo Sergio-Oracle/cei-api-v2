@@ -1469,41 +1469,6 @@ def submit_exam_attempt(attempt_id):
         return jsonify({'error': str(e)}), 500
 
 
-@exams_bp.route('/api/admin/enroll_student_ec', methods=['POST'])
-@paseto_required
-def enroll_student_ec():
-    """Inscrire un étudiant à la UE parente d'un EC donné (admin uniquement)"""
-    try:
-        user_id = get_current_user_id()
-        session = get_session()
-        user = session.query(User).filter_by(id=user_id).first()
-        if user.role != UserRole.ADMIN:
-            session.close()
-            return jsonify({'error': 'Accès non autorisé'}), 403
-        data = request.get_json() or {}
-        student_id = data.get('student_id')
-        ec_id = data.get('ec_id')
-        if not student_id or not ec_id:
-            session.close()
-            return jsonify({'error': 'student_id et ec_id requis'}), 400
-        ec = session.query(EC).filter_by(id=ec_id).first()
-        if not ec:
-            session.close()
-            return jsonify({'error': 'EC introuvable'}), 404
-        ue_id = ec.ue_id
-        existing = session.query(StudentUEEnrollment).filter_by(student_id=student_id, ue_id=ue_id).first()
-        if existing:
-            session.close()
-            return jsonify({'success': True, 'message': 'Déjà inscrit à cette UE'})
-        enroll = StudentUEEnrollment(student_id=student_id, ue_id=ue_id)
-        session.add(enroll)
-        session.commit()
-        session.close()
-        return jsonify({'success': True, 'message': 'Étudiant inscrit avec succès'}), 201
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-
 # ============================================================================
 # #7 — UPLOAD D'IMAGE POUR LES SUJETS D'EXAMEN
 # ============================================================================

@@ -1177,34 +1177,6 @@ def set_student_formation(student_id):
         return jsonify({'error': str(e)}), 500
 
 
-@formations_bp.route('/api/admin/students/<int:student_id>/enroll_formation', methods=['POST'])
-@paseto_required
-def enroll_student_formation(student_id):
-    try:
-        session = get_session()
-        ok, _ = _is_admin(session)
-        if not ok: return jsonify({'error': 'Accès non autorisé'}), 403
-        data = request.get_json() or {}
-        formation_id = data.get('formation_id')
-        if not formation_id: session.close(); return jsonify({'error': 'formation_id requis'}), 400
-        if not session.query(User).filter_by(id=student_id, role=UserRole.STUDENT).first():
-            session.close(); return jsonify({'error': 'Étudiant non trouvé'}), 404
-        formation = session.query(Formation).filter_by(id=formation_id).first()
-        if not formation: session.close(); return jsonify({'error': 'Formation non trouvée'}), 404
-        added, already = 0, 0
-        for sem in session.query(Semester).filter_by(formation_id=formation_id).all():
-            for ue in session.query(UE).filter_by(semester_id=sem.id).all():
-                if session.query(StudentUEEnrollment).filter_by(student_id=student_id, ue_id=ue.id).first():
-                    already += 1
-                else:
-                    session.add(StudentUEEnrollment(student_id=student_id, ue_id=ue.id)); added += 1
-        session.commit(); session.close()
-        return jsonify({'success': True, 'added': added, 'already': already,
-                        'message': f'{added} UE(s) ajoutée(s), {already} déjà inscrite(s).'}), 201
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
-
 @formations_bp.route('/api/admin/student_enrollments/<int:eid>', methods=['DELETE'])
 @paseto_required
 def remove_student_enrollment(eid):

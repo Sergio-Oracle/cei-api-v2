@@ -20,13 +20,31 @@ from auth_paseto import (
     get_refresh_token_from_cookie, hash_token,
 )
 from auth_paseto import decode_token as paseto_decode_token
-from models import get_session, User, UserRole, TokenBlocklist
+from models import get_session, User, UserRole, TokenBlocklist, Formation, Semester, UE, StudentUEEnrollment
 from utils  import (
     send_account_created_email, send_password_reset_email,
     send_password_changed_email,
 )
 
 auth_bp = Blueprint('auth', __name__)
+
+
+def _link_student_to_formation(session, student, formation_id):
+    """Rattache un étudiant à une Formation (hiérarchie Pôle → Niveau →
+    Formation → Semestre → UE) à l'inscription publique — renseigne
+    formation_id, synchronise le niveau, inscrit à toutes les UE de la
+    formation. Même logique que admin_users._link_student_to_formation :
+    évite qu'un étudiant auto-inscrit se retrouve "Sans pôle"."""
+    formation = session.query(Formation).filter_by(id=formation_id).first()
+    if not formation:
+        return
+    student.formation_id = formation_id
+    if formation.niveau:
+        student.niveau = formation.niveau.code[:5]
+    for sem in session.query(Semester).filter_by(formation_id=formation_id).all():
+        for ue in session.query(UE).filter_by(semester_id=sem.id).all():
+            if not session.query(StudentUEEnrollment).filter_by(student_id=student.id, ue_id=ue.id).first():
+                session.add(StudentUEEnrollment(student_id=student.id, ue_id=ue.id))
 
 
 # ── Inscription ───────────────────────────────────────────────────────────────
@@ -44,7 +62,11 @@ def register():
             email=data['email'], password_hash=hashed,
             full_name=data['full_name'], role=UserRole.STUDENT,
         )
-        session.add(user); session.commit()
+        session.add(user); session.flush()
+        formation_id = data.get('formation_id')
+        if formation_id:
+            _link_student_to_formation(session, user, formation_id)
+        session.commit()
         user_dict = user.to_dict()
         # Envoi en tâche de fond — ne doit pas faire attendre l'étudiant qui s'inscrit.
         Thread(target=send_account_created_email, args=(data['email'], data['full_name'], 'student'), daemon=True).start()

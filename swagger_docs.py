@@ -2,7 +2,9 @@
 CEI — Documentation API Swagger / OpenAPI 3.0
 Accessible à /api/docs (Swagger UI) et /api/docs/openapi.json (spec brute)
 Scan exhaustif v4 — app.py, proctoring_routes.py, csv_import_routes.py, export_route.py
-160 endpoints Flask réels — 159 documentés dans la spec OpenAPI 3.0
+164 endpoints documentés dans la spec OpenAPI 3.0 (ce nombre n'est PAS calculé
+automatiquement — le mettre à jour ici et dans les deux badges HTML plus bas
+à chaque route ajoutée/retirée dans OPENAPI_SPEC["paths"])
 """
 import os
 import base64
@@ -3345,7 +3347,7 @@ _SWAGGER_HTML = """<!DOCTYPE html>
     <div class="cei-header-meta">
       <span class="cei-badge cei-badge-version">v2.1</span>
       <span class="cei-badge cei-badge-oas">OpenAPI 3.0</span>
-      <span class="cei-badge cei-badge-count">160 endpoints</span>
+      <span class="cei-badge cei-badge-count">164 endpoints</span>
     </div>
     <nav class="cei-header-nav">
       <a class="cei-nav-link active" href="/api/docs">Swagger UI</a>
@@ -3468,7 +3470,7 @@ _REDOC_HTML = """<!DOCTYPE html>
     <div class="cei-meta">
       <span class="cei-badge b-v">v2.1</span>
       <span class="cei-badge b-o">OpenAPI 3.0</span>
-      <span class="cei-badge b-e">160 endpoints</span>
+      <span class="cei-badge b-e">164 endpoints</span>
     </div>
     <nav class="cei-nav">
       <a class="n-link" href="/api/docs">Swagger UI</a>

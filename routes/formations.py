@@ -846,6 +846,23 @@ def _sync_formation_from_ue(student, ue):
         student.niveau = formation.niveau.code[:5]
 
 
+def _formation_mismatch_error(student, ue):
+    """Si l'étudiant a déjà une Formation et que l'UE choisie appartient à une
+    AUTRE Formation, retourne un message d'erreur explicite — sinon None.
+    Empêche les inscriptions incohérentes avec la hiérarchie Pôle → Niveau →
+    Formation → Semestre → UE (ex: étudiant de L2-MIC inscrit par erreur à
+    une UE de L3-TR-DEV)."""
+    if not student.formation_id or not ue or not ue.semester:
+        return None
+    ue_formation_id = ue.semester.formation_id
+    if ue_formation_id and ue_formation_id != student.formation_id:
+        student_code = student.formation.code if student.formation else '?'
+        ue_formation_code = ue.semester.formation.code if ue.semester.formation else '?'
+        return (f"{student.full_name} appartient à la formation {student_code} — "
+                f"l'UE {ue.code} appartient à {ue_formation_code}, incohérent avec sa formation")
+    return None
+
+
 @formations_bp.route('/api/admin/student_enrollments', methods=['POST'])
 @paseto_required
 def enroll_student_to_ue():
@@ -864,6 +881,9 @@ def enroll_student_to_ue():
             session.close(); return jsonify({'error': 'Étudiant déjà inscrit à cette UE'}), 400
         ue = session.query(UE).filter_by(id=uid).first()
         student = session.query(User).filter_by(id=sid).first()
+        mismatch = _formation_mismatch_error(student, ue)
+        if mismatch:
+            session.close(); return jsonify({'error': mismatch}), 400
         _sync_formation_from_ue(student, ue)
         session.add(StudentUEEnrollment(student_id=sid, ue_id=uid))
         session.commit()
@@ -905,6 +925,9 @@ def enroll_students_bulk():
                 errors.append(f"Étudiant {sid} non trouvé"); continue
             if session.query(StudentUEEnrollment).filter_by(student_id=sid, ue_id=ue_id).first():
                 already.append(sid); continue
+            mismatch = _formation_mismatch_error(student, ue)
+            if mismatch:
+                errors.append(mismatch); continue
             _sync_formation_from_ue(student, ue)
             session.add(StudentUEEnrollment(student_id=sid, ue_id=ue_id))
             enrolled.append(sid)
@@ -945,6 +968,9 @@ def enroll_student_by_id(student_id):
             session.close(); return jsonify({'error': 'Étudiant déjà inscrit à cette UE'}), 400
         ue = session.query(UE).filter_by(id=ue_id).first()
         student = session.query(User).filter_by(id=student_id).first()
+        mismatch = _formation_mismatch_error(student, ue)
+        if mismatch:
+            session.close(); return jsonify({'error': mismatch}), 400
         _sync_formation_from_ue(student, ue)
         session.add(StudentUEEnrollment(student_id=student_id, ue_id=ue_id))
         session.commit()

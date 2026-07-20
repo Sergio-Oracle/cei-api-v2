@@ -830,6 +830,22 @@ def remove_ec_assignment(aid):
 # INSCRIPTIONS ÉTUDIANT ↔ UE
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def _sync_formation_from_ue(student, ue):
+    """Si l'étudiant n'a pas encore de Formation rattachée (badge "Sans
+    formation"), la déduit de l'UE à laquelle on vient de l'inscrire (UE →
+    Semestre → Formation) et synchronise son niveau — sans inscrire aux
+    autres UE de la formation (contrairement à _link_student_to_formation,
+    ici l'admin n'a choisi qu'une UE précise, pas toute la maquette)."""
+    if student.formation_id or not ue or not ue.semester:
+        return
+    formation = ue.semester.formation
+    if not formation:
+        return
+    student.formation_id = formation.id
+    if formation.niveau:
+        student.niveau = formation.niveau.code[:5]
+
+
 @formations_bp.route('/api/admin/student_enrollments', methods=['POST'])
 @paseto_required
 def enroll_student_to_ue():
@@ -847,6 +863,8 @@ def enroll_student_to_ue():
         if session.query(StudentUEEnrollment).filter_by(student_id=sid, ue_id=uid).first():
             session.close(); return jsonify({'error': 'Étudiant déjà inscrit à cette UE'}), 400
         ue = session.query(UE).filter_by(id=uid).first()
+        student = session.query(User).filter_by(id=sid).first()
+        _sync_formation_from_ue(student, ue)
         session.add(StudentUEEnrollment(student_id=sid, ue_id=uid))
         session.commit()
         try:
@@ -887,6 +905,7 @@ def enroll_students_bulk():
                 errors.append(f"Étudiant {sid} non trouvé"); continue
             if session.query(StudentUEEnrollment).filter_by(student_id=sid, ue_id=ue_id).first():
                 already.append(sid); continue
+            _sync_formation_from_ue(student, ue)
             session.add(StudentUEEnrollment(student_id=sid, ue_id=ue_id))
             enrolled.append(sid)
         session.commit()
@@ -925,6 +944,8 @@ def enroll_student_by_id(student_id):
         if session.query(StudentUEEnrollment).filter_by(student_id=student_id, ue_id=ue_id).first():
             session.close(); return jsonify({'error': 'Étudiant déjà inscrit à cette UE'}), 400
         ue = session.query(UE).filter_by(id=ue_id).first()
+        student = session.query(User).filter_by(id=student_id).first()
+        _sync_formation_from_ue(student, ue)
         session.add(StudentUEEnrollment(student_id=student_id, ue_id=ue_id))
         session.commit()
         try:

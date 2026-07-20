@@ -1051,6 +1051,43 @@ def get_professor_students():
         return jsonify({'error': str(e)}), 500
 
 
+@formations_bp.route('/api/admin/students/enrollments/bulk', methods=['GET'])
+@paseto_required
+def get_all_students_enrollments():
+    """Retourne les inscriptions UE de TOUS les étudiants en un seul appel,
+    groupées par student_id — remplace N appels individuels à
+    /api/admin/students/<id>/enrollments (un par étudiant) qui saturaient le
+    rate-limit (60/min) sur les pages listant beaucoup d'étudiants (ex: 48
+    requêtes simultanées sur la page Inscriptions UE → 429)."""
+    try:
+        session = get_session()
+        ok, _ = _is_admin(session)
+        if not ok: return jsonify({'error': 'Accès non autorisé'}), 403
+
+        rows = (
+            session.query(StudentUEEnrollment, UE, Semester, Formation)
+            .join(UE, StudentUEEnrollment.ue_id == UE.id)
+            .outerjoin(Semester, UE.semester_id == Semester.id)
+            .outerjoin(Formation, Semester.formation_id == Formation.id)
+            .all()
+        )
+        result = {}
+        for enr, ue, sem, form in rows:
+            result.setdefault(str(enr.student_id), []).append({
+                'enrollment_id':  enr.id,
+                'ue_id':          ue.id,
+                'ue_code':        ue.code,
+                'ue_name':        ue.name,
+                'semester_name':  sem.name  if sem  else '—',
+                'formation_name': form.name if form else '—',
+                'formation_code': form.code if form else '—',
+            })
+        session.close()
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 @formations_bp.route('/api/admin/students/<int:student_id>/enrollments', methods=['GET'])
 @paseto_required
 def get_student_enrollments(student_id):

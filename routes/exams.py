@@ -3818,7 +3818,17 @@ Règles ABSOLUES pour le BARÈME (notation automatique sans IA pour QCM/Vrai-Fau
 {rubric_format_rules}"""
 
     try:
-        full_exam_text = call_ai_simple(prompt)
+        # call_ai_simple() plafonne à 4000 tokens de sortie — largement
+        # insuffisant dès qu'on demande beaucoup de questions détaillées
+        # (contenu + barème par question) : au-delà, la génération est
+        # tronquée en plein milieu et les instructions de gabarit destinées
+        # à l'IA (ex. "[... continuer cette partie ...]") se retrouvent
+        # recopiées telles quelles dans le sujet, à la place de vraies
+        # questions — constaté en conditions réelles (30 questions demandées,
+        # 24 obtenues + texte d'instruction laissé tel quel). On calcule donc
+        # une limite proportionnelle au nombre de questions demandées.
+        _max_tokens = min(16000, 2500 + question_count * 300)
+        full_exam_text = call_claude("", prompt, temperature=0.2, max_tokens=_max_tokens)
 
         # Séparer contenu et barème
         bareme_markers = ['BARÈME DE NOTATION', 'BAREME DE NOTATION', 'BARÈME', 'Barème']
@@ -3837,6 +3847,15 @@ Règles ABSOLUES pour le BARÈME (notation automatique sans IA pour QCM/Vrai-Fau
         else:
             content = full_exam_text
             rubric = full_exam_text
+
+        # Filet de sécurité : si l'IA recopie quand même une instruction de
+        # gabarit au lieu de générer une vraie question (ex. "[... continuer
+        # cette partie ...]", "[Numérotation continue ... EXACTEMENT N
+        # questions ...]"), la retirer plutôt que de l'afficher au professeur
+        # comme si c'était une question.
+        _TEMPLATE_LEAK_RE = re.compile(r'^\[(?:\.\.\.|Continuer|Numérotation|Un critère).*\]\s*$', re.M | re.I)
+        content = _TEMPLATE_LEAK_RE.sub('', content).strip()
+        rubric  = _TEMPLATE_LEAK_RE.sub('', rubric).strip()
 
         # Retour #10 — vérifier les doublons AVANT validation : questions du lot
         # généré qui se ressemblent entre elles à ≥95% (même pattern que

@@ -8,8 +8,9 @@ from typing import Optional
 from werkzeug.datastructures import FileStorage
 from werkzeug.utils import secure_filename
 
-from models import get_session, User, UserRole, EC, ECAssignment
+from models import get_session, User, UserRole, EC, ECAssignment, QuestionBank
 from repositories.subject_repository import SubjectRepository
+from routes.question_bank import _similarity, DUPLICATE_THRESHOLD
 from services.ai_service import call_ai as _call_ai
 from utils import allowed_file, extract_text_from_file
 
@@ -41,6 +42,54 @@ def annotate_markers(content: str, has_qcm: bool, has_vf: bool) -> str:
                 line = line.rstrip() + ' [OUVERT]'
         out.append(line)
     return '\n'.join(out)
+
+
+def _split_into_question_blocks(content: str) -> list[str]:
+    """Découpe un document uploadé en blocs par question (un uploadé n'a pas
+    forcément le format rigide "Question N — Titre" des sujets générés par
+    l'IA — on se base donc sur `_Q_TITLE_RE`, plus permissif)."""
+    lines = content.split('\n')
+    starts = [i for i, line in enumerate(lines) if _Q_TITLE_RE.match(line.strip())]
+    if not starts:
+        return []
+    blocks = []
+    for idx, start in enumerate(starts):
+        end = starts[idx + 1] if idx + 1 < len(starts) else len(lines)
+        blocks.append('\n'.join(lines[start:end]).strip())
+    return blocks
+
+
+def _find_bank_duplicates(blocks: list[str]) -> list[dict]:
+    """Compare chaque question d'un document uploadé à TOUTE la banque de
+    questions existante (contrairement à `generate_more_questions`, qui ne
+    compare qu'au sein d'un même sujet) — un document uploadé est un contenu
+    totalement nouveau pour la plateforme, il peut donc redire un examen déjà
+    utilisé par un autre sujet."""
+    if not blocks:
+        return []
+    session = get_session()
+    try:
+        existing_contents = [c for (c,) in session.query(QuestionBank.content).all()]
+    finally:
+        session.close()
+    def _body(text: str) -> str:
+        # Ignore la première ligne (titre/numéro de question) : son format
+        # varie totalement entre un document uploadé ("Question 1 [OUVERT]")
+        # et une entrée de banque ("Titre ............. (X pts)") même quand
+        # le CORPS de la question est identique — comparer dès le caractère 0
+        # diluerait la similarité et masquerait le doublon.
+        return (text.split('\n', 1)[1] if '\n' in text else text).strip()
+
+    duplicates = []
+    existing_bodies = [_body(ex) for ex in existing_contents]
+    for blk in blocks:
+        blk_body = _body(blk)
+        for ex_body in existing_bodies:
+            sim = _similarity(blk_body[:300], ex_body[:300])
+            if sim >= DUPLICATE_THRESHOLD:
+                duplicates.append({'similarity': round(sim * 100, 1)})
+                break
+    return duplicates
 
 
 def _build_rubric_prompt(question_types: str) -> tuple[str, str]:
@@ -188,6 +237,11 @@ class SubjectService:
         has_vf  = 'vrai' in qt or 'faux' in qt
         annotated = annotate_markers(content, has_qcm, has_vf)
 
+        # Détection de doublons — contre TOUTE la banque de questions, puisque
+        # ce document est un contenu neuf pour la plateforme (pas une extension
+        # d'un sujet déjà en cours d'édition).
+        duplicates = _find_bank_duplicates(_split_into_question_blocks(annotated))
+
         # Generate rubric via AI (graceful degradation if AI is down)
         rubric = ''
         try:
@@ -196,7 +250,7 @@ class SubjectService:
         except Exception as ai_err:
             print(f'[SubjectService] AI unavailable for rubric: {ai_err}')
 
-        return SubjectRepository.create(
+        result = SubjectRepository.create(
             title=title,
             content=annotated,
             rubric=rubric,
@@ -204,6 +258,8 @@ class SubjectService:
             creator_id=creator_id,
             ec_id=ec_id,
         )
+        result['duplicates'] = duplicates
+        return result
 
     # ── Delete ────────────────────────────────────────────────────────────────
 

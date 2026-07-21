@@ -377,6 +377,20 @@ def assemble_from_bank():
         if not questions:
             session.close(); return jsonify({'error': 'Questions introuvables'}), 404
 
+        # Détection de doublons parmi la sélection — un professeur qui
+        # assemble plusieurs questions de la banque peut, sans s'en rendre
+        # compte, sélectionner deux variantes quasi identiques de la même
+        # question (même mécanisme que pour la génération IA).
+        duplicates = []
+        for i in range(len(questions)):
+            for j in range(i + 1, len(questions)):
+                sim = _similarity(questions[i].content[:300], questions[j].content[:300])
+                if sim >= DUPLICATE_THRESHOLD:
+                    duplicates.append({
+                        'similarity': round(sim * 100, 1),
+                        'titles': [questions[i].title, questions[j].title],
+                    })
+
         types_present  = {q.question_type for q in questions}
         has_qcm  = 'qcm' in types_present
         has_vf   = 'vf'  in types_present
@@ -433,11 +447,11 @@ def assemble_from_bank():
             content='\n'.join(content_lines).strip(),
             rubric='\n'.join(rubric_lines).strip(),
             ec_id=int(ec_id) if ec_id else None,
-            created_by_id=user_id,
+            creator_id=user_id,
         )
         session.add(subject); session.commit()
         result = subject.to_dict(); session.close()
-        return jsonify({'success': True, 'subject': result}), 201
+        return jsonify({'success': True, 'subject': result, 'duplicates': duplicates}), 201
     except Exception as e:
         import traceback; traceback.print_exc()
         return jsonify({'error': str(e)}), 500

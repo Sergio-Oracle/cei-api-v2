@@ -175,7 +175,8 @@ def upload_subject():
         )
 
         # 3. Return response
-        return jsonify({'success': True, 'subject': result})
+        duplicates = result.pop('duplicates', [])
+        return jsonify({'success': True, 'subject': result, 'duplicates': duplicates})
 
     except (ValueError, TypeError) as e:
         return jsonify({'error': str(e)}), 400

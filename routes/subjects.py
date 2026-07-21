@@ -173,6 +173,7 @@ def upload_subject():
             ec_id=data.ec_id,
             question_types=data.question_types,
             rubric_mode=data.rubric_mode,
+            total_points=data.total_points,
         )
 
         # 3. Return response

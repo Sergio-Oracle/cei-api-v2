@@ -13,6 +13,15 @@ class SubjectUploadInput(BaseModel):
     ec_id: Optional[int] = None
     question_types: str = ''
     rubric_mode: str = 'ai'  # 'ai' (généré par l'IA) | 'manual' (rédigé par le professeur)
+    total_points: int = 20   # total du barème (20, 30, 40, 60... au choix du professeur)
+
+    @field_validator('total_points', mode='before')
+    @classmethod
+    def coerce_total_points(cls, v):
+        try:
+            return max(1, min(200, int(v)))
+        except (TypeError, ValueError):
+            return 20
 
     @field_validator('title')
     @classmethod
@@ -92,4 +101,5 @@ def validate_upload_form(form: dict) -> SubjectUploadInput:
         ec_id=form.get('ec_id'),
         question_types=form.get('question_types', ''),
         rubric_mode=form.get('rubric_mode', 'ai'),
+        total_points=form.get('total_points', 20),
     )

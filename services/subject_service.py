@@ -92,7 +92,7 @@ def _find_bank_duplicates(blocks: list[str]) -> list[dict]:
     return duplicates
 
 
-def _build_manual_rubric_skeleton(blocks: list[str]) -> str:
+def _build_manual_rubric_skeleton(blocks: list[str], total_points: int = 20) -> str:
     """Squelette de barème vierge (pur Python, sans IA) — donne au professeur
     une structure question par question à remplir lui-même, plutôt que de lui
     imposer un point de départ rédigé par l'IA. Répond au besoin exprimé de
@@ -105,11 +105,11 @@ def _build_manual_rubric_skeleton(blocks: list[str]) -> str:
         lines.append(first_line)
         lines.append('  • Critère : ___ pts — ___')
         lines.append('')
-    lines += ['──────────────────────────', 'TOTAL : ___ / 20 points']
+    lines += ['──────────────────────────', f'TOTAL : ___ / {total_points} points']
     return '\n'.join(lines)
 
 
-def _build_rubric_prompt(question_types: str) -> tuple[str, str]:
+def _build_rubric_prompt(question_types: str, total_points: int = 20) -> tuple[str, str]:
     """Return (system_prompt, rubric_instruction) based on selected types."""
     qt = question_types.lower()
     has_qcm  = 'qcm'   in qt
@@ -154,9 +154,14 @@ def _build_rubric_prompt(question_types: str) -> tuple[str, str]:
         f'Génère UNIQUEMENT le barème de notation pour ce sujet d\'examen.\n'
         f'Types de questions présents : {qt_label}\n\n'
         f'{instruction}\n\n'
+        f'RÈGLE ABSOLUE SUR LE TOTAL : répartis les points entre TOUTES les '
+        f'questions du sujet de façon à ce que la somme fasse EXACTEMENT '
+        f'{total_points} points au total — pas 20 par défaut, {total_points} '
+        f'précisément, en tenant compte du nombre et de la difficulté relative '
+        f'des questions présentes dans le document.\n\n'
         f'FORMAT DE SORTIE OBLIGATOIRE :\n'
         f'=== BARÈME DE NOTATION ===\n'
-        f'Question 1 (X pts) :\n  ...\nTotal : 20 points'
+        f'Question 1 (X pts) :\n  ...\nTotal : {total_points} points'
     )
     return system_prompt, instruction
 
@@ -213,10 +218,19 @@ class SubjectService:
         ec_id: Optional[int],
         question_types: str,
         rubric_mode: str = 'ai',
+        total_points: int = 20,
     ) -> dict:
         # Authorization check
         if role not in (UserRole.PROFESSOR, UserRole.ADMIN):
             raise PermissionError('Accès non autorisé')
+
+        # Total du barème librement choisi par le professeur (20, 30, 40, 60,
+        # etc. selon les conventions de son établissement) — ne pas supposer
+        # que tout examen se note systématiquement sur 20.
+        try:
+            total_points = max(1, min(200, int(total_points)))
+        except (TypeError, ValueError):
+            total_points = 20
 
         # File validation
         if not file or file.filename == '':
@@ -267,11 +281,11 @@ class SubjectService:
         # manuel évite d'imposer un point de départ écrit par l'IA à un
         # professeur qui veut garder la main dès le départ.
         if rubric_mode == 'manual':
-            rubric = _build_manual_rubric_skeleton(question_blocks)
+            rubric = _build_manual_rubric_skeleton(question_blocks, total_points)
         else:
             rubric = ''
             try:
-                system_prompt, _ = _build_rubric_prompt(question_types)
+                system_prompt, _ = _build_rubric_prompt(question_types, total_points)
                 rubric = _call_ai(system_prompt, annotated, temperature=0.1)
             except Exception as ai_err:
                 print(f'[SubjectService] AI unavailable for rubric: {ai_err}')

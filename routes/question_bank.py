@@ -70,6 +70,7 @@ def save_question_bank():
             if sim >= DUPLICATE_THRESHOLD:
                 duplicates.append({'id': ex.id, 'title': ex.title, 'similarity': round(sim * 100, 1)})
 
+        tags = data.get('tags')
         q = QuestionBank(
             title=(data.get('title') or new_content[:80]).strip(),
             content=new_content,
@@ -77,6 +78,7 @@ def save_question_bank():
             question_type=data.get('question_type', 'open'),
             bloom_level=data.get('bloom_level', ''),
             ec_id=data.get('ec_id') or None,
+            tags=','.join(t.strip() for t in tags if t.strip()) if isinstance(tags, list) else (tags or None),
             created_by_id=user_id,
         )
         session.add(q); session.commit()
@@ -101,6 +103,145 @@ def delete_question_bank(q_id):
 
         session.delete(q); session.commit(); session.close()
         return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@question_bank_bp.route('/api/question_bank/<int:q_id>', methods=['PUT'])
+@paseto_required
+def update_question_bank(q_id):
+    """Édition en place — parité Moodle (les questions de la banque ne sont
+    plus figées : titre, énoncé, barème, type, Bloom, EC, tags, statut)."""
+    try:
+        user_id = get_current_user_id()
+        session = get_session()
+        user    = session.query(User).filter_by(id=user_id).first()
+
+        q = session.query(QuestionBank).filter_by(id=q_id).first()
+        if not q: session.close(); return jsonify({'error': 'Question introuvable'}), 404
+        if user.role != UserRole.ADMIN and q.created_by_id != user_id:
+            session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
+
+        data = request.get_json() or {}
+        if 'title' in data:
+            title = (data['title'] or '').strip()
+            if not title: session.close(); return jsonify({'error': 'Titre requis'}), 400
+            q.title = title
+        if 'content' in data:
+            content = (data['content'] or '').strip()
+            if not content: session.close(); return jsonify({'error': 'Contenu requis'}), 400
+            q.content = content
+        if 'rubric' in data:
+            q.rubric = data['rubric']
+        if 'question_type' in data:
+            q.question_type = data['question_type']
+        if 'bloom_level' in data:
+            q.bloom_level = data['bloom_level']
+        if 'ec_id' in data:
+            q.ec_id = int(data['ec_id']) if data['ec_id'] else None
+        if 'tags' in data:
+            tags = data['tags']
+            q.tags = ','.join(t.strip() for t in tags if t.strip()) if isinstance(tags, list) else (tags or None)
+        if 'status' in data and data['status'] in ('active', 'hidden'):
+            q.status = data['status']
+
+        session.commit()
+        result = q.to_dict(); session.close()
+        return jsonify({'success': True, 'question': result})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@question_bank_bp.route('/api/question_bank/<int:q_id>/duplicate', methods=['POST'])
+@paseto_required
+def duplicate_question_bank(q_id):
+    """Dupliquer une question — parité Moodle (créer une variante à partir
+    d'une question existante sans repartir de zéro)."""
+    try:
+        user_id = get_current_user_id()
+        session = get_session()
+        user    = session.query(User).filter_by(id=user_id).first()
+        if not user or user.role not in [UserRole.ADMIN, UserRole.PROFESSOR]:
+            session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
+
+        q = session.query(QuestionBank).filter_by(id=q_id).first()
+        if not q: session.close(); return jsonify({'error': 'Question introuvable'}), 404
+
+        copy = QuestionBank(
+            title=f'{q.title} (copie)',
+            content=q.content,
+            rubric=q.rubric,
+            question_type=q.question_type,
+            bloom_level=q.bloom_level,
+            ec_id=q.ec_id,
+            tags=q.tags,
+            status='active',
+            created_by_id=user_id,
+        )
+        session.add(copy); session.commit()
+        result = copy.to_dict(); session.close()
+        return jsonify({'success': True, 'question': result}), 201
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@question_bank_bp.route('/api/question_bank/bulk_move', methods=['POST'])
+@paseto_required
+def bulk_move_question_bank():
+    """Déplacer plusieurs questions vers un autre EC en un seul appel —
+    parité Moodle (bulk move entre catégories)."""
+    try:
+        user_id = get_current_user_id()
+        session = get_session()
+        user    = session.query(User).filter_by(id=user_id).first()
+        if not user or user.role not in [UserRole.ADMIN, UserRole.PROFESSOR]:
+            session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
+
+        data = request.get_json() or {}
+        question_ids = data.get('question_ids') or []
+        ec_id = data.get('ec_id')  # None autorisé = retirer l'EC
+        if not question_ids:
+            session.close(); return jsonify({'error': 'Aucune question sélectionnée'}), 400
+
+        moved, skipped = 0, 0
+        for qid in question_ids:
+            q = session.query(QuestionBank).filter_by(id=int(qid)).first()
+            if not q or (user.role != UserRole.ADMIN and q.created_by_id != user_id):
+                skipped += 1; continue
+            q.ec_id = int(ec_id) if ec_id else None
+            moved += 1
+        session.commit(); session.close()
+        return jsonify({'success': True, 'moved': moved, 'skipped': skipped})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@question_bank_bp.route('/api/question_bank/bulk_delete', methods=['POST'])
+@paseto_required
+def bulk_delete_question_bank():
+    """Supprimer plusieurs questions en un seul appel — parité Moodle (bulk
+    delete), au lieu de cliquer supprimer une par une."""
+    try:
+        user_id = get_current_user_id()
+        session = get_session()
+        user    = session.query(User).filter_by(id=user_id).first()
+
+        data = request.get_json() or {}
+        question_ids = data.get('question_ids') or []
+        if not question_ids:
+            session.close(); return jsonify({'error': 'Aucune question sélectionnée'}), 400
+
+        deleted, skipped = 0, 0
+        for qid in question_ids:
+            q = session.query(QuestionBank).filter_by(id=int(qid)).first()
+            if not q:
+                continue
+            if user.role != UserRole.ADMIN and q.created_by_id != user_id:
+                skipped += 1; continue
+            session.delete(q)
+            deleted += 1
+        session.commit(); session.close()
+        return jsonify({'success': True, 'deleted': deleted, 'skipped': skipped})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 

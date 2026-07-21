@@ -968,6 +968,13 @@ class QuestionBank(Base):
     ec_id = Column(Integer, ForeignKey('ecs.id'), nullable=True)
     created_by_id = Column(Integer, ForeignKey('users.id'), nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
+    # Parité Moodle — tags libres (recherche transversale hors hiérarchie),
+    # statut actif/masqué (retrait de la sélection sans suppression
+    # définitive, préserve l'historique des sujets déjà assemblés), et date
+    # de dernière modification (édition en place).
+    tags = Column(String(500))  # CSV simple : "révision,difficile,2026"
+    status = Column(String(10), default='active')  # active | hidden
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     ec = relationship('EC')
     creator = relationship('User', foreign_keys=[created_by_id])
@@ -1000,7 +1007,11 @@ class QuestionBank(Base):
             'pole_code': pole.code if pole else None,
             'pole_name': pole.name if pole else None,
             'created_by': self.creator.full_name if self.creator else None,
+            'created_by_id': self.created_by_id,
             'created_at': self.created_at.isoformat() if self.created_at else None,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None,
+            'tags': [t.strip() for t in self.tags.split(',') if t.strip()] if self.tags else [],
+            'status': self.status or 'active',
         }
 
 # Configuration de la base de données

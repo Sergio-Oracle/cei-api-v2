@@ -50,13 +50,28 @@ def _build_rubric_prompt(question_types: str) -> tuple[str, str]:
     has_vf   = 'vrai'  in qt or 'faux' in qt
     has_open = 'ouvert' in qt or 'open' in qt or not (has_qcm or has_vf)
 
+    # Comme dans Moodle (qtype_multichoice « one answer only » vs « multiple »),
+    # une question QCM à réponse unique et une question QCM à réponses multiples
+    # se notent différemment (correspondance exacte vs crédit partiel par choix
+    # correct) — l'IA doit donc détecter, question par question, laquelle des
+    # deux formulations est utilisée dans le document plutôt que de supposer un
+    # format unique pour tout le sujet.
+    qcm_instruction = (
+        'Pour chaque question QCM, détermine d\'abord si une seule réponse est '
+        'attendue (« Choisissez la meilleure réponse », une seule case à cocher '
+        'pertinente) ou si plusieurs réponses sont attendues (« Cochez toutes '
+        'les réponses correctes », plusieurs choix corrects) :\n'
+        '  • Réponse unique : Bonne réponse : X) — [justification en une ligne]\n'
+        '  • Réponses multiples : Bonnes réponses : X), Y) — [justification en une ligne]'
+    )
+
     if has_qcm and not has_open and not has_vf:
-        instruction = 'Pour chaque question QCM :\n  • Bonne réponse : X) — [justification en une ligne]'
+        instruction = qcm_instruction
     elif has_vf and not has_qcm and not has_open:
         instruction = 'Pour chaque question Vrai/Faux :\n  • Réponse : Vrai / Faux — [justification en une ligne]'
     elif has_qcm or has_vf:
         instruction = (
-            'Pour les questions QCM : "Bonne réponse : X) — [justification]"\n'
+            f'{qcm_instruction}\n'
             'Pour les questions VF  : "Réponse : Vrai/Faux — [justification]"\n'
             'Pour les questions ouvertes : critères de notation avec points'
         )

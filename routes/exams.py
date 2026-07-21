@@ -3660,12 +3660,42 @@ Règles ABSOLUES à respecter :
         return jsonify({'error': user_msg}), 500
 
 
+def _patch_question_points(text, points_map):
+    """Remplace le nombre de points de chaque question numérotée dans `text`
+    (contenu OU barème) selon `points_map` ({numéro: points}) — utilisé pour
+    redistribuer sur 20 points après ajout de nouvelles questions.
+
+    Traite ligne par ligne en suivant la question en cours : remplace TOUTES
+    les mentions "X pts" tant qu'on reste dans le bloc de cette question
+    (titre ET ligne de critère du barème, un seul critère par question dans
+    nos gabarits) — sans ça, le titre affichait le nouveau total mais le
+    critère gardait l'ancien. S'arrête explicitement à la ligne TOTAL pour ne
+    jamais toucher au total général (toujours 20)."""
+    current_num = None
+    out_lines = []
+    for line in text.split('\n'):
+        m = re.match(r'\s*Question\s+(\d{1,3})\s*[—\-–:.]', line)
+        if m:
+            current_num = int(m.group(1))
+        if re.search(r'TOTAL\s*:', line, re.I):
+            current_num = None
+        if current_num is not None and current_num in points_map:
+            pts = points_map[current_num]
+            pts_str = str(int(pts)) if float(pts).is_integer() else f'{pts:.1f}'
+            line = re.sub(r'\d+(?:\.\d+)?(\s*pts?\b)', lambda mm, s=pts_str: f'{s}{mm.group(1)}', line)
+        out_lines.append(line)
+    return '\n'.join(out_lines)
+
+
 @exams_bp.route('/api/subjects/generate-more-questions', methods=['POST'])
 @paseto_required
 def generate_more_questions():
     """Génère N questions supplémentaires d'un type donné à AJOUTER à un sujet
     déjà généré (sans le remplacer), en évitant de dupliquer les thèmes déjà
-    couverts. Retourne uniquement le texte des nouvelles questions."""
+    couverts. Redistribue les points sur 20 au total (anciennes + nouvelles
+    questions) et étend le barème avec une entrée par nouvelle question —
+    Retour : "le barème est toujours à 20/20 points, il devrait appliquer les
+    nouvelles questions"."""
     user_id = get_current_user_id()
     session = get_session()
     user = session.query(User).filter_by(id=int(user_id)).first()
@@ -3676,6 +3706,7 @@ def generate_more_questions():
 
     data = request.get_json() or {}
     existing_content = (data.get('existing_content') or '').strip()
+    existing_rubric  = (data.get('existing_rubric') or '').strip()
     if not existing_content:
         return jsonify({'error': 'Contenu existant requis'}), 400
 
@@ -3728,9 +3759,52 @@ RÈGLES ABSOLUES :
                     duplicates.append({'similarity': round(sim * 100, 1)})
                     break
 
+        # ── Redistribution des points sur 20 au total (anciennes + nouvelles
+        # questions) et extension du barème — sans ça, les nouvelles questions
+        # n'ont ni point ni critère, et le total restait figé sur l'ancien
+        # découpage.
+        full_content = existing_content
+        full_rubric  = existing_rubric
+        existing_nums = sorted(set(int(n) for n in re.findall(r'Question\s+(\d{1,3})\s*[—\-–:.]', existing_content)))
+        new_nums      = sorted(set(int(n) for n in re.findall(r'Question\s+(\d{1,3})\s*[—\-–:.]', new_questions_text)))
+        all_nums = sorted(set(existing_nums) | set(new_nums))
+        if all_nums:
+            total = len(all_nums)
+            base_pts  = 20 // total
+            remainder = 20 - base_pts * total
+            points_map = {}
+            for i, num in enumerate(all_nums):
+                points_map[num] = base_pts + (1 if i < remainder else 0)
+
+            full_content = _patch_question_points(f'{existing_content}\n\n{new_questions_text}', points_map)
+
+            if existing_rubric:
+                full_rubric = _patch_question_points(existing_rubric, points_map)
+                new_titles = dict(re.findall(r'Question\s+(\d{1,3})\s*[—\-–:.]\s*(.+?)\s*\.{3,}', new_questions_text))
+                new_rubric_entries = []
+                for num in new_nums:
+                    pts = points_map.get(num, base_pts)
+                    pts_str = str(int(pts)) if float(pts).is_integer() else f'{pts:.1f}'
+                    ttl = new_titles.get(str(num), '').strip() or f'Question {num}'
+                    new_rubric_entries.append(
+                        f'Question {num} — {ttl} ({pts_str} pt{"s" if pts != 1 else ""})\n'
+                        f'  • Réponse attendue : {pts_str} pt{"s" if pts != 1 else ""}\n'
+                    )
+                addendum = '\n'.join(new_rubric_entries)
+                # Insérer avant la ligne de séparation qui précède le TOTAL,
+                # sinon ajouter simplement à la fin (format non reconnu).
+                total_marker = re.search(r'\n─+\nTOTAL\s*:', full_rubric)
+                if total_marker:
+                    idx = total_marker.start()
+                    full_rubric = f'{full_rubric[:idx].rstrip()}\n\n{addendum}\n{full_rubric[idx:].lstrip(chr(10))}'
+                else:
+                    full_rubric = f'{full_rubric}\n\n{addendum}'
+
         return jsonify({
             'success': True,
             'new_content': new_questions_text,
+            'full_content': full_content,
+            'full_rubric': full_rubric,
             'count_generated': len(new_q_texts),
             'duplicates': duplicates,
         })

@@ -172,6 +172,7 @@ def upload_subject():
             role=user.role,
             ec_id=data.ec_id,
             question_types=data.question_types,
+            rubric_mode=data.rubric_mode,
         )
 
         # 3. Return response

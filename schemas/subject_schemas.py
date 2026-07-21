@@ -12,6 +12,7 @@ class SubjectUploadInput(BaseModel):
     title: str
     ec_id: Optional[int] = None
     question_types: str = ''
+    rubric_mode: str = 'ai'  # 'ai' (généré par l'IA) | 'manual' (rédigé par le professeur)
 
     @field_validator('title')
     @classmethod
@@ -90,4 +91,5 @@ def validate_upload_form(form: dict) -> SubjectUploadInput:
         title=form.get('title', 'Sans titre'),
         ec_id=form.get('ec_id'),
         question_types=form.get('question_types', ''),
+        rubric_mode=form.get('rubric_mode', 'ai'),
     )

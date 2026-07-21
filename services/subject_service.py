@@ -92,6 +92,23 @@ def _find_bank_duplicates(blocks: list[str]) -> list[dict]:
     return duplicates
 
 
+def _build_manual_rubric_skeleton(blocks: list[str]) -> str:
+    """Squelette de barème vierge (pur Python, sans IA) — donne au professeur
+    une structure question par question à remplir lui-même, plutôt que de lui
+    imposer un point de départ rédigé par l'IA. Répond au besoin exprimé de
+    « garder la main » sur la notation."""
+    if not blocks:
+        return ''
+    lines = ['=== BARÈME DE NOTATION (à compléter par vos soins) ===', '']
+    for blk in blocks:
+        first_line = blk.split('\n', 1)[0].strip()
+        lines.append(first_line)
+        lines.append('  • Critère : ___ pts — ___')
+        lines.append('')
+    lines += ['──────────────────────────', 'TOTAL : ___ / 20 points']
+    return '\n'.join(lines)
+
+
 def _build_rubric_prompt(question_types: str) -> tuple[str, str]:
     """Return (system_prompt, rubric_instruction) based on selected types."""
     qt = question_types.lower()
@@ -195,6 +212,7 @@ class SubjectService:
         role: UserRole,
         ec_id: Optional[int],
         question_types: str,
+        rubric_mode: str = 'ai',
     ) -> dict:
         # Authorization check
         if role not in (UserRole.PROFESSOR, UserRole.ADMIN):
@@ -240,15 +258,23 @@ class SubjectService:
         # Détection de doublons — contre TOUTE la banque de questions, puisque
         # ce document est un contenu neuf pour la plateforme (pas une extension
         # d'un sujet déjà en cours d'édition).
-        duplicates = _find_bank_duplicates(_split_into_question_blocks(annotated))
+        question_blocks = _split_into_question_blocks(annotated)
+        duplicates = _find_bank_duplicates(question_blocks)
 
-        # Generate rubric via AI (graceful degradation if AI is down)
-        rubric = ''
-        try:
-            system_prompt, _ = _build_rubric_prompt(question_types)
-            rubric = _call_ai(system_prompt, annotated, temperature=0.1)
-        except Exception as ai_err:
-            print(f'[SubjectService] AI unavailable for rubric: {ai_err}')
+        # Barème : soit généré par l'IA (comportement historique), soit un
+        # squelette vierge que le professeur rédige lui-même — le champ reste
+        # de toute façon modifiable ensuite dans les deux cas, mais le mode
+        # manuel évite d'imposer un point de départ écrit par l'IA à un
+        # professeur qui veut garder la main dès le départ.
+        if rubric_mode == 'manual':
+            rubric = _build_manual_rubric_skeleton(question_blocks)
+        else:
+            rubric = ''
+            try:
+                system_prompt, _ = _build_rubric_prompt(question_types)
+                rubric = _call_ai(system_prompt, annotated, temperature=0.1)
+            except Exception as ai_err:
+                print(f'[SubjectService] AI unavailable for rubric: {ai_err}')
 
         result = SubjectRepository.create(
             title=title,

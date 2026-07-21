@@ -963,7 +963,7 @@ class QuestionBank(Base):
     title = Column(String(300), nullable=False)
     content = Column(Text, nullable=False)       # texte complet de la question
     rubric = Column(Text)                        # barème / correction
-    question_type = Column(String(30), default='open')  # open | qcm | vf
+    question_type = Column(String(30), default='open')  # open | qcm | qcm_multi | vf | subopen | appariement | code
     bloom_level = Column(String(50))             # Connaissance, Application, etc.
     ec_id = Column(Integer, ForeignKey('ecs.id'), nullable=True)
     created_by_id = Column(Integer, ForeignKey('users.id'), nullable=False)

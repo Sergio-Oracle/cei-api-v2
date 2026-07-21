@@ -409,7 +409,8 @@ def assemble_from_bank():
         else:
             exam_type_label = 'Questions ouvertes'
 
-        TYPE_MARKER = {'qcm': '[QCM]', 'vf': '[VF]', 'open': '[OUVERT]', 'subopen': '[SUBOPEN]'}
+        TYPE_MARKER = {'qcm': '[QCM]', 'qcm_multi': '[QCM_MULTI]', 'vf': '[VF]', 'open': '[OUVERT]',
+                       'subopen': '[SUBOPEN]', 'appariement': '[APPARIEMENT]', 'code': '[CODE]'}
         n = len(questions)
         base_pts = 20 // n
         remainder = 20 - base_pts * n

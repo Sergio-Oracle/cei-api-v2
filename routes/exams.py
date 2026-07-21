@@ -1237,7 +1237,7 @@ def _seeded_shuffle(items: list, seed) -> list:
     return shuffled
 
 
-def _build_readable_student_answers(subject_content: str, answers_data) -> str:
+def _build_readable_student_answers(subject_content: str, answers_data, exclude_nums=None) -> str:
     """Reconstruit un texte lisible 'Question N : réponse' à partir des réponses
     brutes de l'examen en ligne (clés plates pq_N / pq_N_lettre / pq_N_index),
     en résolvant les lettres/indices vers le texte réel des choix/paires. Corrige
@@ -1254,6 +1254,8 @@ def _build_readable_student_answers(subject_content: str, answers_data) -> str:
                   key=lambda x: int(x) if x.isdigit() else 0)
 
     for num in nums:
+        if exclude_nums and num in exclude_nums:
+            continue
         q = questions.get(num, {})
         marker = q.get('marker')
         qtext = q.get('text', '')
@@ -1311,6 +1313,133 @@ def _build_readable_student_answers(subject_content: str, answers_data) -> str:
             answers_data.get('answer') or answers_data.get('text') or '')
 
 
+_RUBRIC_Q_BLOCK_RE = re.compile(
+    r'Question\s+(\d{1,3})\s*[—\-–:.].*?(?=\nQuestion\s+\d{1,3}\s*[—\-–:.]|\n─+\nTOTAL|\Z)', re.S)
+_RUBRIC_QCM_ANSWER_RE = re.compile(r'[Bb]onnes?\s+r[ée]ponses?\s*:\s*([A-Fa-f]\)?(?:\s*,\s*[A-Fa-f]\)?)*)')
+_RUBRIC_VF_ANSWER_RE  = re.compile(r'R[ée]ponse\s*:\s*(Vrai|Faux)', re.I)
+_Q_POINTS_RE          = re.compile(r'Question\s+(\d{1,3})\s*[—\-–:.].*?\((\d+(?:\.\d+)?)\s*pts?\)')
+
+
+def _extract_correct_answers(rubric: str) -> dict:
+    """Extrait, pour chaque question, la bonne réponse encodée dans le barème
+    par `_build_rubric_prompt`/le prompt de génération principal : lettre(s)
+    pour QCM (une ou plusieurs), Vrai/Faux pour VF. Sert de base à la notation
+    automatique — équivalent du champ `rightanswer` stocké par Moodle pour
+    qtype_multichoice/truefalse, plutôt que de renvoyer à l'IA une réponse
+    pourtant déjà mécaniquement vérifiable."""
+    result = {}
+    for m in _RUBRIC_Q_BLOCK_RE.finditer(rubric or ''):
+        num, block = m.group(1), m.group(0)
+        am = _RUBRIC_QCM_ANSWER_RE.search(block)
+        if am:
+            letters = {l.upper() for l in re.findall(r'[A-Fa-f]', am.group(1))}
+            if letters:
+                result[num] = {'type': 'qcm', 'letters': letters}
+                continue
+        vm = _RUBRIC_VF_ANSWER_RE.search(block)
+        if vm:
+            result[num] = {'type': 'vf', 'value': vm.group(1).capitalize()}
+    return result
+
+
+def _question_points_map(content: str) -> dict:
+    return {m.group(1): float(m.group(2)) for m in _Q_POINTS_RE.finditer(content or '')}
+
+
+def _deterministic_grade(content: str, rubric: str, answers_data) -> tuple:
+    """Note automatiquement — sans IA, comparaison exacte ou crédit partiel —
+    les questions QCM / QCM à réponses multiples / Vrai-Faux / Appariement,
+    exactement comme Moodle le fait pour qtype_multichoice (grade_response
+    somme les fractions des choix cochés), qtype_truefalse (correspondance
+    exacte, 0 ou 1) et qtype_match (fraction = paires correctes / total).
+    Retourne (score, score_max, lignes_de_détail, {numéros déjà notés})."""
+    if not isinstance(answers_data, dict):
+        return 0.0, 0.0, [], set()
+
+    questions   = _parse_subject_questions_for_grading(content)
+    points_map  = _question_points_map(content)
+    correct_map = _extract_correct_answers(rubric)
+
+    score, max_score = 0.0, 0.0
+    breakdown = []
+    graded_nums = set()
+
+    for num, q in questions.items():
+        marker = q.get('marker')
+        pts = points_map.get(num)
+        if pts is None:
+            continue
+
+        if marker == 'QCM':
+            key = correct_map.get(num)
+            if not key or key['type'] != 'qcm' or len(key['letters']) != 1:
+                continue
+            correct_letter = next(iter(key['letters']))
+            given = (answers_data.get(f'pq_{num}') or '').strip().upper()
+            earned = pts if given == correct_letter else 0.0
+            score += earned; max_score += pts; graded_nums.add(num)
+            breakdown.append(
+                f"Question {num} (QCM) : {'✓' if earned else '✗'} réponse {given or '(aucune)'} "
+                f"— attendu {correct_letter}) — {earned:.2f}/{pts:.2f} pt(s)")
+
+        elif marker == 'QCM_MULTI':
+            key = correct_map.get(num)
+            if not key or key['type'] != 'qcm' or not key['letters']:
+                continue
+            correct_set = key['letters']
+            raw = (answers_data.get(f'pq_{num}') or '').strip()
+            given_set = {l.strip().upper() for l in raw.split(',') if l.strip()}
+            n_right = len(given_set & correct_set)
+            n_wrong = len(given_set - correct_set)
+            fraction = max(0.0, (n_right - n_wrong) / len(correct_set))
+            earned = round(pts * fraction, 2)
+            score += earned; max_score += pts; graded_nums.add(num)
+            breakdown.append(
+                f"Question {num} (QCM à réponses multiples) : coché {sorted(given_set) or '(aucune)'} "
+                f"— attendu {sorted(correct_set)} — {earned:.2f}/{pts:.2f} pt(s)")
+
+        elif marker == 'VF':
+            key = correct_map.get(num)
+            if not key or key['type'] != 'vf':
+                continue
+            given = (answers_data.get(f'pq_{num}') or '').strip().capitalize()
+            earned = pts if given == key['value'] else 0.0
+            score += earned; max_score += pts; graded_nums.add(num)
+            breakdown.append(
+                f"Question {num} (Vrai/Faux) : {'✓' if earned else '✗'} réponse {given or '(aucune)'} "
+                f"— attendu {key['value']} — {earned:.2f}/{pts:.2f} pt(s)")
+
+        elif marker == 'APPARIEMENT' and q.get('pairs'):
+            pairs = q['pairs']
+            if not pairs:
+                continue
+            n_right = 0
+            for idx, pair in enumerate(pairs):
+                given = (answers_data.get(f'pq_{num}_{idx}') or '').strip().lower()
+                if given and given == pair['right'].strip().lower():
+                    n_right += 1
+            fraction = n_right / len(pairs)
+            earned = round(pts * fraction, 2)
+            score += earned; max_score += pts; graded_nums.add(num)
+            breakdown.append(
+                f"Question {num} (Appariement) : {n_right}/{len(pairs)} paire(s) correcte(s) "
+                f"— {earned:.2f}/{pts:.2f} pt(s)")
+
+    total_max = round(sum(points_map.values()), 2)
+    return round(score, 2), round(max_score, 2), total_max, breakdown, graded_nums
+
+
+def _extract_points_obtenus(text: str, denom: float) -> float:
+    """Extrait 'Points obtenus : XX.XX' — marqueur dédié à la portion de
+    correction confiée à l'IA une fois les questions QCM/VF/Appariement
+    retirées, distinct de 'Note totale: XX.XX/20' pour ne jamais être
+    confondu avec une notation IA de l'examen entier."""
+    m = re.search(r'Points\s+obtenus\s*:\s*(\d+\.?\d*)', text or '', re.I)
+    if not m:
+        return 0.0
+    return max(0.0, min(denom, float(m.group(1))))
+
+
 def _run_auto_correction(attempt_id: int):
     """Correction IA automatique dans un thread séparé (session DB indépendante)."""
     session = get_session()
@@ -1339,36 +1468,69 @@ def _run_auto_correction(attempt_id: int):
         except Exception:
             answers_data = {}
 
-        student_answers = _build_readable_student_answers(subject.content, answers_data)
-        if not student_answers:
-            student_answers = attempt.answers or ''
-
-        if not student_answers or not student_answers.strip():
+        if not answers_data:
             print(f"⚠️  Auto-correction {attempt_id} : aucune réponse, correction ignorée")
             return
 
-        system_prompt = _build_correction_system_prompt(
-            exam.title + (" — " + subject.title if subject.title else ""),
-            subject.content
-        )
-        user_message = f"""SUJET D'EXAMEN:
+        # Notation automatique (sans IA) des questions QCM/QCM_MULTI/Vrai-Faux/
+        # Appariement — comme Moodle. Seul le reliquat de points (questions
+        # ouvertes/code) est confié à l'IA, sur son propre total réduit. Le
+        # score final est ramené proportionnellement sur 20 à partir du total
+        # RÉEL des points du sujet (souvent ≠ 20 malgré la consigne — l'IA de
+        # génération ne respecte pas toujours parfaitement la répartition
+        # demandée), plutôt que de supposer un total fixe.
+        det_score, det_max, total_max, det_breakdown, det_nums = _deterministic_grade(
+            subject.content, subject.rubric or '', answers_data)
+        remaining_max = round(total_max - det_max, 2)
+        det_section = (
+            "=== NOTATION AUTOMATIQUE (QCM / Vrai-Faux / Appariement — sans IA) ===\n"
+            + ('\n'.join(det_breakdown) if det_breakdown else 'Aucune question de ce type notée.') + "\n\n"
+        ) if det_breakdown else ""
+
+        def _to_20(raw_points: float) -> float:
+            if total_max <= 0.01:
+                return 0.0
+            return max(0.0, min(20.0, raw_points / total_max * 20))
+
+        student_answers = ''
+        if remaining_max > 0.01:
+            student_answers = _build_readable_student_answers(subject.content, answers_data, exclude_nums=det_nums)
+            if not student_answers:
+                student_answers = attempt.answers or ''
+
+        if remaining_max <= 0.01 or not student_answers.strip():
+            score    = _to_20(det_score)
+            result   = f"{det_section}Note totale: {score:.2f}/20"
+        else:
+            system_prompt = _build_correction_system_prompt(
+                exam.title + (" — " + subject.title if subject.title else ""),
+                subject.content
+            )
+            excluded_note = (
+                f"Questions déjà notées automatiquement en dehors de cette correction, ne les évalue pas : "
+                f"{', '.join(sorted(det_nums, key=int))}.\n" if det_nums else ""
+            )
+            user_message = f"""SUJET D'EXAMEN:
 {subject.content}
 
 BARÈME DE NOTATION:
 {subject.rubric or 'Barème standard sur 20 points'}
 
-COPIE À CORRIGER (Examen en ligne — correction automatique):
+COPIE À CORRIGER (Examen en ligne — correction automatique) :
 Étudiant: {attempt.student.full_name}
 Durée de l'examen: {exam.duration_minutes} minutes
 
-RÉPONSES DE L'ÉTUDIANT:
+RÉPONSES DE L'ÉTUDIANT (questions restantes uniquement) :
 {student_answers}
 
-RAPPEL: Tu DOIS finir par "Note totale: XX.XX/20" """
+{excluded_note}Tu DOIS noter UNIQUEMENT les questions listées ci-dessus, sur un total de {remaining_max:.2f} points (PAS 20).
+Tu DOIS terminer ta correction par une ligne contenant EXACTEMENT : "Points obtenus : XX.XX" (jamais "Note totale", jamais "/20")."""
 
-        print(f"🤖 Auto-correction tentative {attempt_id} ({attempt.student.full_name}) — en cours…")
-        result = call_claude(system_prompt, user_message, temperature=0.15)
-        score  = max(0.0, min(20.0, float(extract_score_from_correction(result) or 0)))
+            print(f"🤖 Auto-correction tentative {attempt_id} ({attempt.student.full_name}) — en cours…")
+            ai_result  = call_claude(system_prompt, user_message, temperature=0.15)
+            ai_partial = _extract_points_obtenus(ai_result, remaining_max)
+            score      = _to_20(det_score + ai_partial)
+            result     = f"{det_section}{ai_result}\n\nNote totale: {score:.2f}/20"
 
         attempt.score          = score
         attempt.feedback       = result
@@ -1655,40 +1817,72 @@ def correct_exam_attempt(attempt_id):
         except Exception:
             answers_data = {}
 
-        student_answers = _build_readable_student_answers(subject.content, answers_data) if isinstance(answers_data, dict) else \
-            (answers_data if isinstance(answers_data, str) else '')
-
-        if not student_answers or not student_answers.strip():
-            # Tenter le brut si le JSON ne contient rien d'utile
-            student_answers = attempt.answers or ''
-
-        if not student_answers or not student_answers.strip():
+        if not answers_data:
             session.close()
             return jsonify({'error': 'Aucune réponse à corriger pour cet étudiant'}), 400
-        
-        system_prompt = _build_correction_system_prompt(
-            exam.title + (" — " + subject.title if subject.title else ""),
-            subject.content
-        )
 
-        user_message = f"""SUJET D'EXAMEN:
+        # Notation automatique (sans IA) des questions QCM/QCM_MULTI/Vrai-Faux/
+        # Appariement — comme Moodle. Seul le reliquat de points (questions
+        # ouvertes/code) est confié à l'IA, sur son propre total réduit. Le
+        # score final est ramené proportionnellement sur 20 à partir du total
+        # RÉEL des points du sujet (souvent ≠ 20 malgré la consigne de
+        # génération), plutôt que de supposer un total fixe.
+        det_score, det_max, total_max, det_breakdown, det_nums = _deterministic_grade(
+            subject.content, subject.rubric or '', answers_data if isinstance(answers_data, dict) else {})
+        remaining_max = round(total_max - det_max, 2)
+        det_section = (
+            "=== NOTATION AUTOMATIQUE (QCM / Vrai-Faux / Appariement — sans IA) ===\n"
+            + ('\n'.join(det_breakdown) if det_breakdown else 'Aucune question de ce type notée.') + "\n\n"
+        ) if det_breakdown else ""
+
+        def _to_20(raw_points: float) -> float:
+            if total_max <= 0.01:
+                return 0.0
+            return max(0.0, min(20.0, raw_points / total_max * 20))
+
+        student_answers = ''
+        if remaining_max > 0.01:
+            student_answers = _build_readable_student_answers(subject.content, answers_data, exclude_nums=det_nums) if isinstance(answers_data, dict) else \
+                (answers_data if isinstance(answers_data, str) else '')
+            if not student_answers or not student_answers.strip():
+                student_answers = attempt.answers or ''
+
+        if remaining_max <= 0.01 or not student_answers.strip():
+            if det_max <= 0.01:
+                session.close()
+                return jsonify({'error': 'Aucune réponse à corriger pour cet étudiant'}), 400
+            score  = _to_20(det_score)
+            result = f"{det_section}Note totale: {score:.2f}/20"
+        else:
+            system_prompt = _build_correction_system_prompt(
+                exam.title + (" — " + subject.title if subject.title else ""),
+                subject.content
+            )
+            excluded_note = (
+                f"Questions déjà notées automatiquement en dehors de cette correction, ne les évalue pas : "
+                f"{', '.join(sorted(det_nums, key=int))}.\n" if det_nums else ""
+            )
+            user_message = f"""SUJET D'EXAMEN:
 {subject.content}
 
 BARÈME DE NOTATION:
 {subject.rubric}
 
-COPIE À CORRIGER (Examen en ligne):
+COPIE À CORRIGER (Examen en ligne) :
 Étudiant: {attempt.student.full_name}
 Durée de l'examen: {exam.duration_minutes} minutes
 
-RÉPONSES DE L'ÉTUDIANT:
+RÉPONSES DE L'ÉTUDIANT (questions restantes uniquement) :
 {student_answers}
 
-RAPPEL: Tu DOIS finir par "Note totale: XX.XX/20" """
+{excluded_note}Tu DOIS noter UNIQUEMENT les questions listées ci-dessus, sur un total de {remaining_max:.2f} points (PAS 20).
+Tu DOIS terminer ta correction par une ligne contenant EXACTEMENT : "Points obtenus : XX.XX" (jamais "Note totale", jamais "/20")."""
 
-        # Appeler Claude pour la correction
-        result = call_claude(system_prompt, user_message, temperature=0.15)
-        score = max(0.0, min(20.0, float(extract_score_from_correction(result) or 0)))
+            # Appeler Claude pour la correction
+            ai_result  = call_claude(system_prompt, user_message, temperature=0.15)
+            ai_partial = _extract_points_obtenus(ai_result, remaining_max)
+            score      = _to_20(det_score + ai_partial)
+            result     = f"{det_section}{ai_result}\n\nNote totale: {score:.2f}/20"
 
         # Stocker les résultats
         attempt.score = score
@@ -3487,6 +3681,12 @@ def generate_full_exam_from_suggestion():
     # priorité → classification garantie côté frontend, sans heuristiques fragiles.
 
     # (titre_partie, marqueur, gabarit_question, règle_format)
+    # 5ᵉ élément de chaque tuple : format EXACT exigé pour la ligne de barème de
+    # ce type — condition nécessaire à la notation automatique déterministe
+    # (comme Moodle qtype_multichoice/truefalse : rightanswer stocké et comparé
+    # mécaniquement, sans IA). Pour l'Appariement, la bonne réponse est déjà
+    # dans l'énoncé (colonne de droite) — le barème n'a donc besoin que d'un
+    # critère générique, pas d'une clé de réponse séparée.
     _TEMPLATES = {
         'qcm': ("Questions à Choix Multiples (une seule bonne réponse)", 'QCM',
             """Question {n} — [Titre court] ............. (1 pt) [QCM]
@@ -3495,7 +3695,8 @@ A) [Premier choix — description courte, max 15 mots]
 B) [Deuxième choix — description courte, max 15 mots]
 C) [Troisième choix — description courte, max 15 mots]
 D) [Quatrième choix — description courte, max 15 mots]""",
-            "chaque titre QCM se termine par [QCM] ; 4 choix A) B) C) D) courts (max 15 mots), jamais de verbes d'instruction (Définissez, Expliquez...) ; une seule bonne réponse"),
+            "chaque titre QCM se termine par [QCM] ; 4 choix A) B) C) D) courts (max 15 mots), jamais de verbes d'instruction (Définissez, Expliquez...) ; une seule bonne réponse",
+            "  • Bonne réponse : X) — [justification courte]"),
         'qcm_multi': ("Questions à Choix Multiples (plusieurs bonnes réponses)", 'QCM_MULTI',
             """Question {n} — [Titre court] ............. (1 pt) [QCM_MULTI]
 [Énoncé précisant qu'il peut y avoir plusieurs bonnes réponses]
@@ -3504,26 +3705,31 @@ B) [Choix court]
 C) [Choix court]
 D) [Choix court]
 E) [Choix court]""",
-            "chaque titre se termine par [QCM_MULTI] ; 4 à 6 choix A) B) C)... ; AU MOINS 2 bonnes réponses par question"),
+            "chaque titre se termine par [QCM_MULTI] ; 4 à 6 choix A) B) C)... ; AU MOINS 2 bonnes réponses par question",
+            "  • Bonnes réponses : X), Y) — [justification courte]"),
         'vf': ("Vrai / Faux", 'VF',
             """Question {n} — [Affirmation à évaluer] ............. (1 pt) [VF]
 Vrai / Faux""",
-            'chaque titre se termine par [VF] ; la ligne suivante est UNIQUEMENT "Vrai / Faux" (rien d\'autre)'),
+            'chaque titre se termine par [VF] ; la ligne suivante est UNIQUEMENT "Vrai / Faux" (rien d\'autre)',
+            "  • Réponse : Vrai (ou Faux) — [justification courte]"),
         'appariement': ("Appariement", 'APPARIEMENT',
             """Question {n} — Associez chaque élément de gauche à sa correspondance ............. (2 pts) [APPARIEMENT]
 A. [Terme ou élément 1] → [Définition/correspondance 1]
 B. [Terme ou élément 2] → [Définition/correspondance 2]
 C. [Terme ou élément 3] → [Définition/correspondance 3]
 D. [Terme ou élément 4] → [Définition/correspondance 4]""",
-            "chaque titre se termine par [APPARIEMENT] ; 4 à 6 paires \"A. Gauche → Droite\" (flèche → obligatoire, un seul \"→\" par ligne)"),
+            "chaque titre se termine par [APPARIEMENT] ; 4 à 6 paires \"A. Gauche → Droite\" (flèche → obligatoire, un seul \"→\" par ligne)",
+            "  • Crédit proportionnel au nombre de paires correctes (la bonne réponse figure déjà dans l'énoncé)"),
         'code': ("Maths et Programmation", 'CODE',
             """Question {n} — [Énoncé de l'exercice de calcul/algorithme] ............. (X pts) [CODE]
 [Énoncé complet — formule à démontrer, algorithme à écrire ou problème à résoudre pas à pas]""",
-            "chaque titre se termine par [CODE] ; énoncés d'exercices mathématiques ou de programmation nécessitant une réponse structurée (formules, pseudo-code)"),
+            "chaque titre se termine par [CODE] ; énoncés d'exercices mathématiques ou de programmation nécessitant une réponse structurée (formules, pseudo-code)",
+            "  • Critère : Z pts — [Ce qui est attendu]"),
         'open': ("Questions Ouvertes", 'OUVERT',
             """Question {n} — [Titre court] ............. (X pts) [OUVERT]
 [Énoncé complet, précis et détaillé]""",
-            "chaque titre se termine par [OUVERT] ; énoncés complets et détaillés"),
+            "chaque titre se termine par [OUVERT] ; énoncés complets et détaillés",
+            "  • Critère : Z pts — [Ce qui est attendu]"),
     }
     _selected = [k for k, sel in (('qcm', has_qcm), ('qcm_multi', has_qcm_multi), ('vf', has_vf),
                                    ('appariement', has_appariement), ('code', has_code),
@@ -3532,16 +3738,18 @@ D. [Terme ou élément 4] → [Définition/correspondance 4]""",
         _selected = ['open']  # comportement historique par défaut
 
     if not is_mixed and len(_selected) == 1:
-        _title, _marker, _tpl, _rule = _TEMPLATES[_selected[0]]
+        _title, _marker, _tpl, _rule, _rubric_rule = _TEMPLATES[_selected[0]]
         questions_format = "\n\n".join(_tpl.format(n=i) for i in (1, 2)) + f"\n\n[Continuer ainsi jusqu'à {question_count} questions au total, selon durée et difficulté. Total des points = 20 pts]"
         format_rules = f"- OBLIGATOIRE : {_rule}\n- EXACTEMENT {question_count} questions au total, numérotées Question 1 à Question {question_count} × points répartis pour totaliser 20 pts"
+        rubric_example = f"Question 1 — [Titre] (X pts)\n{_rubric_rule}"
+        rubric_format_rules = f"- OBLIGATOIRE, pour CHAQUE question du barème : {_rubric_rule.strip()}"
     else:
         pts_per_part = max(1, 20 // len(_selected))
         q_per_part = max(1, question_count // len(_selected))
         sections = []
         n_start = 1
         for k in _selected:
-            _title, _marker, _tpl, _rule = _TEMPLATES[k]
+            _title, _marker, _tpl, _rule, _rubric_rule = _TEMPLATES[k]
             sections.append(
                 f"Partie — {_title} ({pts_per_part} pts, ~{q_per_part} questions)\n\n" +
                 "\n\n".join(_tpl.format(n=i) for i in (n_start, n_start+1)) +
@@ -3550,6 +3758,8 @@ D. [Terme ou élément 4] → [Définition/correspondance 4]""",
             n_start += 2
         questions_format = "\n\n".join(sections) + f"\n\n[Numérotation continue d'une partie à l'autre. EXACTEMENT {question_count} questions au total. Total de toutes les parties = 20 pts]"
         format_rules = "\n".join(f"- Partie {_TEMPLATES[k][0]} : {_TEMPLATES[k][3]}" for k in _selected) + f"\n- EXACTEMENT {question_count} questions au total (toutes parties confondues)\n- Total toutes parties confondues = 20 pts"
+        rubric_example = "\n\n".join(f"Question {i} — [Titre] (X pts)  ({_TEMPLATES[k][0]})\n{_TEMPLATES[k][4]}" for i, k in enumerate(_selected, start=1))
+        rubric_format_rules = "\n".join(f"- Pour toute question de type {_TEMPLATES[k][0]} : {_TEMPLATES[k][4].strip()}" for k in _selected)
 
     prompt = f"""Tu es un expert en création d'examens universitaires francophones, compétent dans TOUS les domaines académiques (sciences, droit, médecine, lettres, arts, ingénierie, langues, économie, histoire, philosophie, agronomie, architecture, etc.).
 
@@ -3591,10 +3801,9 @@ QUESTIONS
 BARÈME DE NOTATION
 ══════════════════════════════════════
 
-Question 1 — [Titre] (X pts)
-  • Critère : Z pts — [Ce qui est attendu]
+{rubric_example}
 
-[Un critère par question]
+[Un critère par question — respecte EXACTEMENT le format demandé ci-dessous selon le type de chaque question]
 
 ──────────────────────────
 TOTAL : 20 / 20 points
@@ -3603,7 +3812,10 @@ TOTAL : 20 / 20 points
 Règles ABSOLUES à respecter :
 {format_rules}
 - Langage académique et rigoureux en français
-- Questions adaptées au niveau {student_level} et à {duration} minutes de composition{"" if not media_items else chr(10) + "- Chaque marqueur média listé ci-dessus DOIT apparaître EXACTEMENT UNE FOIS, tel quel, seul sur sa ligne, juste après l'énoncé de la question qui l'exploite"}"""
+- Questions adaptées au niveau {student_level} et à {duration} minutes de composition{"" if not media_items else chr(10) + "- Chaque marqueur média listé ci-dessus DOIT apparaître EXACTEMENT UNE FOIS, tel quel, seul sur sa ligne, juste après l'énoncé de la question qui l'exploite"}
+
+Règles ABSOLUES pour le BARÈME (notation automatique sans IA pour QCM/Vrai-Faux/Appariement — la bonne réponse DOIT être écrite exactement dans ce format pour être reconnue) :
+{rubric_format_rules}"""
 
     try:
         full_exam_text = call_ai_simple(prompt)
@@ -3850,7 +4062,11 @@ Réponds STRICTEMENT avec un nombre entier seul, rien d'autre (pas de phrase, pa
 
 
 _BANK_TYPE_QUESTION = ('qcm', 'qcm_multi', 'vf', 'appariement', 'open', 'subopen', 'code')
-_BANK_TYPE_MAP = {'qcm': 'qcm', 'qcm_multi': 'qcm', 'vf': 'vf'}
+# Correspondance directe — auparavant 'qcm_multi'/'appariement'/'code' n'y
+# figuraient pas et retombaient silencieusement sur 'open' via le .get(...,
+# 'open') plus bas, perdant leur étiquette d'origine alors que le frontend
+# (admin/questions TYPE_LABEL) sait déjà tous les afficher distinctement.
+_BANK_TYPE_MAP = {t: t for t in _BANK_TYPE_QUESTION}
 
 
 def _enrich_question_bank_from_subject(session, subject, user_id: int) -> int:

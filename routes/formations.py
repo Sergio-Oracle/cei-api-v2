@@ -1044,12 +1044,33 @@ def get_professor_students():
         for e in enrollments:
             student_ues.setdefault(e.student_id, set()).add(e.ue_id)
 
+        # Retour : "je veux que tu les affiches par Pôles" — le Pôle d'un
+        # étudiant se dérive directement de sa Formation (Formation.pole_id,
+        # dénormalisé), et celui d'un EC via EC → UE → Semestre → Formation →
+        # Pôle (même chemin que EC.to_dict()). Exposé ici pour permettre le
+        # regroupement/filtre par Pôle côté frontend, SANS toucher au calcul
+        # d'éligibilité ci-dessus (ECAssignment → EC → UE → StudentUEEnrollment,
+        # déjà correctement scopé au professeur) — le Pôle n'est qu'un
+        # habillage d'affichage sur un ensemble d'étudiants déjà bien filtré.
+        ec_pole = {}
+        for ec in ecs:
+            ue = session.query(UE).filter_by(id=ec.ue_id).first()
+            semester = session.query(Semester).filter_by(id=ue.semester_id).first() if ue else None
+            formation_of_ec = session.query(Formation).filter_by(id=semester.formation_id).first() if semester else None
+            pole_of_ec = formation_of_ec.pole if formation_of_ec else None
+            ec_pole[ec.id] = {
+                'pole_id':   pole_of_ec.id if pole_of_ec else None,
+                'pole_code': pole_of_ec.code if pole_of_ec else None,
+                'pole_name': pole_of_ec.name if pole_of_ec else None,
+            }
+
         students_out = []
         for sid, enrolled_ue_ids in student_ues.items():
             student = session.query(User).filter_by(id=sid, role=UserRole.STUDENT).first()
             if not student: continue
             formation = (session.query(Formation).filter_by(id=student.formation_id).first()
                          if getattr(student, 'formation_id', None) else None)
+            pole = formation.pole if formation else None
             student_ecs = []
             for ec in ecs:
                 if ec.ue_id in enrolled_ue_ids:
@@ -1063,6 +1084,9 @@ def get_professor_students():
                 'niveau':         student.niveau,
                 'formation_code': formation.code if formation else None,
                 'formation_name': formation.name if formation else None,
+                'pole_id':        pole.id if pole else None,
+                'pole_code':      pole.code if pole else None,
+                'pole_name':      pole.name if pole else None,
                 'ecs':            student_ecs,
             })
         students_out.sort(key=lambda x: x['full_name'])
@@ -1072,7 +1096,8 @@ def get_professor_students():
             ue = session.query(UE).filter_by(id=ec.ue_id).first()
             count = session.query(StudentUEEnrollment).filter_by(ue_id=ec.ue_id).count()
             ecs_out.append({'ec_code': ec.code, 'ec_name': ec.name,
-                            'ue_code': ue.code if ue else '—', 'student_count': count})
+                            'ue_code': ue.code if ue else '—', 'student_count': count,
+                            **ec_pole.get(ec.id, {'pole_id': None, 'pole_code': None, 'pole_name': None})})
 
         session.close()
         return jsonify({'ecs': ecs_out, 'students': students_out, 'total': len(students_out)})

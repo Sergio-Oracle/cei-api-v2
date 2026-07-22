@@ -44,6 +44,20 @@ def _is_admin(session):
     return True, u
 
 
+def _is_admin_or_professor(session):
+    u = session.query(User).filter_by(id=get_current_user_id()).first()
+    if not u or u.role not in (UserRole.ADMIN, UserRole.PROFESSOR):
+        session.close()
+        return False, None
+    return True, u
+
+
+def _can_manage_proctor_group(user, group):
+    """Un admin gère tous les groupes de surveillants ; un professeur ne
+    gère que ceux qu'il a lui-même créés (ProctorGroup.created_by_id)."""
+    return user.role == UserRole.ADMIN or group.created_by_id == user.id
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # PÔLES
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1226,9 +1240,14 @@ def remove_student_enrollment(eid):
 def list_proctor_groups():
     try:
         session = get_session()
-        ok, _ = _is_admin(session)
+        ok, user = _is_admin_or_professor(session)
         if not ok: return jsonify({'error': 'Accès non autorisé'}), 403
-        groups = session.query(ProctorGroup).order_by(ProctorGroup.name).all()
+        query = session.query(ProctorGroup)
+        if user.role == UserRole.PROFESSOR:
+            # Un professeur ne voit que les groupes qu'il a lui-même créés —
+            # pas ceux d'un autre professeur ni les groupes admin.
+            query = query.filter_by(created_by_id=user.id)
+        groups = query.order_by(ProctorGroup.name).all()
         result = [g.to_dict() for g in groups]
         session.close()
         return jsonify(result)
@@ -1241,13 +1260,13 @@ def list_proctor_groups():
 def create_proctor_group():
     try:
         session = get_session()
-        ok, admin = _is_admin(session)
+        ok, user = _is_admin_or_professor(session)
         if not ok: return jsonify({'error': 'Accès non autorisé'}), 403
         data = request.json or {}
         name = (data.get('name') or '').strip()
         if not name:
             session.close(); return jsonify({'error': 'Nom du groupe requis'}), 400
-        group = ProctorGroup(name=name, created_by_id=admin.id)
+        group = ProctorGroup(name=name, created_by_id=user.id)
         session.add(group); session.commit()
         result = group.to_dict()
         session.close()
@@ -1261,10 +1280,12 @@ def create_proctor_group():
 def update_proctor_group(gid):
     try:
         session = get_session()
-        ok, _ = _is_admin(session)
+        ok, user = _is_admin_or_professor(session)
         if not ok: return jsonify({'error': 'Accès non autorisé'}), 403
         group = session.query(ProctorGroup).filter_by(id=gid).first()
         if not group: session.close(); return jsonify({'error': 'Groupe non trouvé'}), 404
+        if not _can_manage_proctor_group(user, group):
+            session.close(); return jsonify({'error': "Vous ne gérez pas ce groupe"}), 403
         data = request.json or {}
         if 'name' in data and data['name'].strip():
             group.name = data['name'].strip()
@@ -1281,10 +1302,12 @@ def update_proctor_group(gid):
 def delete_proctor_group(gid):
     try:
         session = get_session()
-        ok, _ = _is_admin(session)
+        ok, user = _is_admin_or_professor(session)
         if not ok: return jsonify({'error': 'Accès non autorisé'}), 403
         group = session.query(ProctorGroup).filter_by(id=gid).first()
         if not group: session.close(); return jsonify({'error': 'Groupe non trouvé'}), 404
+        if not _can_manage_proctor_group(user, group):
+            session.close(); return jsonify({'error': "Vous ne gérez pas ce groupe"}), 403
         session.delete(group); session.commit(); session.close()
         return jsonify({'success': True, 'message': 'Groupe supprimé'})
     except Exception as e:
@@ -1296,10 +1319,12 @@ def delete_proctor_group(gid):
 def add_proctor_group_member(gid):
     try:
         session = get_session()
-        ok, _ = _is_admin(session)
+        ok, user = _is_admin_or_professor(session)
         if not ok: return jsonify({'error': 'Accès non autorisé'}), 403
         group = session.query(ProctorGroup).filter_by(id=gid).first()
         if not group: session.close(); return jsonify({'error': 'Groupe non trouvé'}), 404
+        if not _can_manage_proctor_group(user, group):
+            session.close(); return jsonify({'error': "Vous ne gérez pas ce groupe"}), 403
         data = request.json or {}
         proctor_ids = data.get('proctor_ids') or ([data['proctor_id']] if data.get('proctor_id') else [])
         if not proctor_ids:
@@ -1333,8 +1358,12 @@ def add_proctor_group_member(gid):
 def remove_proctor_group_member(gid, mid):
     try:
         session = get_session()
-        ok, _ = _is_admin(session)
+        ok, user = _is_admin_or_professor(session)
         if not ok: return jsonify({'error': 'Accès non autorisé'}), 403
+        group = session.query(ProctorGroup).filter_by(id=gid).first()
+        if not group: session.close(); return jsonify({'error': 'Groupe non trouvé'}), 404
+        if not _can_manage_proctor_group(user, group):
+            session.close(); return jsonify({'error': "Vous ne gérez pas ce groupe"}), 403
         m = session.query(ProctorGroupMember).filter_by(id=mid, group_id=gid).first()
         if not m: session.close(); return jsonify({'error': 'Membre non trouvé'}), 404
         session.delete(m); session.commit(); session.close()
@@ -1348,16 +1377,23 @@ def remove_proctor_group_member(gid, mid):
 def link_proctor_group_ec(gid):
     try:
         session = get_session()
-        ok, _ = _is_admin(session)
+        ok, user = _is_admin_or_professor(session)
         if not ok: return jsonify({'error': 'Accès non autorisé'}), 403
         group = session.query(ProctorGroup).filter_by(id=gid).first()
         if not group: session.close(); return jsonify({'error': 'Groupe non trouvé'}), 404
+        if not _can_manage_proctor_group(user, group):
+            session.close(); return jsonify({'error': "Vous ne gérez pas ce groupe"}), 403
         data = request.json or {}
         ec_id = data.get('ec_id')
         if not ec_id: session.close(); return jsonify({'error': 'EC requis'}), 400
         ec = session.query(EC).filter_by(id=ec_id).first()
         if not ec:
             session.close(); return jsonify({'error': 'EC non trouvé'}), 404
+        if user.role == UserRole.PROFESSOR and not session.query(ECAssignment).filter_by(ec_id=ec_id, professor_id=user.id).first():
+            # Un professeur ne peut rattacher un groupe qu'à un EC dont il a
+            # lui-même la charge — sinon il pourrait affecter des surveillants
+            # à l'EC d'un collègue.
+            session.close(); return jsonify({'error': "Vous n'êtes pas responsable de cet EC"}), 403
         if session.query(ProctorGroupEC).filter_by(group_id=gid, ec_id=ec_id).first():
             session.close(); return jsonify({'error': 'Ce groupe est déjà rattaché à cet EC'}), 400
         session.add(ProctorGroupEC(group_id=gid, ec_id=ec_id))
@@ -1383,8 +1419,12 @@ def link_proctor_group_ec(gid):
 def unlink_proctor_group_ec(gid, ec_id):
     try:
         session = get_session()
-        ok, _ = _is_admin(session)
+        ok, user = _is_admin_or_professor(session)
         if not ok: return jsonify({'error': 'Accès non autorisé'}), 403
+        group = session.query(ProctorGroup).filter_by(id=gid).first()
+        if not group: session.close(); return jsonify({'error': 'Groupe non trouvé'}), 404
+        if not _can_manage_proctor_group(user, group):
+            session.close(); return jsonify({'error': "Vous ne gérez pas ce groupe"}), 403
         link = session.query(ProctorGroupEC).filter_by(group_id=gid, ec_id=ec_id).first()
         if not link: session.close(); return jsonify({'error': 'Rattachement non trouvé'}), 404
         session.delete(link); session.commit(); session.close()

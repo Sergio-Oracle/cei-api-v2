@@ -4812,9 +4812,9 @@ def get_professor_analytics():
             return jsonify({'error': 'Accès non autorisé'}), 403
 
         if user.role == UserRole.ADMIN:
-            exams = session.query(OnlineExam).all()
+            exams = session.query(OnlineExam).options(joinedload(OnlineExam.subject).joinedload(Subject.ec)).all()
         else:
-            exams = session.query(OnlineExam).filter_by(created_by_id=user_id).all()
+            exams = session.query(OnlineExam).options(joinedload(OnlineExam.subject).joinedload(Subject.ec)).filter_by(created_by_id=user_id).all()
 
         exam_ids = [e.id for e in exams]
 
@@ -4861,6 +4861,64 @@ def get_professor_analytics():
             s = exam.status.value
             status_counts[s] = status_counts.get(s, 0) + 1
 
+        # Retour #21 — 4 ratios clarifiés par l'utilisateur (le "ratio étudiants
+        # par étudiants" initial était ambigu ; il désigne en réalité 4 ratios
+        # distincts) :
+        #   1) étudiants / surveillant — charge de travail moyenne des
+        #      surveillants (nb d'affectations ProctorAssignment / nb de
+        #      surveillants distincts, sur les examens du prof ou tous si admin)
+        #   2) étudiants / examen — éligibles (inscrits à l'UE de l'EC du
+        #      sujet) vs tentatives réelles, moyennés sur tous les examens —
+        #      2 chiffres plutôt qu'un seul car l'un ou l'autre peut être ce
+        #      qu'on entend par "ratio étudiants/examens" selon le contexte
+        #   3) étudiants / notes — taux de correction (déjà calculé plus haut
+        #      via total_submitted/total_corrected, juste reformulé en ratio)
+        #   4) étudiants / validation — taux de réussite (score ≥ 10),
+        #      idem déjà calculé via overall_pass_rate
+        proctor_assignments = session.query(ProctorAssignment).filter(
+            ProctorAssignment.exam_id.in_(exam_ids)
+        ).all() if exam_ids else []
+        distinct_proctors = {pa.proctor_id for pa in proctor_assignments}
+        students_per_proctor = round(len(proctor_assignments) / len(distinct_proctors), 1) if distinct_proctors else None
+
+        eligible_per_exam = []
+        for exam in exams:
+            ec = exam.subject.ec if exam.subject else None
+            if ec and ec.ue_id:
+                n = session.query(StudentUEEnrollment).filter_by(ue_id=ec.ue_id).count()
+                eligible_per_exam.append(n)
+        total_eligible = sum(eligible_per_exam)
+        avg_eligible_per_exam = round(total_eligible / len(eligible_per_exam), 1) if eligible_per_exam else None
+        avg_attempts_per_exam = round(len(all_attempts) / len(exams), 1) if exams else None
+        participation_rate = round(len(all_attempts) / total_eligible * 100, 1) if total_eligible else None
+
+        grading_completion_rate = round(len(all_scores) / len(submitted) * 100, 1) if submitted else None
+        pass_count = sum(1 for s in all_scores if s >= 10)
+        validation_rate = round(pass_count / len(all_scores) * 100, 1) if all_scores else None
+
+        ratios = {
+            'students_per_proctor': {
+                'total_assignments': len(proctor_assignments),
+                'distinct_proctors':  len(distinct_proctors),
+                'avg':                students_per_proctor,
+            },
+            'students_per_exam': {
+                'avg_eligible':       avg_eligible_per_exam,
+                'avg_attempts':       avg_attempts_per_exam,
+                'participation_rate': participation_rate,
+            },
+            'students_per_grade': {
+                'total_submitted':  len(submitted),
+                'total_corrected':  len(all_scores),
+                'completion_rate':  grading_completion_rate,
+            },
+            'students_per_validation': {
+                'total_scored':    len(all_scores),
+                'total_validated': pass_count,
+                'validation_rate': validation_rate,
+            },
+        }
+
         session.close()
         return jsonify({
             'total_exams':      len(exams),
@@ -4874,6 +4932,7 @@ def get_professor_analytics():
             'bottom_exams':     ranked[-3:][::-1] if len(ranked) >= 3 else [],
             'recent_corrections': recent_list,
             'exam_stats':       exam_stats,
+            'ratios':           ratios,
         })
     except Exception as e:
         print(f"❌ get_professor_analytics: {e}")

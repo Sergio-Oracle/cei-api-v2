@@ -642,10 +642,13 @@ def start_exam_attempt(exam_id):
                 strokes    = int(meta.get('strokes', 0))
                 path_len   = float(meta.get('path_length', 0))
                 duration   = int(meta.get('duration_ms', 0))
-                if strokes < 2 or path_len < 80 or duration < 600:
+                # Une vraie signature se fait très souvent en un seul trait continu
+                # (souris/trackpad) — on n'exige plus plusieurs traits, seulement
+                # une longueur et une durée suffisantes (anti gribouillis/clic unique).
+                if strokes < 1 or path_len < 80 or duration < 600:
                     session.close()
                     return jsonify({
-                        'error': 'Signature non conforme. Veuillez tracer une signature complète (plusieurs traits, durée suffisante).',
+                        'error': 'Signature non conforme. Veuillez tracer un trait plus long, sans aller trop vite.',
                         'signature_invalid': True
                     }), 400
             except Exception:

@@ -2,7 +2,7 @@
 CEI — Documentation API Swagger / OpenAPI 3.0
 Accessible à /api/docs (Swagger UI) et /api/docs/openapi.json (spec brute)
 Scan exhaustif v4 — app.py, proctoring_routes.py, csv_import_routes.py, export_route.py
-186 endpoints documentés dans la spec OpenAPI 3.0 (ce nombre n'est PAS calculé
+184 endpoints documentés dans la spec OpenAPI 3.0 (ce nombre n'est PAS calculé
 automatiquement — le mettre à jour ici et dans les deux badges HTML plus bas
 à chaque route ajoutée/retirée dans OPENAPI_SPEC["paths"])
 """
@@ -1238,23 +1238,64 @@ OPENAPI_SPEC = {
         # SUJETS
         # ══════════════════════════════════════════════════════════════════════
 
-        "/api/subjects": {"get": {
-            "tags": ["Sujets"], "summary": "Liste des sujets (filtrés par rôle et EC)",
-            "parameters": [
-                {"name": "ec_id",  "in": "query", "schema": {"type": "integer"}},
-                {"name": "page",   "in": "query", "schema": {"type": "integer", "default": 1}},
-                {"name": "search", "in": "query", "schema": {"type": "string"}}
-            ],
-            "responses": {"200": {"description": "Sujets", "content": {"application/json": {"schema": {
-                "type": "array", "items": {"$ref": "#/components/schemas/Subject"}
-            }}}}}
-        }},
+        "/api/subjects": {
+            "get": {
+                "tags": ["Sujets"], "summary": "Liste des sujets (filtrés par rôle et EC)",
+                "parameters": [
+                    {"name": "ec_id",  "in": "query", "schema": {"type": "integer"}},
+                    {"name": "page",   "in": "query", "schema": {"type": "integer", "default": 1}},
+                    {"name": "search", "in": "query", "schema": {"type": "string"}}
+                ],
+                "responses": {"200": {"description": "Sujets", "content": {"application/json": {"schema": {
+                    "type": "array", "items": {"$ref": "#/components/schemas/Subject"}
+                }}}}}
+            },
+            "post": {
+                "tags": ["Sujets"], "summary": "Créer un sujet manuellement (titre + contenu + barème saisis)",
+                "requestBody": {"required": True, "content": {"application/json": {"schema": {
+                    "type": "object", "required": ["title", "content"],
+                    "properties": {
+                        "title":   {"type": "string"},
+                        "content": {"type": "string"},
+                        "rubric":  {"type": "string"},
+                        "ec_id":   {"type": "integer"}
+                    }
+                }}}},
+                "responses": {
+                    "201": {"description": "Sujet créé", "content": {"application/json": {"schema": {
+                        "type": "object", "properties": {"success": {"type": "boolean"}, "subject": {"$ref": "#/components/schemas/Subject"}}
+                    }}}},
+                    "403": {"$ref": "#/components/responses/Forbidden"},
+                    "422": {"description": "Validation échouée (titre/contenu manquant)"}
+                }
+            }
+        },
         "/api/subjects/{subject_id}": {
             "get": {
                 "tags": ["Sujets"], "summary": "Détail d'un sujet",
                 "parameters": [{"name": "subject_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
                 "responses": {
                     "200": {"description": "Sujet", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Subject"}}}},
+                    "404": {"$ref": "#/components/responses/NotFound"}
+                }
+            },
+            "put": {
+                "tags": ["Sujets"], "summary": "Éditer un sujet déjà validé (titre/contenu/barème)",
+                "description": "Bloqué si un examen lié est déjà actif/clôturé ou a reçu des tentatives.",
+                "parameters": [{"name": "subject_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+                "requestBody": {"content": {"application/json": {"schema": {
+                    "type": "object",
+                    "properties": {
+                        "title":   {"type": "string"},
+                        "content": {"type": "string"},
+                        "rubric":  {"type": "string"}
+                    }
+                }}}},
+                "responses": {
+                    "200": {"description": "Sujet mis à jour", "content": {"application/json": {"schema": {
+                        "type": "object", "properties": {"success": {"type": "boolean"}, "subject": {"$ref": "#/components/schemas/Subject"}}
+                    }}}},
+                    "403": {"$ref": "#/components/responses/Forbidden"},
                     "404": {"$ref": "#/components/responses/NotFound"}
                 }
             },
@@ -2571,26 +2612,6 @@ OPENAPI_SPEC = {
             }}}},
             "responses": {"200": {"description": "Formation affectée"}}
         }},
-        "/api/admin/students/{student_id}/enroll_formation": {"post": {
-            "tags": ["Académique"], "summary": "Inscrire un étudiant à tous les EC d'une formation (admin)",
-            "parameters": [{"name": "student_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
-            "requestBody": {"required": True, "content": {"application/json": {"schema": {
-                "type": "object", "required": ["formation_id"],
-                "properties": {"formation_id": {"type": "integer"}}
-            }}}},
-            "responses": {"200": {"description": "Étudiant inscrit à toute la formation"}}
-        }},
-        "/api/admin/enroll_student_ec": {"post": {
-            "tags": ["Académique"], "summary": "Inscrire un étudiant à un EC spécifique (admin)",
-            "requestBody": {"required": True, "content": {"application/json": {"schema": {
-                "type": "object", "required": ["student_id","ec_id"],
-                "properties": {
-                    "student_id": {"type": "integer"},
-                    "ec_id":      {"type": "integer"}
-                }
-            }}}},
-            "responses": {"200": {"description": "Inscrit"}, "409": {"description": "Déjà inscrit"}}
-        }},
         "/api/ues": {"get": {
             "tags": ["Académique"], "summary": "Toutes les UEs (admin/prof)",
             "responses": {"200": {"description": "UEs", "content": {"application/json": {"schema": {
@@ -2960,11 +2981,39 @@ OPENAPI_SPEC = {
                 "responses": {"201": {"description": "Question ajoutée"}}
             }
         },
-        "/api/question_bank/{q_id}": {"delete": {
-            "tags": ["Intelligence Artificielle"], "summary": "Supprimer une question de la banque",
-            "parameters": [{"name": "q_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
-            "responses": {"200": {"description": "Question supprimée"}}
-        }},
+        "/api/question_bank/{q_id}": {
+            "put": {
+                "tags": ["Intelligence Artificielle"], "summary": "Éditer une question de la banque en place",
+                "description": "Parité Moodle — les questions de la banque ne sont plus figées (titre, énoncé, barème, type, Bloom, EC, tags, statut).",
+                "parameters": [{"name": "q_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+                "requestBody": {"content": {"application/json": {"schema": {
+                    "type": "object",
+                    "properties": {
+                        "title":         {"type": "string"},
+                        "content":       {"type": "string"},
+                        "rubric":        {"type": "string"},
+                        "question_type": {"type": "string"},
+                        "bloom_level":   {"type": "string"},
+                        "ec_id":         {"type": "integer", "nullable": True},
+                        "tags":          {"type": "array", "items": {"type": "string"}},
+                        "status":        {"type": "string", "enum": ["active", "hidden"]}
+                    }
+                }}}},
+                "responses": {
+                    "200": {"description": "Question mise à jour", "content": {"application/json": {"schema": {
+                        "type": "object", "properties": {"success": {"type": "boolean"}, "question": {"type": "object"}}
+                    }}}},
+                    "400": {"description": "Titre ou contenu vide"},
+                    "403": {"$ref": "#/components/responses/Forbidden"},
+                    "404": {"description": "Question introuvable"}
+                }
+            },
+            "delete": {
+                "tags": ["Intelligence Artificielle"], "summary": "Supprimer une question de la banque",
+                "parameters": [{"name": "q_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+                "responses": {"200": {"description": "Question supprimée"}}
+            }
+        },
         "/api/question_bank/{q_id}/duplicate": {"post": {
             "tags": ["Intelligence Artificielle"],
             "summary": "Dupliquer une question de la banque",
@@ -3786,7 +3835,7 @@ _SWAGGER_HTML = """<!DOCTYPE html>
     <div class="cei-header-meta">
       <span class="cei-badge cei-badge-version">v2.1</span>
       <span class="cei-badge cei-badge-oas">OpenAPI 3.0</span>
-      <span class="cei-badge cei-badge-count">186 endpoints</span>
+      <span class="cei-badge cei-badge-count">184 endpoints</span>
     </div>
     <nav class="cei-header-nav">
       <a class="cei-nav-link active" href="/api/docs">Swagger UI</a>
@@ -3909,7 +3958,7 @@ _REDOC_HTML = """<!DOCTYPE html>
     <div class="cei-meta">
       <span class="cei-badge b-v">v2.1</span>
       <span class="cei-badge b-o">OpenAPI 3.0</span>
-      <span class="cei-badge b-e">186 endpoints</span>
+      <span class="cei-badge b-e">184 endpoints</span>
     </div>
     <nav class="cei-nav">
       <a class="n-link" href="/api/docs">Swagger UI</a>

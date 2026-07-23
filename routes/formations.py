@@ -1308,7 +1308,12 @@ def delete_proctor_group(gid):
         if not group: session.close(); return jsonify({'error': 'Groupe non trouvé'}), 404
         if not _can_manage_proctor_group(user, group):
             session.close(); return jsonify({'error': "Vous ne gérez pas ce groupe"}), 403
-        session.delete(group); session.commit(); session.close()
+        ec_ids = [ge.ec_id for ge in group.ecs]
+        session.delete(group); session.commit()
+        from services.proctor_service import sync_ec_proctors
+        for ec_id in ec_ids:
+            sync_ec_proctors(session, ec_id)
+        session.close()
         return jsonify({'success': True, 'message': 'Groupe supprimé'})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -1346,6 +1351,12 @@ def add_proctor_group_member(gid):
             except Exception:
                 pass
         session.commit()
+        # Un renfort ajouté au groupe se propage à tous les examens à venir
+        # des EC couverts par ce groupe (plus de gestion manuelle par examen).
+        if added:
+            from services.proctor_service import sync_ec_proctors
+            for ec_id in [ge.ec_id for ge in group.ecs]:
+                sync_ec_proctors(session, ec_id)
         result = group.to_dict()
         session.close()
         return jsonify({'success': True, 'added': added, 'already': already, 'group': result}), 201
@@ -1366,7 +1377,11 @@ def remove_proctor_group_member(gid, mid):
             session.close(); return jsonify({'error': "Vous ne gérez pas ce groupe"}), 403
         m = session.query(ProctorGroupMember).filter_by(id=mid, group_id=gid).first()
         if not m: session.close(); return jsonify({'error': 'Membre non trouvé'}), 404
-        session.delete(m); session.commit(); session.close()
+        session.delete(m); session.commit()
+        from services.proctor_service import sync_ec_proctors
+        for ec_id in [ge.ec_id for ge in group.ecs]:
+            sync_ec_proctors(session, ec_id)
+        session.close()
         return jsonify({'success': True, 'message': 'Membre retiré'})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -1407,6 +1422,8 @@ def link_proctor_group_ec(gid):
                              priority='default', tags=['bookmark'])
         except Exception:
             pass
+        from services.proctor_service import sync_ec_proctors
+        sync_ec_proctors(session, ec_id)
         result = group.to_dict()
         session.close()
         return jsonify(result), 201
@@ -1427,7 +1444,10 @@ def unlink_proctor_group_ec(gid, ec_id):
             session.close(); return jsonify({'error': "Vous ne gérez pas ce groupe"}), 403
         link = session.query(ProctorGroupEC).filter_by(group_id=gid, ec_id=ec_id).first()
         if not link: session.close(); return jsonify({'error': 'Rattachement non trouvé'}), 404
-        session.delete(link); session.commit(); session.close()
+        session.delete(link); session.commit()
+        from services.proctor_service import sync_ec_proctors
+        sync_ec_proctors(session, ec_id)
+        session.close()
         return jsonify({'success': True, 'message': 'Rattachement retiré'})
     except Exception as e:
         return jsonify({'error': str(e)}), 500

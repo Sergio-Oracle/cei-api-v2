@@ -2,7 +2,7 @@
 CEI — Documentation API Swagger / OpenAPI 3.0
 Accessible à /api/docs (Swagger UI) et /api/docs/openapi.json (spec brute)
 Scan exhaustif v4 — app.py, proctoring_routes.py, csv_import_routes.py, export_route.py
-164 endpoints documentés dans la spec OpenAPI 3.0 (ce nombre n'est PAS calculé
+185 endpoints documentés dans la spec OpenAPI 3.0 (ce nombre n'est PAS calculé
 automatiquement — le mettre à jour ici et dans les deux badges HTML plus bas
 à chaque route ajoutée/retirée dans OPENAPI_SPEC["paths"])
 """
@@ -372,6 +372,7 @@ OPENAPI_SPEC = {
         {"name": "Réclamations",             "description": "Dépôt, traitement IA et décision sur les réclamations"},
         {"name": "Relevés de notes",         "description": "Génération et téléchargement des relevés PDF"},
         {"name": "Tableaux de bord",         "description": "Dashboards professeur et étudiant"},
+        {"name": "Système",                  "description": "Endpoints d'infrastructure (health check pour load balancer / monitoring)"},
     ],
     "components": {
         "securitySchemes": {
@@ -989,6 +990,51 @@ OPENAPI_SPEC = {
             "parameters": [{"name": "enrollment_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
             "responses": {"200": {"description": "Désinscrit"}}
         }},
+        "/api/admin/student_enrollments/bulk": {"post": {
+            "tags": ["Académique"],
+            "summary": "Inscrire plusieurs étudiants à une même UE en une fois (admin)",
+            "description": "Même logique unitaire que POST /api/admin/student_enrollments, bouclée sur une liste de student_ids — rend les inscriptions de classes entières rapides. Notifie chaque étudiant nouvellement inscrit.",
+            "requestBody": {"required": True, "content": {"application/json": {"schema": {
+                "type": "object", "required": ["student_ids", "ue_id"],
+                "properties": {
+                    "student_ids": {"type": "array", "items": {"type": "integer"}},
+                    "ue_id":       {"type": "integer"}
+                }
+            }}}},
+            "responses": {
+                "201": {"description": "Inscriptions effectuées", "content": {"application/json": {"schema": {
+                    "type": "object",
+                    "properties": {
+                        "success":          {"type": "boolean"},
+                        "enrolled":         {"type": "integer"},
+                        "already_enrolled": {"type": "integer"},
+                        "errors":           {"type": "array", "items": {"type": "string"}}
+                    }
+                }}}},
+                "400": {"description": "Étudiants ou UE manquants"},
+                "403": {"$ref": "#/components/responses/Forbidden"},
+                "404": {"$ref": "#/components/responses/NotFound"}
+            }
+        }},
+        "/api/admin/student_enrollments/bulk_remove": {"post": {
+            "tags": ["Académique"],
+            "summary": "Désinscrire plusieurs étudiants d'une même UE en une fois (admin)",
+            "description": "Symétrique de bulk — retrait en masse (ex: erreur d'affectation, changement de maquette).",
+            "requestBody": {"required": True, "content": {"application/json": {"schema": {
+                "type": "object", "required": ["student_ids", "ue_id"],
+                "properties": {
+                    "student_ids": {"type": "array", "items": {"type": "integer"}},
+                    "ue_id":       {"type": "integer"}
+                }
+            }}}},
+            "responses": {
+                "200": {"description": "Désinscriptions effectuées", "content": {"application/json": {"schema": {
+                    "type": "object", "properties": {"success": {"type": "boolean"}, "removed": {"type": "integer"}}
+                }}}},
+                "400": {"description": "Étudiants ou UE manquants"},
+                "403": {"$ref": "#/components/responses/Forbidden"}
+            }
+        }},
 
         # ══════════════════════════════════════════════════════════════════════
         # GROUPES SURVEILLANTS
@@ -1027,7 +1073,7 @@ OPENAPI_SPEC = {
         },
         "/api/admin/proctor_groups/{gid}/members": {"post": {
             "tags": ["Groupes Surveillants"], "summary": "Ajouter des surveillants à un groupe (admin)",
-            "description": "Notifie automatiquement chaque surveillant ajouté.",
+            "description": "Notifie automatiquement chaque surveillant ajouté. Se propage immédiatement à tous les examens DRAFT/SCHEDULED des EC rattachés à ce groupe : le nouveau membre est ajouté comme surveillant et les étudiants inscrits sont ré-répartis (round-robin) entre tous les surveillants du groupe (services/proctor_service.sync_ec_proctors). Un examen déjà ACTIVE n'est pas resynchronisé.",
             "parameters": [{"name": "gid", "in": "path", "required": True, "schema": {"type": "integer"}}],
             "requestBody": {"required": True, "content": {"application/json": {"schema": {
                 "type": "object", "required": ["proctor_ids"],
@@ -1039,6 +1085,7 @@ OPENAPI_SPEC = {
         }},
         "/api/admin/proctor_groups/{gid}/members/{mid}": {"delete": {
             "tags": ["Groupes Surveillants"], "summary": "Retirer un membre d'un groupe (admin)",
+            "description": "Se propage immédiatement aux examens DRAFT/SCHEDULED des EC rattachés : le surveillant retiré perd son affectation et ses étudiants sont ré-répartis entre les membres restants.",
             "parameters": [
                 {"name": "gid", "in": "path", "required": True, "schema": {"type": "integer"}},
                 {"name": "mid", "in": "path", "required": True, "schema": {"type": "integer"}, "description": "id de la ligne d'appartenance (pas l'id du surveillant)"}
@@ -1047,7 +1094,7 @@ OPENAPI_SPEC = {
         }},
         "/api/admin/proctor_groups/{gid}/ecs": {"post": {
             "tags": ["Groupes Surveillants"], "summary": "Rattacher un EC à un groupe (admin)",
-            "description": "Tout examen créé pour cet EC affectera automatiquement tous les membres du groupe.",
+            "description": "Tout examen créé pour cet EC affectera automatiquement tous les membres du groupe, avec pré-répartition des étudiants inscrits. Se propage aussi immédiatement aux examens DRAFT/SCHEDULED déjà existants pour cet EC. Un professeur ne peut rattacher que ses propres EC (403 sinon).",
             "parameters": [{"name": "gid", "in": "path", "required": True, "schema": {"type": "integer"}}],
             "requestBody": {"required": True, "content": {"application/json": {"schema": {
                 "type": "object", "required": ["ec_id"],
@@ -1057,6 +1104,7 @@ OPENAPI_SPEC = {
         }},
         "/api/admin/proctor_groups/{gid}/ecs/{ec_id}": {"delete": {
             "tags": ["Groupes Surveillants"], "summary": "Détacher un EC d'un groupe (admin)",
+            "description": "Se propage immédiatement aux examens DRAFT/SCHEDULED de cet EC : les surveillants qui ne viennent plus d'aucun groupe rattaché sont retirés.",
             "parameters": [
                 {"name": "gid", "in": "path", "required": True, "schema": {"type": "integer"}},
                 {"name": "ec_id", "in": "path", "required": True, "schema": {"type": "integer"}}
@@ -1559,6 +1607,25 @@ OPENAPI_SPEC = {
                 }}}}
             }
         }},
+        "/api/exam_attempts/{attempt_id}/paginated": {"get": {
+            "tags": ["Examens en ligne"],
+            "summary": "Questions paginées et mélangées d'une tentative (étudiant)",
+            "description": "Découpage en pages et ordre de mélange des questions (façon Moodle) calculés UNE FOIS côté serveur avec un mélange déterministe (seed = attempt_id) — stable pour un même étudiant à travers les rechargements de page, au lieu d'être recalculés à chaque montage du composant.",
+            "parameters": [{"name": "attempt_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+            "responses": {
+                "200": {"description": "Questions paginées", "content": {"application/json": {"schema": {
+                    "type": "object",
+                    "properties": {
+                        "questions_per_page": {"type": "integer", "description": "0 = pagination désactivée (toutes les questions sur une page)"},
+                        "p1_blocks": {"type": "array", "items": {"type": "object"}, "description": "Questions QCM/QCM_MULTI/VF/appariement (partie 1), mélangées si randomize_questions"},
+                        "p2_items":  {"type": "array", "items": {"type": "object"}, "description": "Questions ouvertes/section/code (partie 2), jamais mélangées"},
+                        "p1_pages":  {"type": "array", "items": {"type": "array", "items": {"type": "object"}}},
+                        "p2_pages":  {"type": "array", "items": {"type": "array", "items": {"type": "object"}}}
+                    }
+                }}}},
+                "404": {"$ref": "#/components/responses/NotFound"}
+            }
+        }},
 
         # ══════════════════════════════════════════════════════════════════════
         # PROCTORING
@@ -1805,6 +1872,15 @@ OPENAPI_SPEC = {
                 }
             }}}}}
         }},
+        "/api/online_exams/{exam_id}/proctor_heartbeat": {"post": {
+            "tags": ["Surveillant"],
+            "summary": "Signaler la présence en direct d'un surveillant (heartbeat)",
+            "description": "Appelé périodiquement (ex. toutes les 30s) par la page de monitoring tant qu'elle reste ouverte. Sert aussi de déclencheur : si un AUTRE surveillant de cet examen n'a plus émis de heartbeat depuis 90s, ses étudiants sont automatiquement redistribués aux surveillants encore en ligne (Notes point 11).",
+            "parameters": [{"name": "exam_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+            "responses": {"200": {"description": "Heartbeat enregistré", "content": {"application/json": {"schema": {
+                "type": "object", "properties": {"success": {"type": "boolean"}}
+            }}}}}
+        }},
         "/api/surveillant/exams": {"get": {
             "tags": ["Surveillant"], "summary": "Examens assignés au surveillant connecté",
             "responses": {"200": {"description": "Examens du surveillant", "content": {"application/json": {"schema": {
@@ -1910,6 +1986,21 @@ OPENAPI_SPEC = {
             "description": "Retourne les URLs pré-signées des vidéos stockées dans S3/MinIO.",
             "parameters": [{"name": "exam_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
             "responses": {"200": {"description": "Vidéos avec URLs pré-signées"}}
+        }},
+        "/api/proctoring/snapshot_local/{key}": {"get": {
+            "tags": ["Proctoring"],
+            "summary": "Servir un snapshot caméra depuis le fallback disque local",
+            "description": "Utilisé quand MinIO était indisponible au moment de la capture (le snapshot a été écrit sur disque local à la place). Réservé aux professeur/admin/surveillant affectés à l'examen concerné.",
+            "parameters": [{
+                "name": "key", "in": "path", "required": True, "schema": {"type": "string"},
+                "description": "Clé au format `snapshots_fallback/{exam_id}/{attempt_id}/{timestamp}.jpg` — contient des `/`, capturée via le convertisseur Flask `<path:key>`."
+            }],
+            "responses": {
+                "200": {"description": "Image JPEG", "content": {"image/jpeg": {"schema": {"type": "string", "format": "binary"}}}},
+                "400": {"description": "Clé de snapshot invalide"},
+                "403": {"$ref": "#/components/responses/Forbidden"},
+                "404": {"$ref": "#/components/responses/NotFound"}
+            }
         }},
 
         # ══════════════════════════════════════════════════════════════════════
@@ -2142,6 +2233,63 @@ OPENAPI_SPEC = {
             }}}},
             "responses": {"201": {"description": "Sujet sauvegardé", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Subject"}}}}}
         }},
+        "/api/subjects/generate-more-questions": {"post": {
+            "tags": ["Intelligence Artificielle"],
+            "summary": "Générer des questions supplémentaires à ajouter à un sujet (prof/admin)",
+            "description": "Ajoute N nouvelles questions d'un type donné à un sujet déjà généré (sans le remplacer), en évitant les thèmes déjà couverts. Redistribue automatiquement les points sur 20 au total (anciennes + nouvelles) et étend le barème d'une entrée par nouvelle question.",
+            "requestBody": {"required": True, "content": {"application/json": {"schema": {
+                "type": "object", "required": ["existing_content"],
+                "properties": {
+                    "existing_content": {"type": "string", "description": "Contenu actuel du sujet"},
+                    "existing_rubric":  {"type": "string", "description": "Barème actuel du sujet"},
+                    "count":            {"type": "integer", "default": 3, "description": "Nombre de questions à ajouter, 1 à 10"},
+                    "question_type":    {"type": "string", "example": "QCM", "description": "Type des nouvelles questions"},
+                    "title":            {"type": "string"},
+                    "student_level":    {"type": "string", "example": "Licence 3"},
+                    "difficulty":       {"type": "string", "example": "Moyen"}
+                }
+            }}}},
+            "responses": {
+                "200": {"description": "Questions générées", "content": {"application/json": {"schema": {
+                    "type": "object",
+                    "properties": {
+                        "success":          {"type": "boolean"},
+                        "new_content":      {"type": "string", "description": "Uniquement les nouvelles questions"},
+                        "full_content":     {"type": "string", "description": "Sujet complet (anciennes + nouvelles questions, points redistribués)"},
+                        "full_rubric":      {"type": "string", "description": "Barème complet étendu"},
+                        "count_generated":  {"type": "integer"},
+                        "duplicates":       {"type": "array", "items": {"type": "object", "properties": {"similarity": {"type": "number"}}}, "description": "Nouvelles questions détectées comme quasi-identiques à une question existante"}
+                    }
+                }}}},
+                "400": {"description": "Contenu existant requis"},
+                "403": {"$ref": "#/components/responses/Forbidden"}
+            }
+        }},
+        "/api/subjects/suggest-question-count": {"post": {
+            "tags": ["Intelligence Artificielle"],
+            "summary": "Suggérer par IA un nombre de questions adapté (prof/admin)",
+            "description": "L'IA suggère un nombre de questions adapté à la durée/difficulté/niveau, au lieu de laisser le professeur deviner. Repli heuristique (duration // 5) si l'IA est indisponible.",
+            "requestBody": {"content": {"application/json": {"schema": {
+                "type": "object",
+                "properties": {
+                    "duration":       {"type": "integer", "default": 60, "description": "Durée de l'examen en minutes"},
+                    "difficulty":     {"type": "string", "default": "Moyen"},
+                    "student_level":  {"type": "string", "default": "Licence 3"},
+                    "question_types": {"type": "string", "default": "mixte"}
+                }
+            }}}},
+            "responses": {
+                "200": {"description": "Nombre suggéré", "content": {"application/json": {"schema": {
+                    "type": "object",
+                    "properties": {
+                        "success":         {"type": "boolean"},
+                        "suggested_count": {"type": "integer"},
+                        "fallback":        {"type": "boolean", "description": "true si l'IA était indisponible et que le repli heuristique a été utilisé"}
+                    }
+                }}}},
+                "403": {"$ref": "#/components/responses/Forbidden"}
+            }
+        }},
 
         # ══════════════════════════════════════════════════════════════════════
         # RÉCLAMATIONS
@@ -2372,6 +2520,29 @@ OPENAPI_SPEC = {
             "parameters": [{"name": "student_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
             "responses": {"200": {"description": "UEs et ECs de l'étudiant"}}
         }},
+        "/api/admin/students/enrollments/bulk": {"get": {
+            "tags": ["Académique"],
+            "summary": "Inscriptions UE de TOUS les étudiants en un seul appel (admin)",
+            "description": "Remplace N appels individuels à GET /api/admin/students/{student_id}/enrollments (un par étudiant) qui saturaient le rate-limit (60/min) sur les pages listant beaucoup d'étudiants (ex: 48 requêtes simultanées → 429). Résultat groupé par student_id.",
+            "responses": {"200": {"description": "Inscriptions groupées par étudiant", "content": {"application/json": {"schema": {
+                "type": "object",
+                "description": "Clé = student_id (string), valeur = liste des inscriptions UE de cet étudiant",
+                "additionalProperties": {
+                    "type": "array", "items": {
+                        "type": "object",
+                        "properties": {
+                            "enrollment_id":  {"type": "integer"},
+                            "ue_id":          {"type": "integer"},
+                            "ue_code":        {"type": "string"},
+                            "ue_name":        {"type": "string"},
+                            "semester_name":  {"type": "string"},
+                            "formation_name": {"type": "string"},
+                            "formation_code": {"type": "string"}
+                        }
+                    }
+                }
+            }}}}}
+        }},
         "/api/admin/students/{student_id}/set_formation": {"post": {
             "tags": ["Académique"], "summary": "Affecter une formation à un étudiant (admin)",
             "parameters": [{"name": "student_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
@@ -2421,6 +2592,63 @@ OPENAPI_SPEC = {
             }}}},
             "responses": {"200": {"description": "Image uploadée"}, "404": {"$ref": "#/components/responses/NotFound"}}
         }},
+        "/api/subjects/upload_media": {"post": {
+            "tags": ["Sujets"],
+            "summary": "Uploader un média (image/audio/vidéo) analysé par l'IA pour un sujet",
+            "description": "Utilisable AVANT la sauvegarde finale du sujet via `link_key` (ex: uuid généré côté client) — associé au sujet définitif via `media_link_key` lors de l'appel à `create-from-suggestion`. Si `subject_id` est fourni (sujet déjà sauvegardé), l'association est immédiate. L'IA analyse le média selon `instructions` pour savoir comment l'exploiter dans les questions générées. Limite 25 Mo (image/audio) ou 80 Mo (vidéo).",
+            "requestBody": {"required": True, "content": {"multipart/form-data": {"schema": {
+                "type": "object", "required": ["file", "media_type"],
+                "properties": {
+                    "file":         {"type": "string", "format": "binary"},
+                    "media_type":   {"type": "string", "enum": ["image", "audio", "video"]},
+                    "link_key":     {"type": "string", "description": "Clé temporaire côté client — requise si subject_id absent"},
+                    "subject_id":   {"type": "integer", "description": "Requis si link_key absent — associe le média immédiatement à un sujet existant"},
+                    "instructions": {"type": "string", "description": "Consigne pour l'IA sur l'exploitation du média"}
+                }
+            }}}},
+            "responses": {
+                "201": {"description": "Média uploadé et analysé", "content": {"application/json": {"schema": {
+                    "type": "object",
+                    "properties": {
+                        "success": {"type": "boolean"},
+                        "media": {
+                            "type": "object",
+                            "properties": {
+                                "id":           {"type": "integer"},
+                                "subject_id":   {"type": "integer", "nullable": True},
+                                "media_type":   {"type": "string", "enum": ["image", "audio", "video"]},
+                                "filename":     {"type": "string"},
+                                "s3_key":       {"type": "string"},
+                                "instructions": {"type": "string"},
+                                "ai_analysis":  {"type": "string"},
+                                "created_at":   {"type": "string", "format": "date-time"},
+                                "marker":       {"type": "string", "description": "Marqueur à insérer dans le sujet, ex: [IMAGE:photo.jpg]"}
+                            }
+                        }
+                    }
+                }}}},
+                "400": {"description": "media_type invalide, fichier manquant/trop volumineux ou type non autorisé"},
+                "403": {"$ref": "#/components/responses/Forbidden"}
+            }
+        }},
+        "/api/subjects/{subject_id}/media": {"get": {
+            "tags": ["Sujets"],
+            "summary": "Lister les médias d'un sujet",
+            "description": "Utilisé par la page d'examen pour afficher/lire les [IMAGE:...]/[AUDIO:...] du sujet — chaque média inclut une URL d'accès résolue.",
+            "parameters": [{"name": "subject_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+            "responses": {"200": {"description": "Médias du sujet", "content": {"application/json": {"schema": {
+                "type": "array", "items": {
+                    "type": "object",
+                    "properties": {
+                        "id":         {"type": "integer"},
+                        "media_type": {"type": "string", "enum": ["image", "audio", "video"]},
+                        "filename":   {"type": "string"},
+                        "url":        {"type": "string", "description": "URL d'accès résolue (MinIO)"},
+                        "created_at": {"type": "string", "format": "date-time"}
+                    }
+                }
+            }}}}}
+        }},
 
         # ══════════════════════════════════════════════════════════════════════
         # EXAMENS EN LIGNE — Routes manquantes
@@ -2436,20 +2664,21 @@ OPENAPI_SPEC = {
             "responses": {"200": {"description": "Durée prolongée"}, "400": {"description": "Examen non actif"}}
         }},
         "/api/admin/online_exams/{exam_id}": {"put": {
-            "tags": ["Examens en ligne"], "summary": "Modifier les paramètres d'un examen (admin)",
+            "tags": ["Examens en ligne"], "summary": "Reprogrammer un examen DRAFT/SCHEDULED (titre, horaires, durée)",
+            "description": "end_time est prioritaire sur duration_minutes si les deux sont fournis (la durée est recalculée à partir de lui) ; sinon end_time est dérivé de start_time + duration_minutes. Rejette si end_time <= start_time. Réservé aux examens DRAFT ou SCHEDULED.",
             "parameters": [{"name": "exam_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
             "requestBody": {"content": {"application/json": {"schema": {
                 "type": "object",
                 "properties": {
-                    "title":               {"type": "string"},
-                    "start_time":          {"type": "string", "format": "date-time"},
-                    "end_time":            {"type": "string", "format": "date-time"},
-                    "max_tab_switches":    {"type": "integer"},
-                    "enable_copy_paste":   {"type": "boolean"},
-                    "randomize_questions": {"type": "boolean"}
+                    "title":            {"type": "string"},
+                    "start_time":       {"type": "string", "format": "date-time"},
+                    "end_time":         {"type": "string", "format": "date-time", "description": "Prioritaire sur duration_minutes si fourni."},
+                    "duration_minutes": {"type": "integer", "description": "Ignoré si end_time est fourni — recalculé automatiquement."}
                 }
             }}}},
-            "responses": {"200": {"description": "Examen mis à jour"}}
+            "responses": {"200": {"description": "Examen mis à jour", "content": {"application/json": {"schema": {
+                "type": "object", "properties": {"success": {"type": "boolean"}, "exam": {"$ref": "#/components/schemas/OnlineExam"}}
+            }}}}, "400": {"description": "Statut non modifiable, ou end_time <= start_time"}}
         }},
         "/api/online_exams/{exam_id}/results/csv": {"get": {
             "tags": ["Examens en ligne"], "summary": "Exporter les résultats d'un examen en CSV",
@@ -2463,6 +2692,48 @@ OPENAPI_SPEC = {
             "parameters": [{"name": "exam_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
             "responses": {
                 "200": {"description": "CSV complet", "content": {"text/csv": {"schema": {"type": "string", "format": "binary"}}}}
+            }
+        }},
+        "/api/online_exams/{exam_id}/import-grades": {"post": {
+            "tags": ["Examens en ligne"],
+            "summary": "Importer des notes calculées hors plateforme (prof/admin)",
+            "description": "Fichier Excel (.xlsx/.xls) ou CSV avec colonnes 'email' et 'note' (0-20), pour des étudiants n'ayant pas composé sur la plateforme (épreuve papier, autre système). Crée une ExamAttempt marquée imported_grade=True, ou met à jour la note si une tentative existe déjà pour cet étudiant sur cet examen.",
+            "parameters": [{"name": "exam_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+            "requestBody": {"required": True, "content": {"multipart/form-data": {"schema": {
+                "type": "object", "required": ["file"],
+                "properties": {"file": {"type": "string", "format": "binary", "description": "Fichier .xlsx, .xls ou .csv"}}
+            }}}},
+            "responses": {
+                "200": {"description": "Import terminé", "content": {"application/json": {"schema": {
+                    "type": "object",
+                    "properties": {
+                        "success": {"type": "boolean"},
+                        "created": {"type": "integer", "description": "Nouvelles tentatives créées"},
+                        "updated": {"type": "integer", "description": "Tentatives existantes mises à jour"},
+                        "errors":  {"type": "array", "items": {"type": "string"}, "description": "Lignes en erreur (email/note invalide, étudiant introuvable...)"}
+                    }
+                }}}},
+                "400": {"description": "Fichier manquant, format invalide ou colonnes 'email'/'note' absentes"},
+                "403": {"$ref": "#/components/responses/Forbidden"},
+                "404": {"$ref": "#/components/responses/NotFound"}
+            }
+        }},
+        "/api/online_exams/{exam_id}/publish-results": {"put": {
+            "tags": ["Examens en ligne"],
+            "summary": "Publier ou dépublier les notes d'un examen aux étudiants (prof/admin)",
+            "description": "Tant que non publié, le prof/admin voit toujours les notes (correction/gestion) mais l'étudiant reçoit score=null.",
+            "parameters": [{"name": "exam_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+            "requestBody": {"content": {"application/json": {"schema": {
+                "type": "object",
+                "properties": {"published": {"type": "boolean", "default": True}}
+            }}}},
+            "responses": {
+                "200": {"description": "Statut de publication mis à jour", "content": {"application/json": {"schema": {
+                    "type": "object",
+                    "properties": {"success": {"type": "boolean"}, "results_published": {"type": "boolean"}}
+                }}}},
+                "403": {"$ref": "#/components/responses/Forbidden"},
+                "404": {"$ref": "#/components/responses/NotFound"}
             }
         }},
         "/api/online_exams/{exam_id}/stats": {"get": {
@@ -2491,6 +2762,17 @@ OPENAPI_SPEC = {
             "parameters": [{"name": "exam_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
             "responses": {
                 "200": {"description": "PDF bilan", "content": {"application/pdf": {"schema": {"type": "string", "format": "binary"}}}}
+            }
+        }},
+        "/api/online_exams/{exam_id}/security-report/pdf": {"get": {
+            "tags": ["Examens en ligne"],
+            "summary": "Rapport de sécurité PDF agrégé d'un examen (prof/admin)",
+            "description": "Synthétise les incidents de surveillance de toutes les tentatives d'un même examen, triées par risque décroissant. À la différence de /api/admin/security_report (JSON, toutes évaluations confondues) et de /api/exam_attempts/{attempt_id}/integrity-report (une seule tentative), ce rapport est PDF et porte sur UN examen.",
+            "parameters": [{"name": "exam_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+            "responses": {
+                "200": {"description": "PDF rapport de sécurité", "content": {"application/pdf": {"schema": {"type": "string", "format": "binary"}}}},
+                "403": {"$ref": "#/components/responses/Forbidden"},
+                "404": {"$ref": "#/components/responses/NotFound"}
             }
         }},
         "/api/online_exams/{exam_id}/plagiarism-check": {"get": {
@@ -2664,6 +2946,106 @@ OPENAPI_SPEC = {
             "parameters": [{"name": "q_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
             "responses": {"200": {"description": "Question supprimée"}}
         }},
+        "/api/question_bank/{q_id}/duplicate": {"post": {
+            "tags": ["Intelligence Artificielle"],
+            "summary": "Dupliquer une question de la banque",
+            "description": "Crée une copie (\"{titre} (copie)\") de la question — parité Moodle : créer une variante à partir d'une question existante sans repartir de zéro.",
+            "parameters": [{"name": "q_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+            "responses": {
+                "201": {"description": "Question dupliquée", "content": {"application/json": {"schema": {
+                    "type": "object", "properties": {"success": {"type": "boolean"}, "question": {"type": "object"}}
+                }}}},
+                "403": {"$ref": "#/components/responses/Forbidden"},
+                "404": {"$ref": "#/components/responses/NotFound"}
+            }
+        }},
+        "/api/question_bank/bulk_move": {"post": {
+            "tags": ["Intelligence Artificielle"],
+            "summary": "Déplacer plusieurs questions vers un autre EC (bulk move)",
+            "description": "Parité Moodle (bulk move entre catégories). Un professeur ne peut déplacer que ses propres questions ; les questions sautées (skipped) appartiennent à un autre professeur.",
+            "requestBody": {"required": True, "content": {"application/json": {"schema": {
+                "type": "object", "required": ["question_ids"],
+                "properties": {
+                    "question_ids": {"type": "array", "items": {"type": "integer"}},
+                    "ec_id":        {"type": "integer", "nullable": True, "description": "null pour retirer l'EC des questions"}
+                }
+            }}}},
+            "responses": {
+                "200": {"description": "Questions déplacées", "content": {"application/json": {"schema": {
+                    "type": "object",
+                    "properties": {"success": {"type": "boolean"}, "moved": {"type": "integer"}, "skipped": {"type": "integer"}}
+                }}}},
+                "400": {"description": "Aucune question sélectionnée"},
+                "403": {"$ref": "#/components/responses/Forbidden"}
+            }
+        }},
+        "/api/question_bank/bulk_delete": {"post": {
+            "tags": ["Intelligence Artificielle"],
+            "summary": "Supprimer plusieurs questions de la banque (bulk delete)",
+            "description": "Parité Moodle (bulk delete), au lieu de supprimer une par une. Un professeur ne peut supprimer que ses propres questions ; les questions sautées (skipped) appartiennent à un autre professeur.",
+            "requestBody": {"required": True, "content": {"application/json": {"schema": {
+                "type": "object", "required": ["question_ids"],
+                "properties": {"question_ids": {"type": "array", "items": {"type": "integer"}}}
+            }}}},
+            "responses": {
+                "200": {"description": "Questions supprimées", "content": {"application/json": {"schema": {
+                    "type": "object",
+                    "properties": {"success": {"type": "boolean"}, "deleted": {"type": "integer"}, "skipped": {"type": "integer"}}
+                }}}},
+                "400": {"description": "Aucune question sélectionnée"}
+            }
+        }},
+        "/api/question_bank/duplicates": {"get": {
+            "tags": ["Intelligence Artificielle"],
+            "summary": "Lister les paires de questions quasi-identiques dans la banque",
+            "description": "Retourne toutes les paires de questions avec une similarité ≥ 95%.",
+            "responses": {"200": {"description": "Paires en doublon", "content": {"application/json": {"schema": {
+                "type": "object",
+                "properties": {
+                    "duplicates": {"type": "array", "items": {
+                        "type": "object",
+                        "properties": {
+                            "q1":         {"type": "object", "properties": {"id": {"type": "integer"}, "title": {"type": "string"}}},
+                            "q2":         {"type": "object", "properties": {"id": {"type": "integer"}, "title": {"type": "string"}}},
+                            "similarity": {"type": "number", "description": "Pourcentage, ex: 96.5"}
+                        }
+                    }},
+                    "count": {"type": "integer"}
+                }
+            }}}}}
+        }},
+        "/api/question_bank/duplicates/auto-clean": {"post": {
+            "tags": ["Intelligence Artificielle"],
+            "summary": "Nettoyer automatiquement les doublons de la banque",
+            "description": "Supprime automatiquement les doublons détectés (≥95% de similarité) — conserve la question la plus ancienne de chaque paire, supprime la plus récente. Répété tant que de nouvelles paires apparaissent (cas A≈B≈C), avec une limite de sécurité de 10 passes.",
+            "responses": {"200": {"description": "Doublons supprimés", "content": {"application/json": {"schema": {
+                "type": "object",
+                "properties": {
+                    "success":       {"type": "boolean"},
+                    "deleted_count": {"type": "integer"},
+                    "deleted":       {"type": "array", "items": {"type": "object", "properties": {"id": {"type": "integer"}, "title": {"type": "string"}}}}
+                }
+            }}}}}
+        }},
+        "/api/question_bank/check_duplicate": {"post": {
+            "tags": ["Intelligence Artificielle"],
+            "summary": "Vérifier si un contenu est un doublon dans la banque",
+            "description": "Vérifie si un contenu est similaire à ≥95% d'une question déjà en banque — utilisé avant sauvegarde/édition.",
+            "requestBody": {"required": True, "content": {"application/json": {"schema": {
+                "type": "object", "required": ["content"],
+                "properties": {
+                    "content": {"type": "string"},
+                    "id":      {"type": "integer", "description": "ID de la question en cours d'édition, à exclure de la comparaison"}
+                }
+            }}}},
+            "responses": {"200": {"description": "Résultat de la vérification", "content": {"application/json": {"schema": {
+                "type": "object",
+                "properties": {
+                    "duplicates":   {"type": "array", "items": {"type": "object", "properties": {"id": {"type": "integer"}, "title": {"type": "string"}, "similarity": {"type": "number"}}}},
+                    "is_duplicate": {"type": "boolean"}
+                }
+            }}}}}
+        }},
         "/api/question_bank/assemble": {"post": {
             "tags": ["Intelligence Artificielle"], "summary": "Assembler un sujet depuis la banque de questions",
             "requestBody": {"required": True, "content": {"application/json": {"schema": {
@@ -2704,6 +3086,21 @@ OPENAPI_SPEC = {
             }}}},
             "responses": {"200": {"description": "Notifications mises à jour"}}
         }},
+        "/api/notifications/poll": {"get": {
+            "tags": ["Tableaux de bord"],
+            "summary": "Long-polling des notifications en temps réel (Redis Pub/Sub)",
+            "description": "Attend au plus 25s un événement sur le canal Redis de l'utilisateur connecté. Le client doit se reconnecter immédiatement après chaque réponse (événement reçu ou timeout 204) — chaque connexion occupe un thread Gunicorn gthread pendant max 25s puis le libère.",
+            "responses": {
+                "200": {"description": "Événement reçu", "content": {"application/json": {"schema": {
+                    "type": "object",
+                    "properties": {
+                        "has_event": {"type": "boolean", "example": True},
+                        "event": {"type": "object", "properties": {"type": {"type": "string"}, "title": {"type": "string"}, "message": {"type": "string"}}}
+                    }
+                }}}},
+                "204": {"description": "Timeout sans événement — le client doit se reconnecter"}
+            }
+        }},
 
         # ══════════════════════════════════════════════════════════════════════
         # RELEVÉS — Routes manquantes
@@ -2724,6 +3121,29 @@ OPENAPI_SPEC = {
             "tags": ["Relevés de notes"], "summary": "Publier un relevé (le rendre visible à l'étudiant)",
             "parameters": [{"name": "transcript_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
             "responses": {"200": {"description": "Relevé publié"}}
+        }},
+
+        # ══════════════════════════════════════════════════════════════════════
+        # SYSTÈME
+        # ══════════════════════════════════════════════════════════════════════
+
+        "/api/health": {"get": {
+            "tags": ["Système"], "summary": "Health check (sans authentification)",
+            "description": "Pour load balancer / monitoring — vérifie la connectivité base de données et Redis. Exempté du rate-limiting.",
+            "security": [],
+            "responses": {
+                "200": {"description": "Tous les checks OK", "content": {"application/json": {"schema": {
+                    "type": "object",
+                    "properties": {
+                        "status": {"type": "string", "enum": ["ok", "degraded"]},
+                        "checks": {"type": "object", "properties": {
+                            "database": {"type": "string", "enum": ["ok", "error"]},
+                            "redis":    {"type": "string", "enum": ["ok", "unavailable"]}
+                        }}
+                    }
+                }}}},
+                "503": {"description": "Au moins un check en échec (status=degraded)"}
+            }
         }},
     }
 }
@@ -3347,7 +3767,7 @@ _SWAGGER_HTML = """<!DOCTYPE html>
     <div class="cei-header-meta">
       <span class="cei-badge cei-badge-version">v2.1</span>
       <span class="cei-badge cei-badge-oas">OpenAPI 3.0</span>
-      <span class="cei-badge cei-badge-count">164 endpoints</span>
+      <span class="cei-badge cei-badge-count">185 endpoints</span>
     </div>
     <nav class="cei-header-nav">
       <a class="cei-nav-link active" href="/api/docs">Swagger UI</a>
@@ -3470,7 +3890,7 @@ _REDOC_HTML = """<!DOCTYPE html>
     <div class="cei-meta">
       <span class="cei-badge b-v">v2.1</span>
       <span class="cei-badge b-o">OpenAPI 3.0</span>
-      <span class="cei-badge b-e">164 endpoints</span>
+      <span class="cei-badge b-e">185 endpoints</span>
     </div>
     <nav class="cei-nav">
       <a class="n-link" href="/api/docs">Swagger UI</a>

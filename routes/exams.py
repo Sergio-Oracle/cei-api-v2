@@ -208,6 +208,7 @@ def create_online_exam():
             questions_per_page=data.get('questions_per_page', 5),
             max_no_face_count=data.get('max_no_face_count', 10),
             ban_on_devtools=data.get('ban_on_devtools', True),
+            auto_ban_enabled=data.get('auto_ban_enabled', False),
             auto_correct=data.get('auto_correct', False),
             status=ExamStatus.SCHEDULED,
             created_by_id=user_id
@@ -826,8 +827,12 @@ def log_exam_activity(attempt_id):
             )
             session.refresh(attempt)
 
-        # ── Appliquer le bannissement si nécessaire ───────────────────────────
-        if ban_reason:
+        # ── Seuil franchi : bannir seulement si auto_ban_enabled est activé par
+        # l'enseignant, sinon se contenter d'une alerte (agent autonome +
+        # notification) — décision manuelle requise. Retour utilisateur : le
+        # bannissement automatique ne doit jamais être un comportement par
+        # défaut silencieux.
+        if ban_reason and exam.auto_ban_enabled:
             attempt.status = AttemptStatus.BANNED
             attempt.banned_at = utcnow()
             attempt.ban_reason = ban_reason
@@ -839,6 +844,43 @@ def log_exam_activity(attempt_id):
                 'ban_reason': ban_reason,
                 'severity': 'high',
                 'message': f"Vous avez été exclu de cet examen : {ban_reason}"
+            })
+
+        if ban_reason and not exam.auto_ban_enabled:
+            session.commit()
+            student_name = attempt.student.full_name if attempt.student else f'Étudiant #{attempt.student_id}'
+            try:
+                from proctoring_routes import _push_alert
+                _push_alert({
+                    'exam_id': exam.id,
+                    'exam_title': exam.title,
+                    'attempt_id': attempt.id,
+                    'student_name': student_name,
+                    'risk_score': attempt.risk_score or 0,
+                    'level': 'high',
+                    'no_face': attempt.no_face_count or 0,
+                    'multi_face': 0,
+                    'tab_switches': attempt.tab_switches or 0,
+                    'warnings_count': attempt.warnings_count or 0,
+                    'ai_note': f'{ban_reason} — bannissement automatique désactivé, intervention manuelle requise.',
+                    'timestamp': utcnow().isoformat(),
+                })
+            except Exception as _pa_err:
+                print(f"⚠️ push_alert (log_activity) échoué: {_pa_err}")
+            try:
+                from notif_bus import notify_exam
+                notify_exam(exam.id, 'threshold_alert', 'Seuil de surveillance atteint',
+                            f'{student_name} — {ban_reason}. Bannissement automatique désactivé : intervention manuelle requise.',
+                            priority='urgent', tags=['rotating_light'])
+            except Exception:
+                pass
+            session.close()
+            return jsonify({
+                'success': True,
+                'banned': False,
+                'alert_sent': True,
+                'severity': 'high',
+                'message': "Comportement à risque détecté — l'enseignant a été alerté."
             })
 
         session.commit()

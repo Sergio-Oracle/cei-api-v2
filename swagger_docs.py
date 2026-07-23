@@ -1491,8 +1491,9 @@ OPENAPI_SPEC = {
                         "enable_copy_paste":   {"type": "boolean", "default": False, "description": "Autoriser copier-coller"},
                         "enable_right_click":  {"type": "boolean", "default": False, "description": "Autoriser clic droit"},
                         "randomize_questions": {"type": "boolean", "default": False, "description": "Mélanger les questions"},
-                        "max_no_face_count":   {"type": "integer", "default": 10, "description": "Nb de détections sans visage avant alerte"},
-                        "ban_on_devtools":     {"type": "boolean", "default": True, "description": "Exclure si outils développeur détectés"}
+                        "max_no_face_count":   {"type": "integer", "default": 10, "description": "Nb de détections sans visage avant seuil"},
+                        "ban_on_devtools":     {"type": "boolean", "default": True, "description": "Détecter l'ouverture des outils développeur"},
+                        "auto_ban_enabled":    {"type": "boolean", "default": False, "description": "Si false (défaut), un seuil atteint (onglets/visage/devtools) envoie une alerte (agent autonome + notification) au lieu d'exclure automatiquement l'étudiant — décision manuelle requise."}
                     }
                 }}}},
                 "responses": {"201": {"description": "Examen créé", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/OnlineExam"}}}}}

@@ -584,8 +584,14 @@ class OnlineExam(Base):
 
     # Seuils de bannissement supplémentaires
     max_no_face_count = Column(Integer, default=10)  # Seuil: nb fois sans visage (-1=désactivé)
-    ban_on_devtools = Column(Boolean, default=True)  # Bannir immédiatement si outils dev détectés
-    
+    ban_on_devtools = Column(Boolean, default=True)  # Détection outils dev (bannit seulement si auto_ban_enabled)
+
+    # Retour utilisateur — le franchissement d'un seuil (onglets, visage absent,
+    # outils dev) n'exclut automatiquement l'étudiant que si ce interrupteur est
+    # explicitement activé par l'enseignant. Sinon, seule une alerte est envoyée
+    # (agent autonome + notification enseignant) — décision manuelle requise.
+    auto_ban_enabled = Column(Boolean, default=False)
+
     # Correction automatique par IA après soumission (optionnel, configuré par le prof)
     auto_correct = Column(Boolean, default=False)
 
@@ -620,6 +626,7 @@ class OnlineExam(Base):
             'questions_per_page': self.questions_per_page if self.questions_per_page is not None else 5,
             'max_no_face_count': self.max_no_face_count if self.max_no_face_count is not None else 10,
             'ban_on_devtools': self.ban_on_devtools if self.ban_on_devtools is not None else True,
+            'auto_ban_enabled': self.auto_ban_enabled or False,
             'status': self.status.value,
             'auto_correct': self.auto_correct if self.auto_correct is not None else False,
             'results_published': self.results_published or False,

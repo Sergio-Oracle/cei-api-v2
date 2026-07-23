@@ -40,6 +40,7 @@ def sync_ec_proctors(session, ec_id):
                 seen.add(m.proctor_id)
                 target_ids.append(m.proctor_id)
     target_set = set(target_ids)
+    users_by_id = {u.id: u for u in session.query(User).filter(User.id.in_(target_set)).all()} if target_set else {}
 
     exams = session.query(OnlineExam).join(Subject, OnlineExam.subject_id == Subject.id).filter(
         Subject.ec_id == ec_id,
@@ -55,6 +56,13 @@ def sync_ec_proctors(session, ec_id):
                 from notif_bus import notify_user
                 notify_user(pid, 'proctor_assigned', 'Nouvel examen à surveiller',
                              f'Vous surveillez « {exam.title} » (groupe).', priority='default', tags=['eyes'])
+            except Exception:
+                pass
+            try:
+                from utils import send_proctor_assigned_email
+                u = users_by_id.get(pid)
+                if u and u.email:
+                    send_proctor_assigned_email(u.email, u.full_name, exam.title)
             except Exception:
                 pass
 

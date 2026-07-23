@@ -1350,6 +1350,12 @@ def add_proctor_group_member(gid):
                              f'Vous avez été ajouté au groupe « {group.name} ».', priority='default', tags=['busts_in_silhouette'])
             except Exception:
                 pass
+            try:
+                from utils import send_proctor_group_added_email
+                if proctor.email:
+                    send_proctor_group_added_email(proctor.email, proctor.full_name, group.name)
+            except Exception:
+                pass
         session.commit()
         # Un renfort ajouté au groupe se propage à tous les examens à venir
         # des EC couverts par ce groupe (plus de gestion manuelle par examen).
@@ -1416,10 +1422,17 @@ def link_proctor_group_ec(gid):
         try:
             from notif_bus import notify_user
             members = session.query(ProctorGroupMember).filter_by(group_id=gid).all()
+            ec_label = f'{ec.code} — {ec.name}'
             for m in members:
                 notify_user(m.proctor_id, 'proctor_group_ec_added', 'Nouvel EC couvert par votre groupe',
-                             f'Le groupe « {group.name} » (dont vous faites partie) surveille désormais l\'EC « {ec.code} — {ec.name} ».',
+                             f'Le groupe « {group.name} » (dont vous faites partie) surveille désormais l\'EC « {ec_label} ».',
                              priority='default', tags=['bookmark'])
+                try:
+                    from utils import send_proctor_group_ec_added_email
+                    if m.proctor and m.proctor.email:
+                        send_proctor_group_ec_added_email(m.proctor.email, m.proctor.full_name, group.name, ec_label)
+                except Exception:
+                    pass
         except Exception:
             pass
         from services.proctor_service import sync_ec_proctors

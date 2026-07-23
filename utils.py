@@ -1203,6 +1203,124 @@ CEI — Centre d'Examen Intelligent
     return send_email(user_email, subject, html_body, text_body=text_body)
 
 
+# ============================================================================
+# EMAILS — GROUPES SURVEILLANTS
+# En-tête en aplat (pas de dégradé, pas de violet) — cohérent avec la charte
+# de l'application (accent ambre déjà utilisé pour le rôle Surveillant).
+# ============================================================================
+
+_SHIELD_SVG = (
+    '<svg width="46" height="46" viewBox="0 0 24 24" fill="none" '
+    'xmlns="http://www.w3.org/2000/svg" style="display:inline-block;">'
+    '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" stroke="white" stroke-width="2"/>'
+    '<circle cx="12" cy="12" r="3" fill="white"/>'
+    '</svg>'
+)
+
+
+def _proctor_email_shell(title, subtitle, body_html, cta_url=None, cta_label=None):
+    app_url   = _smtp_config().get('app_url', 'https://dev-cei.ddns.net')
+    cta_block = ''
+    if cta_url and cta_label:
+        cta_block = f"""
+    <div style="text-align:center;margin:26px 0 0;">
+      <a href="{cta_url}" style="display:inline-block;background:#d97706;color:#ffffff;text-decoration:none;
+                padding:13px 32px;border-radius:9px;font-weight:700;font-size:14px;">
+        {cta_label}
+      </a>
+    </div>"""
+    return f"""<!DOCTYPE html>
+<html lang="fr"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="font-family:Arial,Helvetica,sans-serif;background:#f1f5f9;margin:0;padding:24px;">
+<div style="max-width:520px;margin:0 auto;background:#ffffff;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,0.08);">
+
+  <div style="background:#d97706;padding:32px;text-align:center;">
+    <div style="margin-bottom:12px;">{_SHIELD_SVG}</div>
+    <h1 style="color:#ffffff;margin:0;font-size:20px;font-weight:800;">{title}</h1>
+    <p style="color:rgba(255,255,255,0.9);margin:6px 0 0;font-size:13px;">{subtitle}</p>
+  </div>
+
+  <div style="padding:32px;">
+    {body_html}
+    {cta_block}
+  </div>
+
+  <div style="background:#f8fafc;border-top:1px solid #e2e8f0;padding:16px 32px;text-align:center;">
+    <p style="margin:0;font-size:12px;color:#94a3b8;">
+      CEI — Centre d'Examen Intelligent &nbsp;·&nbsp; <a href="{app_url}" style="color:#94a3b8;">{app_url}</a>
+    </p>
+  </div>
+</div>
+</body></html>"""
+
+
+def send_proctor_group_added_email(proctor_email, proctor_name, group_name):
+    """Email au surveillant ajouté à un Groupe Surveillants."""
+    app_url = _smtp_config().get('app_url', 'https://dev-cei.ddns.net')
+    subject = f"Ajouté au groupe de surveillance « {group_name} »"
+    body_html = f"""
+    <p style="color:#0f172a;font-size:15px;margin:0 0 14px;">Bonjour <strong>{proctor_name}</strong>,</p>
+    <p style="color:#475569;font-size:14px;line-height:1.7;margin:0;">
+      Vous avez été ajouté au groupe de surveillance <strong>« {group_name} »</strong>.
+      Vous serez automatiquement affecté à chaque examen créé pour les EC couverts par ce groupe,
+      avec répartition automatique des étudiants entre les surveillants.
+    </p>"""
+    html = _proctor_email_shell(
+        'Nouveau groupe de surveillance', 'Groupes Surveillants — CEI',
+        body_html, f'{app_url}/dashboard/surveillant', 'Accéder à mon espace'
+    )
+    text = (f"Ajouté au groupe de surveillance « {group_name} »\n\n"
+            f"Bonjour {proctor_name},\n\n"
+            f"Vous avez été ajouté au groupe de surveillance « {group_name} ». "
+            f"Vous serez automatiquement affecté à chaque examen créé pour les EC couverts par ce groupe.\n\n"
+            f"{app_url}/dashboard/surveillant\n\n---\nCEI — Centre d'Examen Intelligent\n{app_url}\n")
+    return send_email(proctor_email, subject, html, text_body=text)
+
+
+def send_proctor_group_ec_added_email(proctor_email, proctor_name, group_name, ec_label):
+    """Email aux membres d'un groupe quand un nouvel EC lui est rattaché."""
+    app_url = _smtp_config().get('app_url', 'https://dev-cei.ddns.net')
+    subject = f"Nouvel EC couvert par votre groupe « {group_name} »"
+    body_html = f"""
+    <p style="color:#0f172a;font-size:15px;margin:0 0 14px;">Bonjour <strong>{proctor_name}</strong>,</p>
+    <p style="color:#475569;font-size:14px;line-height:1.7;margin:0;">
+      Le groupe <strong>« {group_name} »</strong>, dont vous faites partie, surveille désormais
+      l'EC <strong>« {ec_label} »</strong>. Vous serez automatiquement affecté à chaque examen
+      créé pour cet EC.
+    </p>"""
+    html = _proctor_email_shell(
+        'Nouvel EC rattaché à votre groupe', 'Groupes Surveillants — CEI',
+        body_html, f'{app_url}/dashboard/surveillant', 'Accéder à mon espace'
+    )
+    text = (f"Nouvel EC couvert par votre groupe « {group_name} »\n\n"
+            f"Bonjour {proctor_name},\n\n"
+            f"Le groupe « {group_name} », dont vous faites partie, surveille désormais l'EC « {ec_label} ». "
+            f"Vous serez automatiquement affecté à chaque examen créé pour cet EC.\n\n"
+            f"{app_url}/dashboard/surveillant\n\n---\nCEI — Centre d'Examen Intelligent\n{app_url}\n")
+    return send_email(proctor_email, subject, html, text_body=text)
+
+
+def send_proctor_assigned_email(proctor_email, proctor_name, exam_title):
+    """Email au surveillant affecté à un examen concret (via son groupe)."""
+    app_url = _smtp_config().get('app_url', 'https://dev-cei.ddns.net')
+    subject = f"Nouvel examen à surveiller : {exam_title}"
+    body_html = f"""
+    <p style="color:#0f172a;font-size:15px;margin:0 0 14px;">Bonjour <strong>{proctor_name}</strong>,</p>
+    <p style="color:#475569;font-size:14px;line-height:1.7;margin:0;">
+      Vous surveillez l'examen <strong>« {exam_title} »</strong>. Retrouvez les détails
+      (horaires, étudiants affectés) dans votre espace surveillant.
+    </p>"""
+    html = _proctor_email_shell(
+        'Nouvel examen à surveiller', 'Groupes Surveillants — CEI',
+        body_html, f'{app_url}/dashboard/surveillant', 'Voir mes examens'
+    )
+    text = (f"Nouvel examen à surveiller : {exam_title}\n\n"
+            f"Bonjour {proctor_name},\n\n"
+            f"Vous surveillez l'examen « {exam_title} ». Retrouvez les détails dans votre espace surveillant.\n\n"
+            f"{app_url}/dashboard/surveillant\n\n---\nCEI — Centre d'Examen Intelligent\n{app_url}\n")
+    return send_email(proctor_email, subject, html, text_body=text)
+
+
 def generate_transcript_pdf(transcript_data, output_path):
     """Relevé de notes officiel — en-tête CEI institutionnel, structure LMD par UE."""
     from reportlab.lib.pagesizes import A4

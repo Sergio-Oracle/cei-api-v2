@@ -21,7 +21,7 @@ from models import (
     get_session, ExamAttempt, OnlineExam, ExamActivityLog, User,
     AttemptStatus, UserRole, ExamStatus, CameraLog,
     ExamProctor, ProctorAssignment, Subject, EC, UE, StudentUEEnrollment,
-    ECAssignment
+    ECAssignment, ProctorGroup, ProctorGroupEC, ProctorGroupMember
 )
 from cache import cache_get, cache_set
 
@@ -655,6 +655,19 @@ def get_active_proctoring(exam_id):
         # Pour l'enseignant : infos détaillées par groupe
         proctors_info = []
         if role in ['professor', 'admin']:
+            # Groupes Surveillants rattachés à l'EC du sujet — un surveillant peut
+            # venir de plusieurs groupes couvrant le même EC, d'où une liste.
+            group_names_by_proctor = {}
+            subject = session.query(Subject).filter_by(id=exam.subject_id).first()
+            if subject and subject.ec_id:
+                group_ids = [ge.group_id for ge in session.query(ProctorGroupEC).filter_by(ec_id=subject.ec_id).all()]
+                if group_ids:
+                    group_name_by_id = {
+                        g.id: g.name for g in session.query(ProctorGroup).filter(ProctorGroup.id.in_(group_ids)).all()
+                    }
+                    for m in session.query(ProctorGroupMember).filter(ProctorGroupMember.group_id.in_(group_ids)).all():
+                        group_names_by_proctor.setdefault(m.proctor_id, []).append(group_name_by_id.get(m.group_id, '?'))
+
             # Recalculer les counts depuis result (qui a les nouvelles assignations)
             for ep in all_exam_proctors:
                 group_attempts = [r for r in result if r['proctor_id'] == ep.proctor_id]
@@ -664,6 +677,7 @@ def get_active_proctoring(exam_id):
                     'proctor_email': ep.proctor.email if ep.proctor else '',
                     'proctor_identity': f'proctor-{ep.proctor_id}',
                     'student_count': len(group_attempts),
+                    'group_names': group_names_by_proctor.get(ep.proctor_id, []),
                 })
 
         my_identity = f'proctor-{user_id}' if role == 'surveillant' else f'teacher-{user_id}'

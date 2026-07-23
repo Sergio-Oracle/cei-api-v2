@@ -730,6 +730,24 @@ class ExamActivityLog(Base):
             'timestamp': self.timestamp.isoformat() if self.timestamp else None
         }
 
+class IncidentDismissal(Base):
+    """Item du flux « Notifications d'Incidents » (professeur) masqué/supprimé.
+    Ce flux (/api/professor/recent_incidents) n'est jamais stocké tel quel — il
+    est recalculé à chaque requête à partir d'ExamActivityLog/ECAssignment ;
+    seule cette table de suppressions par utilisateur persiste, pour filtrer
+    les items déjà vus (individuellement ou via « Tout marquer comme lu »)."""
+    __tablename__ = 'incident_dismissals'
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=False)
+    item_id = Column(String(64), nullable=False)
+    dismissed_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (UniqueConstraint('user_id', 'item_id', name='unique_user_incident_dismissal'),)
+
+    user = relationship('User')
+
+
 class GradeTranscript(Base):
     """Relevé de notes d'un étudiant — validation par UE (logique LMD)"""
     __tablename__ = 'grade_transcripts'

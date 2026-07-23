@@ -2,7 +2,7 @@
 CEI — Documentation API Swagger / OpenAPI 3.0
 Accessible à /api/docs (Swagger UI) et /api/docs/openapi.json (spec brute)
 Scan exhaustif v4 — app.py, proctoring_routes.py, csv_import_routes.py, export_route.py
-185 endpoints documentés dans la spec OpenAPI 3.0 (ce nombre n'est PAS calculé
+186 endpoints documentés dans la spec OpenAPI 3.0 (ce nombre n'est PAS calculé
 automatiquement — le mettre à jour ici et dans les deux badges HTML plus bas
 à chaque route ajoutée/retirée dans OPENAPI_SPEC["paths"])
 """
@@ -2432,7 +2432,26 @@ OPENAPI_SPEC = {
         }},
         "/api/professor/recent_incidents": {"get": {
             "tags": ["Tableaux de bord"], "summary": "Incidents récents des examens du professeur",
+            "description": "Flux recalculé à chaque appel (incidents de proctoring des dernières 24h + affectations d'EC des 7 derniers jours) — jamais stocké tel quel. Les items supprimés/marqués comme lus via /dismiss sont exclus.",
             "responses": {"200": {"description": "Incidents récents"}}
+        }},
+        "/api/professor/recent_incidents/dismiss": {"post": {
+            "tags": ["Tableaux de bord"], "summary": "Supprimer/marquer comme lu un ou plusieurs items du flux d'incidents",
+            "description": "Individuel (item_id) ou en masse (item_ids) — utilisé par le bouton « Tout marquer comme lu ». Persiste par utilisateur ; le flux source n'étant jamais stocké, seule cette suppression l'est.",
+            "requestBody": {"required": True, "content": {"application/json": {"schema": {
+                "type": "object",
+                "properties": {
+                    "item_id":  {"type": "string", "description": "Id d'un seul item (accepte aussi un entier)."},
+                    "item_ids": {"type": "array", "items": {"type": "string"}, "description": "Ids de plusieurs items."}
+                }
+            }}}},
+            "responses": {
+                "200": {"description": "Items supprimés", "content": {"application/json": {"schema": {
+                    "type": "object", "properties": {"success": {"type": "boolean"}, "dismissed": {"type": "integer"}}
+                }}}},
+                "400": {"description": "item_id(s) manquant(s)"},
+                "403": {"$ref": "#/components/responses/Forbidden"}
+            }
         }},
         "/api/student/papers": {"get": {
             "tags": ["Tableaux de bord"], "summary": "Copies de l'étudiant connecté avec notes",
@@ -3767,7 +3786,7 @@ _SWAGGER_HTML = """<!DOCTYPE html>
     <div class="cei-header-meta">
       <span class="cei-badge cei-badge-version">v2.1</span>
       <span class="cei-badge cei-badge-oas">OpenAPI 3.0</span>
-      <span class="cei-badge cei-badge-count">185 endpoints</span>
+      <span class="cei-badge cei-badge-count">186 endpoints</span>
     </div>
     <nav class="cei-header-nav">
       <a class="cei-nav-link active" href="/api/docs">Swagger UI</a>
@@ -3890,7 +3909,7 @@ _REDOC_HTML = """<!DOCTYPE html>
     <div class="cei-meta">
       <span class="cei-badge b-v">v2.1</span>
       <span class="cei-badge b-o">OpenAPI 3.0</span>
-      <span class="cei-badge b-e">185 endpoints</span>
+      <span class="cei-badge b-e">186 endpoints</span>
     </div>
     <nav class="cei-nav">
       <a class="n-link" href="/api/docs">Swagger UI</a>

@@ -21,7 +21,7 @@ from models      import (
     OnlineExam, ExamAttempt, ExamActivityLog, GradeTranscript,
     CameraLog, ExamStatus, AttemptStatus, ExamProctor, ProctorAssignment,
     QuestionBank, EC, ECAssignment, StudentUEEnrollment,
-    SubjectMedia,
+    SubjectMedia, IncidentDismissal,
 )
 from werkzeug.utils import secure_filename
 from utils import (
@@ -3231,6 +3231,11 @@ def get_professor_recent_incidents():
             })
 
         all_items = incidents_list + ec_notifs
+
+        # Retirer les items déjà supprimés/marqués comme lus par ce professeur
+        dismissed_ids = {d.item_id for d in session.query(IncidentDismissal).filter_by(user_id=user_id).all()}
+        all_items = [item for item in all_items if str(item['id']) not in dismissed_ids]
+
         session.close()
 
         return jsonify({
@@ -3240,6 +3245,45 @@ def get_professor_recent_incidents():
 
     except Exception as e:
         print(f"❌ Erreur get_professor_recent_incidents: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@exams_bp.route('/api/professor/recent_incidents/dismiss', methods=['POST'])
+@paseto_required
+def dismiss_recent_incidents():
+    """Supprimer/marquer comme lu un ou plusieurs items du flux « Notifications
+    d'Incidents » (individuellement, ou en masse pour « Tout marquer comme lu »).
+    Le flux lui-même n'étant jamais stocké, seule cette suppression persiste."""
+    try:
+        user_id = get_current_user_id()
+        session = get_session()
+        user = session.query(User).filter_by(id=user_id).first()
+        if user.role != UserRole.PROFESSOR:
+            session.close()
+            return jsonify({'error': 'Accès réservé aux professeurs'}), 403
+
+        data = request.get_json(silent=True) or {}
+        item_ids = data.get('item_ids') or ([data['item_id']] if data.get('item_id') else [])
+        item_ids = [str(i) for i in item_ids]
+        if not item_ids:
+            session.close()
+            return jsonify({'error': 'item_id(s) requis'}), 400
+
+        existing = {
+            d.item_id for d in session.query(IncidentDismissal)
+            .filter_by(user_id=user_id).filter(IncidentDismissal.item_id.in_(item_ids)).all()
+        }
+        added = 0
+        for iid in item_ids:
+            if iid in existing:
+                continue
+            session.add(IncidentDismissal(user_id=user_id, item_id=iid))
+            added += 1
+        session.commit()
+        session.close()
+        return jsonify({'success': True, 'dismissed': added})
+    except Exception as e:
+        print(f"❌ Erreur dismiss_recent_incidents: {e}")
         return jsonify({'error': str(e)}), 500
 
 

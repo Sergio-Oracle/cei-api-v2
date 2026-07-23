@@ -413,13 +413,28 @@ def edit_online_exam(exam_id):
                 exam.start_time = datetime.fromisoformat(data['start_time'])
             except ValueError:
                 pass
-        if 'duration_minutes' in data:
-            exam.duration_minutes = max(5, int(data['duration_minutes']))
-        # Retour #6 — reprogrammation par édition : recalculer end_time à chaque
-        # changement de start_time/duration_minutes (sinon il reste désynchronisé
-        # de la nouvelle date/durée, empêchant l'examen de rester accessible sur
-        # la bonne fenêtre horaire).
-        exam.end_time = exam.start_time + timedelta(minutes=exam.duration_minutes)
+        # Retour #6 — reprogrammation par édition : end_time peut être fourni
+        # explicitement (priorité, durée recalculée à partir de lui) ou dérivé
+        # de duration_minutes comme avant — jamais désynchronisé de la
+        # nouvelle date/durée, sinon l'examen reste accessible sur la
+        # mauvaise fenêtre horaire.
+        end_time_set = False
+        if 'end_time' in data and data['end_time']:
+            from datetime import datetime
+            try:
+                new_end = datetime.fromisoformat(data['end_time'])
+                if new_end <= exam.start_time:
+                    session.close()
+                    return jsonify({'error': 'La date de fin doit être après la date de début'}), 400
+                exam.end_time = new_end
+                exam.duration_minutes = max(5, int((new_end - exam.start_time).total_seconds() / 60))
+                end_time_set = True
+            except ValueError:
+                pass
+        if not end_time_set:
+            if 'duration_minutes' in data:
+                exam.duration_minutes = max(5, int(data['duration_minutes']))
+            exam.end_time = exam.start_time + timedelta(minutes=exam.duration_minutes)
         session.commit()
         result = exam.to_dict()
         session.close()

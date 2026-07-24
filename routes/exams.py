@@ -1141,7 +1141,11 @@ def _parse_subject_blocks_ordered(raw: str) -> list:
     C_RE = re.compile(r'^(?:\(?([A-Fa-f])\)?)\s*[.):\s-]\s+(.+)')
     PAIR_RE = re.compile(r'^(?:\(?([A-Fa-f])\)?)\s*[.):\s-]\s+(.+?)\s*(?:→|->)\s*(.+)')
     SEP_RE = re.compile(r'^[-=*─═▬]{3,}$')
-    SECT_RE = re.compile(r'^(?:Partie|Section|Exercice|Part)\s+(?:[IVX]+|\d+)', re.I)
+    # Accepte "Partie 3", "Partie III" ET "Partie — Appariement (5 pts)" —
+    # même correctif que côté frontend (parseExamBlocks) : sans le groupe
+    # séparateur, ces lignes se collaient aux lignes annexes de la question
+    # précédente au lieu d'être reconnues comme un nouvel en-tête de section.
+    SECT_RE = re.compile(r'^(?:Partie|Section|Exercice|Part)\s+(?:[IVX]+\b|\d+\b|[-–—:])', re.I)
     INSTR_RE = re.compile(
         r'^(?:Défini[rz]|Expliqu[eé][rz]?|Décri[vz]|Analys[eé][rz]?|Calcul[eé][rz]?|Rédig[eé][rz]?|'
         r'Démontr[eé][rz]?|Comment[eé][rz]?|Identifi[eé][rz]?|Justifi[eé][rz]?|Compar[eé][rz]?|'

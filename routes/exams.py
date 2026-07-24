@@ -88,7 +88,13 @@ def get_online_exams():
             student_attempts = session.query(ExamAttempt).filter_by(student_id=user_id).all()
             attempts_by_exam = {a.exam_id: a for a in student_attempts}
 
-        # Auto-close exams whose end_time has passed
+        # Auto-close exams whose end_time has passed. Le statut de l'examen
+        # passe à CLOSED dès l'échéance globale (plus de nouvelle tentative
+        # possible), mais une tentative en cours avec du temps supplémentaire
+        # accordé (extra_minutes) garde sa propre échéance étendue — sinon
+        # accorder du temps supplémentaire n'avait aucun effet réel : ce job
+        # tournant sur chaque chargement de liste d'examens la soumettait
+        # automatiquement dès que l'heure de fin d'origine était dépassée.
         now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
         needs_commit = False
         for exam in exams:
@@ -98,6 +104,9 @@ def get_online_exams():
                     exam_id=exam.id, status=AttemptStatus.IN_PROGRESS
                 ).all()
                 for att in in_progress:
+                    own_deadline = exam.end_time + timedelta(minutes=att.extra_minutes or 0)
+                    if now_utc <= own_deadline:
+                        continue  # temps supplémentaire encore valide — ne pas soumettre
                     att.status = AttemptStatus.AUTO_SUBMITTED
                     att.submitted_at = now_utc
                 needs_commit = True
@@ -530,8 +539,17 @@ def get_online_exam_details(exam_id):
             now = utcnow()
             start_time = exam.start_time if exam.start_time.tzinfo else exam.start_time.replace(tzinfo=timezone.utc)
             end_time = exam.end_time if exam.end_time.tzinfo else exam.end_time.replace(tzinfo=timezone.utc)
-            
-            if exam.status != ExamStatus.ACTIVE or now < start_time or now > end_time:
+
+            # Un étudiant avec une tentative en cours et du temps supplémentaire
+            # accordé doit rester joignable après l'échéance globale de l'examen
+            # — sinon tout rechargement de page (ex. reconnexion LiveKit) le
+            # bloquerait immédiatement malgré le temps accordé par le surveillant.
+            own_attempt = session.query(ExamAttempt).filter_by(
+                exam_id=exam_id, student_id=user_id, status=AttemptStatus.IN_PROGRESS
+            ).first()
+            deadline = end_time + timedelta(minutes=own_attempt.extra_minutes or 0) if own_attempt else end_time
+
+            if exam.status not in (ExamStatus.ACTIVE, ExamStatus.CLOSED) or now < start_time or now > deadline:
                 session.close()
                 return jsonify({'error': 'Examen non disponible actuellement'}), 403
         

@@ -2053,7 +2053,30 @@ def get_local_snapshot(key):
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as _FuturesTimeout
 
 def _get_s3_client():
-    """Créer un client boto3 configuré pour le MinIO/S3 de l'application."""
+    """Client boto3 pour les opérations serveur (list/head) — endpoint interne.
+    Ne PAS utiliser ce client pour générer des URLs présignées : passer par
+    l'endpoint public (proxifié en HTTPS) fait sortir chaque appel de liste
+    sur Internet et revenir, ce qui a provoqué une RecursionError côté boto3
+    (constaté en prod) au lieu de simplement lister les objets."""
+    return boto3.client(
+        's3',
+        endpoint_url=os.environ.get('S3_ENDPOINT', ''),
+        aws_access_key_id=os.environ.get('S3_KEY_ID', ''),
+        aws_secret_access_key=os.environ.get('S3_KEY_SECRET', ''),
+        region_name=os.environ.get('S3_REGION', 'us-east-1'),
+        config=Config(
+            signature_version='s3v4',
+            s3={'addressing_style': 'path'},
+            connect_timeout=3,
+            read_timeout=10,
+            retries={'max_attempts': 1},
+        )
+    )
+
+
+def _get_s3_public_client():
+    """Client boto3 pour générer des URLs présignées destinées au navigateur —
+    endpoint public HTTPS (même domaine que le site, proxifié vers MinIO)."""
     return boto3.client(
         's3',
         endpoint_url=os.environ.get('S3_PUBLIC_ENDPOINT', os.environ.get('S3_ENDPOINT', '')),
@@ -2171,6 +2194,7 @@ def get_video_recordings(exam_id):
 
         try:
             s3 = _get_s3_client()
+            s3_public = _get_s3_public_client()
         except Exception as e:
             return jsonify({'exam_id': exam_id, 'videos': [], 'error': f'Connexion S3 impossible: {e}'})
 
@@ -2270,9 +2294,11 @@ def get_video_recordings(exam_id):
             elif m_room:
                 student_name = f'Enregistrement salle — {filename}'
 
-            # URL présignée valable 4h
+            # URL présignée valable 4h — endpoint public (HTTPS, même domaine)
+            # pour que le navigateur puisse la charger sans blocage de
+            # contenu mixte.
             try:
-                url = s3.generate_presigned_url(
+                url = s3_public.generate_presigned_url(
                     'get_object',
                     Params={'Bucket': bucket, 'Key': key},
                     ExpiresIn=14400

@@ -4505,8 +4505,17 @@ def grant_extra_time(attempt_id):
         attempt.extra_minutes = prev + minutes
         session.commit()
         total = attempt.extra_minutes  # rechargé automatiquement (session ouverte)
+        student_id = attempt.student_id
+        exam_title = exam.title if exam else 'votre examen'
         session.close()
         print(f"⏱ Temps +{minutes}min accordé (tentative {attempt_id}), total extra: {total}min")
+        try:
+            from notif_bus import notify_user
+            notify_user(student_id, 'extra_time', 'Temps supplémentaire accordé',
+                        f'{minutes} min de plus pour « {exam_title} » (total : +{total} min).',
+                        priority='high', tags=['clock3'])
+        except Exception as _nu_err:
+            print(f"⚠️ notify_user (extra_time) échoué: {_nu_err}")
         return jsonify({'success': True, 'total_extra': total, 'added': minutes})
     except Exception as e:
         print(f"❌ grant_extra_time {attempt_id}: {e}")

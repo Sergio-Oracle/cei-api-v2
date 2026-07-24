@@ -89,6 +89,35 @@ def _serialize(r: Reclamation) -> dict:
     }
 
 
+def _notify_reclamation_decision(rec: Reclamation) -> None:
+    """Notifie l'étudiant en temps réel (cloche + push) dès que le professeur
+    tranche sa réclamation — jusqu'ici aucune notification n'était envoyée,
+    l'étudiant ne découvrait la décision qu'en revenant manuellement sur
+    "Mes réclamations"."""
+    try:
+        if rec.paper and rec.paper.subject:
+            subject_title = rec.paper.subject.title
+        elif rec.attempt and rec.attempt.exam:
+            subject_title = rec.attempt.exam.title
+        else:
+            subject_title = 'votre examen'
+
+        from notif_bus import notify_user
+        if rec.status == ReclamationStatus.RESOLVED:
+            title, tags = 'Réclamation acceptée', ['white_check_mark']
+            msg = f'Votre réclamation pour « {subject_title} » a été acceptée.'
+        elif rec.status == ReclamationStatus.REJECTED:
+            title, tags = 'Réclamation rejetée', ['x']
+            msg = f'Votre réclamation pour « {subject_title} » a été rejetée.'
+        else:
+            return  # in_review — pas de décision finale, pas de notification
+        if rec.response:
+            msg += f' {rec.response.strip()[:200]}'
+        notify_user(rec.student_id, 'reclamation_decided', title, msg, priority='high', tags=tags)
+    except Exception as exc:
+        print(f"⚠️ notify_user (reclamation_decided) échoué: {exc}")
+
+
 # ── GET liste ─────────────────────────────────────────────────────────────────
 @reclamations_bp.route('/api/reclamations', methods=['GET'])
 @paseto_required
@@ -239,6 +268,7 @@ def respond_reclamation(rid):
                     attempt.corrected_by_id = user_id
 
         session.commit()
+        _notify_reclamation_decision(rec)
         result = {'id': rec.id, 'status': rec.status.value,
                   'response': rec.response,
                   'updated_at': rec.updated_at.isoformat() if rec.updated_at else None}
@@ -384,7 +414,9 @@ def apply_ai_proposal(rid):
         rec.response         = rec.ia_proposed_reason or 'Proposition IA acceptée'
         rec.responded_by_id  = user_id
         rec.updated_at       = utcnow()
-        session.commit(); session.close()
+        session.commit()
+        _notify_reclamation_decision(rec)
+        session.close()
         return jsonify({'success': True, 'message': 'Proposition IA appliquée'})
     except Exception as e:
         print(f"ERROR apply_ai_proposal: {e}")
@@ -421,7 +453,9 @@ def reject_ai_proposal(rid):
         rec.response         = payload.get('response', 'Proposition IA rejetée')
         rec.responded_by_id  = user_id
         rec.updated_at       = utcnow()
-        session.commit(); session.close()
+        session.commit()
+        _notify_reclamation_decision(rec)
+        session.close()
         return jsonify({'success': True, 'message': 'Proposition IA rejetée'})
     except Exception as e:
         print(f"ERROR reject_ai_proposal: {e}")

@@ -124,12 +124,20 @@ def get_online_exams():
             if user.role == UserRole.STUDENT:
                 attempt = attempts_by_exam.get(exam.id)
                 if attempt:
+                    # Retour #29 — même verrou de publication que
+                    # /api/student/online_results : sans ça, la liste des
+                    # examens affichait déjà la note/le feedback avant que
+                    # le professeur ait publié les résultats, alors que la
+                    # page "Mes résultats" les masquait correctement —
+                    # incohérence signalée par l'utilisateur (note visible
+                    # ici, "En correction" là-bas pour le même examen).
+                    published = bool(exam.results_published)
                     d['my_attempt'] = {
                         'id':           attempt.id,
                         'status':       attempt.status.value,
-                        'score':        attempt.score,
-                        'feedback':     attempt.feedback,
-                        'corrected_at': attempt.corrected_at.isoformat() if attempt.corrected_at else None,
+                        'score':        attempt.score if published else None,
+                        'feedback':     attempt.feedback if published else None,
+                        'corrected_at': attempt.corrected_at.isoformat() if (attempt.corrected_at and published) else None,
                         'submitted_at': attempt.submitted_at.isoformat() if attempt.submitted_at else None,
                     }
                 else:

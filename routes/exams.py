@@ -124,14 +124,10 @@ def get_online_exams():
             if user.role == UserRole.STUDENT:
                 attempt = attempts_by_exam.get(exam.id)
                 if attempt:
-                    # Retour #29 — même verrou de publication que
-                    # /api/student/online_results : sans ça, la liste des
-                    # examens affichait déjà la note/le feedback avant que
-                    # le professeur ait publié les résultats, alors que la
-                    # page "Mes résultats" les masquait correctement —
-                    # incohérence signalée par l'utilisateur (note visible
-                    # ici, "En correction" là-bas pour le même examen).
-                    published = bool(exam.results_published)
+                    # Note visible dès que la copie est corrigée — même règle
+                    # que /api/student/online_results (plus de délibération
+                    # séparée à part).
+                    published = True
                     d['my_attempt'] = {
                         'id':           attempt.id,
                         'status':       attempt.status.value,
@@ -943,9 +939,8 @@ def get_exam_attempt_result(attempt_id):
             session.close()
             return jsonify({'error': 'Tentative introuvable'}), 404
         exam = session.query(OnlineExam).filter_by(id=attempt.exam_id).first()
-        # Retour #29 — ne pas afficher la note à l'étudiant avant publication
-        # par le professeur/admin (délibération), même une fois corrigée.
-        published = bool(exam.results_published) if exam else True
+        # Note visible dès que la copie est corrigée.
+        published = True
         result = {
             'attempt_id':   attempt.id,
             'exam_title':   exam.title if exam else '',
@@ -2571,9 +2566,8 @@ def get_student_exam_history():
         for a in attempts:
             exam = a.exam
             dur  = int((a.submitted_at - a.started_at).total_seconds() / 60) if a.submitted_at and a.started_at else None
-            # Retour #29 — notes masquées tant que le professeur/admin n'a pas
-            # publié les résultats de l'examen (délibération)
-            published = bool(exam.results_published) if exam else True
+            # Note visible dès que la copie est corrigée.
+            published = True
             history.append({
                 'attempt_id':   a.id,
                 'exam_id':      a.exam_id,

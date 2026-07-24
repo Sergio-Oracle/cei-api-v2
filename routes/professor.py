@@ -79,9 +79,10 @@ def get_student_online_results():
             existing_rec = session.query(Reclamation).filter_by(
                 attempt_id=att.id, student_id=user_id
             ).first()
-            # Retour #29 — notes masquées à l'étudiant tant que le prof/admin
-            # n'a pas publié les résultats de l'examen (délibération)
-            published = bool(exam.results_published) if exam else True
+            # Note visible dès que la copie est corrigée — pas de délibération
+            # à part (décision explicite : ne pas faire attendre l'étudiant
+            # qu'un professeur clique "Publier les notes").
+            published = True
             results.append({
                 'attempt_id':        att.id,
                 'exam_id':           att.exam_id,

@@ -1453,7 +1453,7 @@ def _deterministic_grade(content: str, rubric: str, answers_data) -> tuple:
                 breakdown.append(f"Question {num} : ✓ Bonne réponse ({given}) — {earned:.2f}/{pts:.2f} pt")
             else:
                 breakdown.append(
-                    f"Question {num} : ✗ Vous avez répondu {given or '(aucune réponse)'}, "
+                    f"Question {num} : ✗ Tu as répondu {given or '(aucune réponse)'}, "
                     f"la bonne réponse était {correct_letter} — {earned:.2f}/{pts:.2f} pt")
 
         elif marker == 'QCM_MULTI':
@@ -1472,7 +1472,7 @@ def _deterministic_grade(content: str, rubric: str, answers_data) -> tuple:
                 breakdown.append(f"Question {num} : ✓ Toutes les bonnes cases cochées ({', '.join(sorted(given_set))}) — {earned:.2f}/{pts:.2f} pt")
             else:
                 breakdown.append(
-                    f"Question {num} : ✗ Vous avez coché {', '.join(sorted(given_set)) or '(aucune case)'}, "
+                    f"Question {num} : ✗ Tu as coché {', '.join(sorted(given_set)) or '(aucune case)'}, "
                     f"les bonnes réponses étaient {', '.join(sorted(correct_set))} — {earned:.2f}/{pts:.2f} pt")
 
         elif marker == 'VF':
@@ -1486,7 +1486,7 @@ def _deterministic_grade(content: str, rubric: str, answers_data) -> tuple:
                 breakdown.append(f"Question {num} : ✓ Bonne réponse ({given}) — {earned:.2f}/{pts:.2f} pt")
             else:
                 breakdown.append(
-                    f"Question {num} : ✗ Vous avez répondu {given or '(aucune réponse)'}, "
+                    f"Question {num} : ✗ Tu as répondu {given or '(aucune réponse)'}, "
                     f"la bonne réponse était {key['value']} — {earned:.2f}/{pts:.2f} pt")
 
         elif marker == 'APPARIEMENT' and q.get('pairs'):
@@ -1564,7 +1564,7 @@ def _run_auto_correction(attempt_id: int):
             subject.content, subject.rubric or '', answers_data)
         remaining_max = round(total_max - det_max, 2)
         det_section = (
-            "=== Vos réponses aux questions à choix ===\n"
+            "=== Tes réponses aux questions à choix ===\n"
             + ('\n'.join(det_breakdown) if det_breakdown else 'Aucune question de ce type notée.') + "\n\n"
         ) if det_breakdown else ""
 
@@ -1588,8 +1588,9 @@ def _run_auto_correction(attempt_id: int):
                 subject.content
             )
             excluded_note = (
-                f"Questions déjà notées automatiquement en dehors de cette correction, ne les évalue pas : "
-                f"{', '.join(sorted(det_nums, key=int))}.\n" if det_nums else ""
+                f"[Note interne, ne pas mentionner à l'étudiant] Questions déjà notées automatiquement "
+                f"en dehors de cette correction, ne les évalue pas : {', '.join(sorted(det_nums, key=int))}.\n"
+                if det_nums else ""
             )
             user_message = f"""SUJET D'EXAMEN:
 {subject.content}
@@ -1912,7 +1913,7 @@ def correct_exam_attempt(attempt_id):
             subject.content, subject.rubric or '', answers_data if isinstance(answers_data, dict) else {})
         remaining_max = round(total_max - det_max, 2)
         det_section = (
-            "=== Vos réponses aux questions à choix ===\n"
+            "=== Tes réponses aux questions à choix ===\n"
             + ('\n'.join(det_breakdown) if det_breakdown else 'Aucune question de ce type notée.') + "\n\n"
         ) if det_breakdown else ""
 
@@ -1940,8 +1941,9 @@ def correct_exam_attempt(attempt_id):
                 subject.content
             )
             excluded_note = (
-                f"Questions déjà notées automatiquement en dehors de cette correction, ne les évalue pas : "
-                f"{', '.join(sorted(det_nums, key=int))}.\n" if det_nums else ""
+                f"[Note interne, ne pas mentionner à l'étudiant] Questions déjà notées automatiquement "
+                f"en dehors de cette correction, ne les évalue pas : {', '.join(sorted(det_nums, key=int))}.\n"
+                if det_nums else ""
             )
             user_message = f"""SUJET D'EXAMEN:
 {subject.content}

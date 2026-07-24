@@ -1449,9 +1449,12 @@ def _deterministic_grade(content: str, rubric: str, answers_data) -> tuple:
             given = (answers_data.get(f'pq_{num}') or '').strip().upper()
             earned = pts if given == correct_letter else 0.0
             score += earned; max_score += pts; graded_nums.add(num)
-            breakdown.append(
-                f"Question {num} (QCM) : {'✓' if earned else '✗'} réponse {given or '(aucune)'} "
-                f"— attendu {correct_letter}) — {earned:.2f}/{pts:.2f} pt(s)")
+            if earned:
+                breakdown.append(f"Question {num} : ✓ Bonne réponse ({given}) — {earned:.2f}/{pts:.2f} pt")
+            else:
+                breakdown.append(
+                    f"Question {num} : ✗ Vous avez répondu {given or '(aucune réponse)'}, "
+                    f"la bonne réponse était {correct_letter} — {earned:.2f}/{pts:.2f} pt")
 
         elif marker == 'QCM_MULTI':
             key = correct_map.get(num)
@@ -1465,9 +1468,12 @@ def _deterministic_grade(content: str, rubric: str, answers_data) -> tuple:
             fraction = max(0.0, (n_right - n_wrong) / len(correct_set))
             earned = round(pts * fraction, 2)
             score += earned; max_score += pts; graded_nums.add(num)
-            breakdown.append(
-                f"Question {num} (QCM à réponses multiples) : coché {sorted(given_set) or '(aucune)'} "
-                f"— attendu {sorted(correct_set)} — {earned:.2f}/{pts:.2f} pt(s)")
+            if given_set == correct_set:
+                breakdown.append(f"Question {num} : ✓ Toutes les bonnes cases cochées ({', '.join(sorted(given_set))}) — {earned:.2f}/{pts:.2f} pt")
+            else:
+                breakdown.append(
+                    f"Question {num} : ✗ Vous avez coché {', '.join(sorted(given_set)) or '(aucune case)'}, "
+                    f"les bonnes réponses étaient {', '.join(sorted(correct_set))} — {earned:.2f}/{pts:.2f} pt")
 
         elif marker == 'VF':
             key = correct_map.get(num)
@@ -1476,9 +1482,12 @@ def _deterministic_grade(content: str, rubric: str, answers_data) -> tuple:
             given = (answers_data.get(f'pq_{num}') or '').strip().capitalize()
             earned = pts if given == key['value'] else 0.0
             score += earned; max_score += pts; graded_nums.add(num)
-            breakdown.append(
-                f"Question {num} (Vrai/Faux) : {'✓' if earned else '✗'} réponse {given or '(aucune)'} "
-                f"— attendu {key['value']} — {earned:.2f}/{pts:.2f} pt(s)")
+            if earned:
+                breakdown.append(f"Question {num} : ✓ Bonne réponse ({given}) — {earned:.2f}/{pts:.2f} pt")
+            else:
+                breakdown.append(
+                    f"Question {num} : ✗ Vous avez répondu {given or '(aucune réponse)'}, "
+                    f"la bonne réponse était {key['value']} — {earned:.2f}/{pts:.2f} pt")
 
         elif marker == 'APPARIEMENT' and q.get('pairs'):
             pairs = q['pairs']
@@ -1492,9 +1501,10 @@ def _deterministic_grade(content: str, rubric: str, answers_data) -> tuple:
             fraction = n_right / len(pairs)
             earned = round(pts * fraction, 2)
             score += earned; max_score += pts; graded_nums.add(num)
+            symbol = '✓' if n_right == len(pairs) else '✗'
             breakdown.append(
-                f"Question {num} (Appariement) : {n_right}/{len(pairs)} paire(s) correcte(s) "
-                f"— {earned:.2f}/{pts:.2f} pt(s)")
+                f"Question {num} : {symbol} {n_right}/{len(pairs)} association(s) correcte(s) "
+                f"— {earned:.2f}/{pts:.2f} pt")
 
     total_max = round(sum(points_map.values()), 2)
     return round(score, 2), round(max_score, 2), total_max, breakdown, graded_nums
@@ -1554,7 +1564,7 @@ def _run_auto_correction(attempt_id: int):
             subject.content, subject.rubric or '', answers_data)
         remaining_max = round(total_max - det_max, 2)
         det_section = (
-            "=== NOTATION AUTOMATIQUE (QCM / Vrai-Faux / Appariement — sans IA) ===\n"
+            "=== Vos réponses aux questions à choix ===\n"
             + ('\n'.join(det_breakdown) if det_breakdown else 'Aucune question de ce type notée.') + "\n\n"
         ) if det_breakdown else ""
 
@@ -1902,7 +1912,7 @@ def correct_exam_attempt(attempt_id):
             subject.content, subject.rubric or '', answers_data if isinstance(answers_data, dict) else {})
         remaining_max = round(total_max - det_max, 2)
         det_section = (
-            "=== NOTATION AUTOMATIQUE (QCM / Vrai-Faux / Appariement — sans IA) ===\n"
+            "=== Vos réponses aux questions à choix ===\n"
             + ('\n'.join(det_breakdown) if det_breakdown else 'Aucune question de ce type notée.') + "\n\n"
         ) if det_breakdown else ""
 

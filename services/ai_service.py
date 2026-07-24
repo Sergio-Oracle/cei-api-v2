@@ -423,16 +423,25 @@ def build_correction_prompt(title: str = "", content_preview: str = "") -> str:
 ÉTAPE 1 — IDENTIFICATION DU DOMAINE :
 Identifie la discipline de cet examen et adopte le niveau d'expertise d'un professeur spécialiste.
 
+TON ET DESTINATAIRE — TRÈS IMPORTANT :
+Ce texte est affiché TEL QUEL à l'étudiant dans son espace personnel, immédiatement après
+correction. Rédige-le comme un retour pédagogique qui s'adresse DIRECTEMENT à lui/elle,
+à la deuxième personne ("vous"). N'écris JAMAIS "l'étudiant" ou "l'étudiante" à la troisième
+personne — écris "vous". Sois honnête et précis sur les erreurs, mais dans un ton bienveillant
+et constructif : le but est de l'aider à comprendre son niveau et comment progresser, pas de
+produire un rapport administratif froid. Pour chaque question sans réponse, dis-le simplement
+("Vous n'avez pas répondu à cette question.") sans le répéter comme une faute grave à chaque fois.
+
 IMPORTANT : Tu DOIS terminer ta correction par une ligne contenant EXACTEMENT :
 Note totale: XX.XX/20
 
 Format de correction :
-=== CORRECTION DÉTAILLÉE ===
-[Évaluation question par question avec justification précise selon les critères du barème]
+=== Retour détaillé sur vos réponses ===
+[Évaluation question par question, adressée à "vous", avec justification précise selon le barème]
 
-=== RÉSUMÉ ===
+=== Ce qu'il faut retenir ===
 Points forts : [...]
-Points à améliorer : [...]
+Points à améliorer : [conseils concrets pour progresser]
 
 Note totale: XX.XX/20
 """

@@ -4748,15 +4748,18 @@ def download_corrections_zip(exam_id):
             session.close()
             return jsonify({'error': 'Aucune copie corrigée pour cet examen'}), 404
 
+        subject_content = exam.subject.content if exam.subject else ''
         zip_buf = io.BytesIO()
         with zipfile_mod.ZipFile(zip_buf, 'w', zipfile_mod.ZIP_DEFLATED) as zf:
             for attempt in attempts:
                 try:
                     answers_data = json.loads(attempt.answers) if attempt.answers else {}
-                    student_text = (
-                        answers_data.get('content') or answers_data.get('reponse') or
-                        answers_data.get('answer')  or answers_data.get('text') or 'Non disponible'
-                    )
+                    student_text = _build_readable_student_answers(subject_content, answers_data) if isinstance(answers_data, dict) else ''
+                    if not student_text:
+                        student_text = (
+                            answers_data.get('content') or answers_data.get('reponse') or
+                            answers_data.get('answer')  or answers_data.get('text') or 'Non disponible'
+                        ) if isinstance(answers_data, dict) else 'Non disponible'
                 except Exception:
                     student_text = attempt.answers or 'Non disponible'
 
@@ -4839,18 +4842,14 @@ def get_attempt_review(attempt_id):
         except Exception:
             answers_data = {}
 
-        # Format examen en ligne : { qcm: {}, texte: {} }
-        qcm_a  = answers_data.get('qcm',  {}) if isinstance(answers_data, dict) else {}
-        text_a = answers_data.get('texte', answers_data.get('text', {})) if isinstance(answers_data, dict) else {}
-        if qcm_a or text_a:
-            lines = []
-            all_keys = sorted(set(list(qcm_a.keys()) + list(text_a.keys())),
-                               key=lambda x: int(x) if str(x).isdigit() else 0)
-            for k in all_keys:
-                if k in qcm_a:  lines.append(f"Question {k} : {qcm_a[k]}")
-                if k in text_a: lines.append(f"Question {k} : {text_a[k]}")
-            student_text = '\n'.join(lines)
-        else:
+        # Reconstruit un texte lisible (numéro + texte de la question, choix
+        # résolus) plutôt que d'exposer les clés de stockage brutes (pq_1,
+        # pq_2…) telles quelles au professeur — même fonction déjà utilisée
+        # pour construire le prompt de correction IA, jusqu'ici jamais
+        # réutilisée pour l'affichage de la copie côté professeur.
+        subject_content = attempt.exam.subject.content if attempt.exam and attempt.exam.subject else ''
+        student_text = _build_readable_student_answers(subject_content, answers_data) if isinstance(answers_data, dict) else ''
+        if not student_text:
             student_text = (
                 answers_data.get('content') or answers_data.get('reponse') or
                 answers_data.get('answer')  or answers_data.get('text') or
@@ -5100,10 +5099,13 @@ def download_attempt_report_pdf(attempt_id):
 
         try:
             answers_data = json.loads(attempt.answers) if attempt.answers else {}
-            student_text = (
-                answers_data.get('content') or answers_data.get('reponse') or
-                answers_data.get('answer')  or answers_data.get('text') or 'Non disponible'
-            )
+            subject_content = attempt.exam.subject.content if attempt.exam and attempt.exam.subject else ''
+            student_text = _build_readable_student_answers(subject_content, answers_data) if isinstance(answers_data, dict) else ''
+            if not student_text:
+                student_text = (
+                    answers_data.get('content') or answers_data.get('reponse') or
+                    answers_data.get('answer')  or answers_data.get('text') or 'Non disponible'
+                ) if isinstance(answers_data, dict) else 'Non disponible'
         except Exception:
             student_text = attempt.answers or 'Non disponible'
 

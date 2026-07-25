@@ -4704,14 +4704,49 @@ def admin_security_report():
                     })
                 by_student.sort(key=lambda r: -r['total_incidents'])
 
+        # Galerie des photos de référence (capturées au démarrage de chaque
+        # tentative) — utilisée par le bouton "Photo" à côté de la ligne
+        # "Photo de référence capturée" du tableau des incidents.
+        reference_photos = []
+        if attempt_ids_scope:
+            from s3_client import get_snapshot_url
+            ref_rows = session.query(CameraLog).filter(
+                CameraLog.attempt_id.in_(attempt_ids_scope),
+                CameraLog.event_type == 'face_reference_captured',
+            ).order_by(CameraLog.timestamp.desc()).all()
+            att_by_id2 = {a.id: a for a in attempts_scope}
+            seen_attempts = set()
+            for snap in ref_rows:
+                if snap.attempt_id in seen_attempts:
+                    continue  # une seule photo de référence par tentative (la plus récente)
+                a = att_by_id2.get(snap.attempt_id)
+                if not a:
+                    continue
+                url = None
+                if snap.image_filename and (snap.image_filename.startswith('snapshots/') or snap.image_filename.startswith('local:')):
+                    url = get_snapshot_url(snap.image_filename)
+                elif snap.image_data:
+                    url = snap.image_data if snap.image_data.startswith('data:') else f'data:image/jpeg;base64,{snap.image_data}'
+                if not url:
+                    continue
+                seen_attempts.add(snap.attempt_id)
+                reference_photos.append({
+                    'attempt_id':   snap.attempt_id,
+                    'student_name': a.student.full_name if a.student else '—',
+                    'exam_title':   a.exam.title if a.exam else '—',
+                    'timestamp':    snap.timestamp.isoformat() if snap.timestamp else None,
+                    'image_url':    url,
+                })
+
         session.close()
         return jsonify({
-            'event_summary':  [{'event': e, 'count': c} for e, c in event_counts],
-            'high_risk':      risky_list,
-            'banned_count':   banned_count,
-            'exam_id':        exam_id_filter,
-            'exam_title':     exam_title_filter,
-            'by_student':     by_student,
+            'event_summary':     [{'event': e, 'count': c} for e, c in event_counts],
+            'high_risk':         risky_list,
+            'banned_count':      banned_count,
+            'exam_id':           exam_id_filter,
+            'exam_title':        exam_title_filter,
+            'by_student':        by_student,
+            'reference_photos':  reference_photos,
         })
     except Exception as e:
         try: session.rollback(); session.close()

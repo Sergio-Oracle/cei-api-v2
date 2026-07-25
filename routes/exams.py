@@ -2222,6 +2222,8 @@ def import_exam_grades(exam_id):
             'updated': len(updated),
             'errors': errors,
         })
+    except RequestEntityTooLarge:
+        raise  # laisser remonter au handler 413 global (app.py) — pas de message générique
     except Exception as e:
         print(f"❌ import_exam_grades {exam_id}: {e}")
         try: session.rollback(); session.close()
@@ -3657,7 +3659,19 @@ def generate_exam_suggestions():
         if not allowed_file(file.filename):
             session.close()
             return jsonify({'success': False, 'error': 'Type de fichier non autorisé (PDF, DOCX, TXT uniquement)'}), 400
-        
+
+        # Limite propre à ce cours (annoncée à 50 Mo côté interface) — vérifiée
+        # explicitement ici plutôt que de dépendre du seul plafond global
+        # MAX_CONTENT_LENGTH (qui doit rester plus haut pour couvrir la vidéo
+        # de sujet à 80 Mo, cf. upload_subject_media_route).
+        file.seek(0, os.SEEK_END)
+        course_file_size = file.tell()
+        file.seek(0)
+        _COURSE_FILE_MAX_MB = 50
+        if course_file_size > _COURSE_FILE_MAX_MB * 1024 * 1024:
+            session.close()
+            return jsonify({'success': False, 'error': f'Fichier cours trop volumineux (max {_COURSE_FILE_MAX_MB} Mo)'}), 400
+
         # Sauvegarder temporairement le fichier
         filename = secure_filename(file.filename)
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -3812,14 +3826,8 @@ Réponds UNIQUEMENT avec un JSON valide dans ce format exact (OBLIGATOIREMENT 3 
             return jsonify({'success': False, 'error': 'Format de réponse IA invalide'}), 500
             
     except RequestEntityTooLarge:
-        # Werkzeug lève cette exception dès l'accès à request.files si le corps de
-        # la requête dépasse MAX_CONTENT_LENGTH — sans ce except dédié, le except
-        # Exception générique ci-dessous l'attrapait et renvoyait un message vague
-        # ("Une erreur est survenue"), masquant la vraie cause (fichier trop
-        # volumineux) que le professeur/admin avait pourtant besoin de connaître.
         session.close()
-        max_mb = current_app.config['MAX_CONTENT_LENGTH'] // (1024 * 1024)
-        return jsonify({'success': False, 'error': f'Fichier cours trop volumineux (max {max_mb} Mo)'}), 413
+        raise  # laisser remonter au handler 413 global (app.py) — pas de message générique
     except Exception as e:
         print(f" Erreur génération suggestions: {e}")
         import traceback
@@ -4516,6 +4524,8 @@ def upload_subject_media_route():
         result['marker'] = f"[{_marker_kind}:{safe_name}]"
         session.close()
         return jsonify({'success': True, 'media': result}), 201
+    except RequestEntityTooLarge:
+        raise  # laisser remonter au handler 413 global (app.py) — pas de message générique
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 

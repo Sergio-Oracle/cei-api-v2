@@ -44,7 +44,7 @@ CORS(app,
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 app.config['SECRET_KEY']          = os.getenv('SECRET_KEY', 'dev-secret-key-change-in-production')
-app.config['MAX_CONTENT_LENGTH']  = int(os.getenv('MAX_FILE_SIZE', 50 * 1024 * 1024))
+app.config['MAX_CONTENT_LENGTH']  = int(os.getenv('MAX_FILE_SIZE', 100 * 1024 * 1024))
 app.config['UPLOAD_FOLDER']       = os.getenv('UPLOAD_FOLDER', 'static/uploads')
 app.config['COMPRESS_REGISTER']   = True
 app.config['COMPRESS_LEVEL']      = 6

@@ -10,6 +10,7 @@ import os
 from datetime import datetime, timedelta
 from flask import Blueprint, request, jsonify
 from werkzeug.utils import secure_filename
+from werkzeug.exceptions import RequestEntityTooLarge
 from sqlalchemy import desc
 from sqlalchemy.orm import joinedload
 
@@ -169,6 +170,8 @@ def upload_paper():
             'duplicate_check': 'passed', 'extracted_name': extracted_name,
             'email_sent': new_paper.email_sent,
         })
+    except RequestEntityTooLarge:
+        raise  # laisser remonter au handler 413 global (app.py) — pas de message générique
     except Exception as e:
         print(f"ERROR upload_paper: {e}")
         import traceback; traceback.print_exc()
@@ -297,6 +300,8 @@ def upload_papers_batch():
         session.commit(); session.close()
         return jsonify({'success': True, 'corrected': len(results), 'errors': len(errors),
                         'results': results, 'error_details': errors})
+    except RequestEntityTooLarge:
+        raise  # laisser remonter au handler 413 global (app.py) — pas de message générique
     except Exception as e:
         print(f"ERROR upload_papers_batch: {e}")
         import traceback; traceback.print_exc()

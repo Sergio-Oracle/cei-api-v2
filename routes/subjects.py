@@ -14,6 +14,7 @@ POST   /api/subjects/<id>/upload_image
 """
 from flask import Blueprint, request, jsonify
 from pydantic import ValidationError
+from werkzeug.exceptions import RequestEntityTooLarge
 
 from auth_paseto import paseto_required, get_current_user_id
 from models import get_session, User, UserRole
@@ -186,6 +187,8 @@ def upload_subject():
         return jsonify({'error': str(e)}), 403
     except LookupError as e:
         return jsonify({'error': str(e)}), 404
+    except RequestEntityTooLarge:
+        raise  # laisser remonter au handler 413 global (app.py) — pas de message générique
     except Exception as e:
         print(f'ERROR upload_subject: {e}')
         import traceback; traceback.print_exc()
@@ -214,6 +217,8 @@ def upload_subject_image(subject_id):
         return jsonify({'error': str(e)}), 403
     except LookupError as e:
         return jsonify({'error': str(e)}), 404
+    except RequestEntityTooLarge:
+        raise  # laisser remonter au handler 413 global (app.py) — pas de message générique
     except Exception as e:
         print(f'ERROR upload_subject_image: {e}')
         return jsonify({'error': str(e)}), 500

@@ -1,5 +1,6 @@
 """Routes d'import CSV - Utilisateurs et Maquette Pédagogique - VERSION CORRIGÉE avec département"""
 from flask import jsonify, request, send_file
+from werkzeug.exceptions import RequestEntityTooLarge
 from auth_paseto import paseto_required, get_current_user_id
 from flask_bcrypt import Bcrypt
 from threading import Thread
@@ -406,6 +407,8 @@ def register_csv_routes(app):
                 'error_details': errors
             })
 
+        except RequestEntityTooLarge:
+            raise  # laisser remonter au handler 413 global (app.py) — pas de message générique
         except Exception as e:
             print(f"❌ Erreur import_users_csv: {e}")
             import traceback
@@ -778,6 +781,8 @@ def register_csv_routes(app):
                 'errors': errors
             })
 
+        except RequestEntityTooLarge:
+            raise  # laisser remonter au handler 413 global (app.py) — pas de message générique
         except Exception as e:
             session_db.rollback()
             print(f"\n❌ ERREUR GLOBALE: {e}")
@@ -899,6 +904,8 @@ def register_csv_routes(app):
                 'ue_count': len(ues),
                 'ec_count': sum(len(u['ecs']) for u in ues),
             })
+        except RequestEntityTooLarge:
+            raise  # laisser remonter au handler 413 global (app.py) — pas de message générique
         except Exception as e:
             import traceback
             traceback.print_exc()

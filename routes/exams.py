@@ -24,6 +24,7 @@ from models      import (
     SubjectMedia, IncidentDismissal,
 )
 from werkzeug.utils import secure_filename
+from werkzeug.exceptions import RequestEntityTooLarge
 from utils import (
     send_paper_corrected_email, allowed_file, extract_text_from_file,
 )
@@ -3810,6 +3811,15 @@ Réponds UNIQUEMENT avec un JSON valide dans ce format exact (OBLIGATOIREMENT 3 
             session.close()
             return jsonify({'success': False, 'error': 'Format de réponse IA invalide'}), 500
             
+    except RequestEntityTooLarge:
+        # Werkzeug lève cette exception dès l'accès à request.files si le corps de
+        # la requête dépasse MAX_CONTENT_LENGTH — sans ce except dédié, le except
+        # Exception générique ci-dessous l'attrapait et renvoyait un message vague
+        # ("Une erreur est survenue"), masquant la vraie cause (fichier trop
+        # volumineux) que le professeur/admin avait pourtant besoin de connaître.
+        session.close()
+        max_mb = current_app.config['MAX_CONTENT_LENGTH'] // (1024 * 1024)
+        return jsonify({'success': False, 'error': f'Fichier cours trop volumineux (max {max_mb} Mo)'}), 413
     except Exception as e:
         print(f" Erreur génération suggestions: {e}")
         import traceback

@@ -2508,6 +2508,123 @@ def get_exam_bilan_pdf(exam_id):
         return jsonify({'error': str(e)}), 500
 
 
+@exams_bp.route('/api/online_exams/<int:exam_id>/security_report/pdf', methods=['GET'])
+@paseto_required
+def get_exam_security_report_pdf(exam_id):
+    """PDF détaillé des incidents de sécurité d'un examen, par étudiant."""
+    try:
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib import colors
+        from reportlab.lib.units import cm
+        from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from sqlalchemy import func as sqlfunc
+
+        user_id = get_current_user_id()
+        session = get_session()
+        user = session.query(User).filter_by(id=user_id).first()
+        if not user or user.role not in [UserRole.PROFESSOR, UserRole.ADMIN]:
+            session.close()
+            return jsonify({'error': 'Accès non autorisé'}), 403
+        exam = session.query(OnlineExam).filter_by(id=exam_id).first()
+        if not exam:
+            session.close()
+            return jsonify({'error': 'Examen non trouvé'}), 404
+        if user.role == UserRole.PROFESSOR and exam.created_by_id != user_id:
+            session.close()
+            return jsonify({'error': 'Accès non autorisé'}), 403
+
+        attempts = session.query(ExamAttempt).options(joinedload(ExamAttempt.student)).filter_by(exam_id=exam_id).all()
+        attempt_ids = [a.id for a in attempts]
+        att_by_id = {a.id: a for a in attempts}
+
+        incidents_by_attempt = {}
+        if attempt_ids:
+            rows = session.query(
+                ExamActivityLog.attempt_id, ExamActivityLog.event_type,
+                sqlfunc.count(ExamActivityLog.id)
+            ).filter(
+                ExamActivityLog.attempt_id.in_(attempt_ids),
+                ExamActivityLog.event_type.in_(INCIDENT_EVENT_TYPES),
+            ).group_by(ExamActivityLog.attempt_id, ExamActivityLog.event_type).all()
+            for aid, etype, cnt in rows:
+                incidents_by_attempt.setdefault(aid, {})[etype] = cnt
+
+        snapshot_counts = {}
+        if attempt_ids:
+            snap_rows = session.query(
+                CameraLog.attempt_id, sqlfunc.count(CameraLog.id)
+            ).filter(
+                CameraLog.attempt_id.in_(attempt_ids),
+                ~CameraLog.event_type.in_(_ROUTINE_SNAPSHOT_TYPES),
+            ).group_by(CameraLog.attempt_id).all()
+            snapshot_counts = {aid: cnt for aid, cnt in snap_rows}
+
+        exam_title = exam.title
+        generated_at = utcnow().strftime('%d/%m/%Y %H:%M')
+        banned_count = sum(1 for a in attempts if a.status == AttemptStatus.BANNED)
+        high_risk_count = sum(1 for a in attempts if (a.risk_score or 0) >= 70)
+        session.close()
+
+        buf = io.BytesIO()
+        doc = SimpleDocTemplate(buf, pagesize=A4,
+                                 leftMargin=2*cm, rightMargin=2*cm,
+                                 topMargin=2*cm, bottomMargin=2*cm)
+        styles = getSampleStyleSheet()
+        title_style = ParagraphStyle('title', parent=styles['Title'], fontSize=16, spaceAfter=4)
+        sub_style   = ParagraphStyle('sub',   parent=styles['Normal'], fontSize=10, textColor=colors.grey, spaceAfter=4)
+        section_style = ParagraphStyle('section', parent=styles['Heading2'], fontSize=12, spaceBefore=14, spaceAfter=6)
+        detail_style  = ParagraphStyle('detail', parent=styles['Normal'], fontSize=8, leading=11)
+
+        story = [
+            Paragraph(f"Rapport de sécurité — {exam_title}", title_style),
+            Paragraph(f"Généré le {generated_at}", sub_style),
+            Paragraph(
+                f"{banned_count} étudiant(s) banni(s) • {high_risk_count} à haut risque (score ≥ 70) • "
+                f"{sum(sum(e.values()) for e in incidents_by_attempt.values())} incident(s) au total",
+                sub_style),
+            Spacer(1, 0.4*cm),
+        ]
+
+        if not incidents_by_attempt:
+            story.append(Paragraph("Aucun incident de sécurité enregistré pour cet examen.", styles['Normal']))
+        else:
+            status_labels = {'submitted': 'Soumis', 'auto_submitted': 'Auto-soumis',
+                              'in_progress': 'En cours', 'banned': 'Exclu'}
+            ordered = sorted(incidents_by_attempt.items(), key=lambda kv: -sum(kv[1].values()))
+            for aid, events in ordered:
+                a = att_by_id.get(aid)
+                if not a:
+                    continue
+                name = a.student.full_name if a.student else '—'
+                sv = a.status.value if hasattr(a.status, 'value') else str(a.status)
+                story.append(Paragraph(
+                    f"{name} — Score de risque : {a.risk_score or 0}/100 — "
+                    f"{status_labels.get(sv, sv)}{' (BANNI)' if a.status == AttemptStatus.BANNED else ''}",
+                    section_style))
+                detail_lines = '<br/>'.join(
+                    f"• {_EVT_LABELS_FR.get(e, e)} — {c}×" for e, c in sorted(events.items(), key=lambda x: -x[1])
+                )
+                nsnap = snapshot_counts.get(aid, 0)
+                if nsnap:
+                    detail_lines += f"<br/><i>{nsnap} capture(s) caméra associée(s) à ces incidents — consultables dans le rapport en ligne.</i>"
+                story.append(Paragraph(detail_lines, detail_style))
+
+        doc.build(story)
+        buf.seek(0)
+        safe_title = ''.join(c for c in exam_title if c.isalnum() or c in '-_ ')[:40]
+        response = make_response(buf.read())
+        response.headers['Content-Type'] = 'application/pdf'
+        response.headers['Content-Disposition'] = f'attachment; filename="securite-{safe_title}.pdf"'
+        return response
+    except Exception as e:
+        import traceback
+        print(f"❌ get_exam_security_report_pdf {exam_id}: {e}\n{traceback.format_exc()}")
+        try: session.close()
+        except: pass
+        return jsonify({'error': str(e)}), 500
+
+
 # ============================================================================
 # CORRECTION MANUELLE
 # ============================================================================
@@ -4412,6 +4529,34 @@ def get_subject_media(subject_id):
         return jsonify({'error': str(e)}), 500
 
 
+# Événements représentant un comportement suspect / une violation potentielle
+# des règles d'examen — même liste que le frontend (SecurityReportPanel.tsx),
+# à tenir synchronisée. Le reste (messages, appels, photo de référence…) est
+# de l'activité normale de la plateforme, pas un incident de sécurité.
+INCIDENT_EVENT_TYPES = {
+    'no_face_detected', 'no_face', 'face_absent', 'window_blur', 'tab_switch',
+    'copy_attempt', 'paste_attempt', 'right_click', 'multiple_faces',
+    'screen_share_stopped', 'devtools_attempt', 'fullscreen_exit',
+    'warning_issued', 'proctor_ban', 'teacher_ban',
+}
+# Types de snapshot caméra NON déclenchés par un incident — à exclure des
+# captures "prises lors d'un risque élevé" montrées dans le rapport.
+_ROUTINE_SNAPSHOT_TYPES = {'periodic', 'face_reference_captured'}
+
+# Libellés français — même liste que EVT_LABELS côté frontend (SecurityReportPanel.tsx)
+_EVT_LABELS_FR = {
+    'no_face_detected': 'Visage non détecté', 'no_face': 'Visage non détecté',
+    'face_absent': 'Visage absent', 'window_blur': 'Changement de fenêtre',
+    'tab_switch': "Changement d'onglet", 'copy_attempt': 'Tentative de copie',
+    'paste_attempt': 'Tentative de collage', 'right_click': 'Clic droit détecté',
+    'multiple_faces': 'Plusieurs visages détectés',
+    'screen_share_stopped': "Partage d'écran arrêté",
+    'devtools_attempt': 'Console développeur ouverte',
+    'fullscreen_exit': 'Plein écran quitté', 'warning_issued': 'Avertissement émis',
+    'proctor_ban': 'Exclusion par le surveillant', 'teacher_ban': "Exclusion par l'enseignant",
+}
+
+
 @exams_bp.route('/api/admin/security_report', methods=['GET'])
 @paseto_required
 def admin_security_report():
@@ -4494,6 +4639,71 @@ def admin_security_report():
             exam_row = session.query(OnlineExam).filter_by(id=exam_id_filter).first()
             exam_title_filter = exam_row.title if exam_row else None
 
+        # Détail par étudiant : quels incidents, avec les captures caméra
+        # prises lors des moments à risque (hors snapshots périodiques /
+        # photo de référence, qui ne sont pas des incidents).
+        attempts_scope_q = session.query(ExamAttempt).options(
+            joinedload(ExamAttempt.student), joinedload(ExamAttempt.exam)
+        )
+        if prof_exam_ids is not None:
+            attempts_scope_q = attempts_scope_q.filter(ExamAttempt.exam_id.in_(prof_exam_ids))
+        attempts_scope = attempts_scope_q.all()
+        attempt_ids_scope = [a.id for a in attempts_scope]
+
+        by_student = []
+        if attempt_ids_scope:
+            incident_rows = session.query(
+                ExamActivityLog.attempt_id, ExamActivityLog.event_type,
+                sqlfunc.count(ExamActivityLog.id)
+            ).filter(
+                ExamActivityLog.attempt_id.in_(attempt_ids_scope),
+                ExamActivityLog.event_type.in_(INCIDENT_EVENT_TYPES),
+            ).group_by(ExamActivityLog.attempt_id, ExamActivityLog.event_type).all()
+
+            incidents_by_attempt = {}
+            for aid, etype, cnt in incident_rows:
+                incidents_by_attempt.setdefault(aid, {})[etype] = cnt
+
+            if incidents_by_attempt:
+                from s3_client import get_snapshot_url
+                snap_rows = session.query(CameraLog).filter(
+                    CameraLog.attempt_id.in_(list(incidents_by_attempt.keys())),
+                    ~CameraLog.event_type.in_(_ROUTINE_SNAPSHOT_TYPES),
+                ).order_by(CameraLog.timestamp.desc()).all()
+                snaps_by_attempt = {}
+                for snap in snap_rows:
+                    lst = snaps_by_attempt.setdefault(snap.attempt_id, [])
+                    if len(lst) >= 6:
+                        continue
+                    url = None
+                    if snap.image_filename and (snap.image_filename.startswith('snapshots/') or snap.image_filename.startswith('local:')):
+                        url = get_snapshot_url(snap.image_filename)
+                    elif snap.image_data:
+                        url = snap.image_data if snap.image_data.startswith('data:') else f'data:image/jpeg;base64,{snap.image_data}'
+                    if url:
+                        lst.append({
+                            'timestamp':  snap.timestamp.isoformat() if snap.timestamp else None,
+                            'event_type': snap.event_type,
+                            'image_url':  url,
+                        })
+
+                att_by_id = {a.id: a for a in attempts_scope}
+                for aid, events in incidents_by_attempt.items():
+                    a = att_by_id.get(aid)
+                    if not a:
+                        continue
+                    by_student.append({
+                        'attempt_id':      aid,
+                        'student_name':    a.student.full_name if a.student else '—',
+                        'exam_title':      a.exam.title if a.exam else '—',
+                        'risk_score':      a.risk_score or 0,
+                        'status':          a.status.value if a.status else '',
+                        'incidents':       [{'event': e, 'count': c} for e, c in sorted(events.items(), key=lambda x: -x[1])],
+                        'total_incidents': sum(events.values()),
+                        'snapshots':       snaps_by_attempt.get(aid, []),
+                    })
+                by_student.sort(key=lambda r: -r['total_incidents'])
+
         session.close()
         return jsonify({
             'event_summary':  [{'event': e, 'count': c} for e, c in event_counts],
@@ -4501,6 +4711,7 @@ def admin_security_report():
             'banned_count':   banned_count,
             'exam_id':        exam_id_filter,
             'exam_title':     exam_title_filter,
+            'by_student':     by_student,
         })
     except Exception as e:
         try: session.rollback(); session.close()

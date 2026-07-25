@@ -244,6 +244,11 @@ class EC(Base):
             'is_active': self.is_active,
             'assigned_professor_id': self.assignments[0].professor_id if self.assignments else None,
             'assigned_professors': [a.professor_id for a in self.assignments],
+            # Paire (id d'affectation, professeur) — l'id d'affectation est
+            # nécessaire pour pouvoir retirer un professeur précis via
+            # DELETE /api/admin/ec_assignments/<id> (plusieurs professeurs
+            # peuvent être affectés au même EC, sans contrainte l'empêchant).
+            'assignments': [{'id': a.id, 'professor_id': a.professor_id} for a in self.assignments],
             'pole_id': pole.id if pole else None,
             'pole_code': pole.code if pole else None,
             'pole_name': pole.name if pole else None,

@@ -1085,6 +1085,12 @@ def get_professor_students():
             formation = (session.query(Formation).filter_by(id=student.formation_id).first()
                          if getattr(student, 'formation_id', None) else None)
             pole = formation.pole if formation else None
+            # Même repli que User.to_dict() : le niveau "réel" est celui du
+            # Niveau rattaché à la Formation de l'étudiant ; le champ texte
+            # libre student.niveau ne sert que si aucune Formation n'est
+            # encore choisie (jamais rempli pour un compte créé avec juste
+            # formation_id, ce qui laissait la colonne "Niveau" vide ici).
+            niveau_label = (formation.niveau.code if formation and formation.niveau else None) or student.niveau
             student_ecs = []
             for ec in ecs:
                 if ec.ue_id in enrolled_ue_ids:
@@ -1095,7 +1101,7 @@ def get_professor_students():
                 'id':             student.id,
                 'full_name':      student.full_name,
                 'email':          student.email,
-                'niveau':         student.niveau,
+                'niveau':         niveau_label,
                 'formation_code': formation.code if formation else None,
                 'formation_name': formation.name if formation else None,
                 'pole_id':        pole.id if pole else None,

@@ -152,6 +152,8 @@ def get_reclamations():
         session.close()
         return jsonify(result)
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         print(f"ERROR get_reclamations: {e}")
         import traceback; traceback.print_exc()
         return jsonify({'error': str(e)}), 500
@@ -209,6 +211,8 @@ def create_reclamation():
         result = rec.to_dict(); session.close()
         return jsonify({'success': True, 'reclamation': result}), 201
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         print(f"ERROR create_reclamation: {e}")
         return jsonify({'error': str(e)}), 500
 
@@ -225,8 +229,18 @@ def respond_reclamation(rid):
         if user.role not in [UserRole.PROFESSOR, UserRole.ADMIN]:
             session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
 
-        rec = session.query(Reclamation).filter_by(id=rid).first()
+        rec = session.query(Reclamation).options(
+            joinedload(Reclamation.paper).joinedload(StudentPaper.subject),
+            joinedload(Reclamation.attempt).joinedload(ExamAttempt.exam),
+        ).filter_by(id=rid).first()
         if not rec: session.close(); return jsonify({'error': 'Réclamation non trouvée'}), 404
+
+        if user.role != UserRole.ADMIN:
+            owner_id = (rec.paper.subject.creator_id if rec.paper and rec.paper.subject
+                        else rec.attempt.exam.created_by_id if rec.attempt and rec.attempt.exam
+                        else None)
+            if owner_id != user_id:
+                session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
 
         data      = request.json or {}
         status    = data.get('status')
@@ -275,6 +289,8 @@ def respond_reclamation(rid):
         session.close()
         return jsonify({'success': True, 'reclamation': result})
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         print(f"ERROR respond_reclamation: {e}")
         return jsonify({'error': str(e)}), 500
 
@@ -300,6 +316,13 @@ def process_reclamation_ia(rid):
         attempt = rec.attempt
         if not paper and not attempt:
             session.close(); return jsonify({'error': "Réclamation sans copie — impossible d'analyser."}), 400
+
+        if user.role != UserRole.ADMIN:
+            owner_id = (paper.subject.creator_id if paper and paper.subject
+                        else attempt.exam.created_by_id if attempt and attempt.exam
+                        else None)
+            if owner_id != user_id:
+                session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
 
         DECISION_FORMAT = """Format de sortie OBLIGATOIRE:
 === DÉCISION ===
@@ -367,6 +390,8 @@ Si REJECTED: Correction originale inchangée"""
 
         return jsonify({'success': True, 'decision': decision, 'ia_response': ia_response})
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         print(f"ERROR process_reclamation_ia: {e}")
         return jsonify({'error': str(e)}), 500
 
@@ -419,6 +444,8 @@ def apply_ai_proposal(rid):
         session.close()
         return jsonify({'success': True, 'message': 'Proposition IA appliquée'})
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         print(f"ERROR apply_ai_proposal: {e}")
         return jsonify({'error': str(e)}), 500
 
@@ -458,5 +485,7 @@ def reject_ai_proposal(rid):
         session.close()
         return jsonify({'success': True, 'message': 'Proposition IA rejetée'})
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         print(f"ERROR reject_ai_proposal: {e}")
         return jsonify({'error': str(e)}), 500

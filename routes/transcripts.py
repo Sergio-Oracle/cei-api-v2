@@ -165,6 +165,8 @@ def generate_transcript(student_id, semester_id):
         session.close()
         return jsonify({'success': True, 'transcript': result})
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         print(f"ERROR generate_transcript: {e}")
         import traceback; traceback.print_exc()
         return jsonify({'error': str(e)}), 500
@@ -226,6 +228,8 @@ def get_all_transcripts():
         session.close()
         return jsonify(result)
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         print(f"ERROR get_all_transcripts: {e}")
         return jsonify({'error': str(e)}), 500
 
@@ -273,6 +277,8 @@ def get_student_transcripts():
         session.close()
         return jsonify(result)
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         print(f"ERROR get_student_transcripts: {e}")
         return jsonify({'error': str(e)}), 500
 
@@ -353,6 +359,8 @@ def export_transcript_pdf(tid):
         return send_file(pdf_path, as_attachment=True,
                          download_name=f"releve_notes_{student_name}.pdf")
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         print(f"ERROR export_transcript_pdf: {e}")
         return jsonify({'error': str(e)}), 500
 
@@ -419,6 +427,8 @@ def export_transcripts_bulk_pdf():
         return send_file(zip_buffer, mimetype='application/zip', as_attachment=True,
                          download_name=f"releves_{semester_label}.zip")
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         print(f"ERROR export_transcripts_bulk_pdf: {e}")
         return jsonify({'error': str(e)}), 500
 
@@ -451,6 +461,8 @@ def delete_transcript(tid):
         return jsonify({'success': True,
                         'message': f'Relevé de {student_name} ({semester_name}) supprimé.'})
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         print(f"ERROR delete_transcript: {e}")
         return jsonify({'error': str(e)}), 500
 
@@ -469,6 +481,10 @@ def toggle_transcript_publish(tid):
         t = session.query(GradeTranscript).filter_by(id=tid).first()
         if not t: session.close(); return jsonify({'error': 'Relevé introuvable'}), 404
 
+        if user.role == UserRole.PROFESSOR and t.generated_by_id != user_id:
+            session.close()
+            return jsonify({'error': 'Vous ne pouvez publier que les relevés que vous avez générés.'}), 403
+
         data = request.get_json() or {}
         t.is_published = bool(data.get('is_published', not t.is_published))
         session.commit()
@@ -476,5 +492,7 @@ def toggle_transcript_publish(tid):
         session.close()
         return jsonify(result)
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         print(f"ERROR toggle_transcript_publish: {e}")
         return jsonify({'error': str(e)}), 500

@@ -77,6 +77,8 @@ def get_poles():
         cache_set(key, result, ttl=_CACHE_TTL)
         return jsonify(result)
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         return jsonify({'error': str(e)}), 500
 
 
@@ -95,6 +97,8 @@ def get_pole_formations(pole_id):
         cache_set(key, result, ttl=_CACHE_TTL)
         return jsonify(result)
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         return jsonify({'error': str(e)}), 500
 
 
@@ -138,6 +142,8 @@ def create_pole():
         _invalidate_academic_cache()
         return jsonify(result), 201
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         return jsonify({'error': str(e)}), 500
 
 
@@ -166,6 +172,8 @@ def update_pole(pid):
         _invalidate_academic_cache()
         return jsonify(result)
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         return jsonify({'error': str(e)}), 500
 
 
@@ -197,6 +205,8 @@ def delete_pole(pid):
         _invalidate_academic_cache()
         return jsonify({'message': 'Pôle et ses niveaux supprimés'})
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         return jsonify({'error': str(e)}), 500
 
 
@@ -219,6 +229,8 @@ def get_niveaux():
         cache_set(key, result, ttl=_CACHE_TTL)
         return jsonify(result)
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         return jsonify({'error': str(e)}), 500
 
 
@@ -237,6 +249,8 @@ def get_pole_niveaux(pole_id):
         cache_set(key, result, ttl=_CACHE_TTL)
         return jsonify(result)
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         return jsonify({'error': str(e)}), 500
 
 
@@ -283,6 +297,8 @@ def create_niveau():
         _invalidate_academic_cache()
         return jsonify(result), 201
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         return jsonify({'error': str(e)}), 500
 
 
@@ -323,6 +339,8 @@ def update_niveau(nid):
         _invalidate_academic_cache()
         return jsonify(result)
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         return jsonify({'error': str(e)}), 500
 
 
@@ -348,6 +366,8 @@ def delete_niveau(nid):
         _invalidate_academic_cache()
         return jsonify({'message': 'Niveau supprimé'})
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         return jsonify({'error': str(e)}), 500
 
 
@@ -370,6 +390,8 @@ def get_formations():
         cache_set(key, result, ttl=_CACHE_TTL)
         return jsonify(result)
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         return jsonify({'error': str(e)}), 500
 
 
@@ -388,6 +410,8 @@ def get_formation_semesters(formation_id):
         cache_set(key, result, ttl=_CACHE_TTL)
         return jsonify(result)
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         return jsonify({'error': str(e)}), 500
 
 
@@ -406,6 +430,8 @@ def get_semester_ues(semester_id):
         cache_set(key, result, ttl=_CACHE_TTL)
         return jsonify(result)
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         return jsonify({'error': str(e)}), 500
 
 
@@ -423,6 +449,8 @@ def get_ue_ecs(ue_id):
         session.close()
         return jsonify(result)
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         return jsonify({'error': str(e)}), 500
 
 
@@ -451,6 +479,8 @@ def get_all_ecs():
         session.close()
         return jsonify(result)
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         return jsonify({'error': str(e)}), 500
 
 
@@ -472,6 +502,8 @@ def list_all_ues():
         cache_set(key, result, ttl=_CACHE_TTL)
         return jsonify(result)
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         return jsonify({'error': str(e)}), 500
 
 
@@ -512,6 +544,8 @@ def create_formation():
         _invalidate_academic_cache()
         return jsonify({'success': True, 'formation': result}), 201
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         return jsonify({'error': str(e)}), 500
 
 
@@ -546,6 +580,8 @@ def update_formation(fid):
         _invalidate_academic_cache()
         return jsonify({'success': True, 'formation': result})
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         return jsonify({'error': str(e)}), 500
 
 
@@ -562,6 +598,8 @@ def delete_formation(fid):
         _invalidate_academic_cache()
         return jsonify({'success': True, 'message': 'Formation supprimée'})
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         return jsonify({'error': str(e)}), 500
 
 
@@ -587,6 +625,8 @@ def create_semester():
         _invalidate_academic_cache()
         return jsonify({'success': True, 'semester': result}), 201
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         return jsonify({'error': str(e)}), 500
 
 
@@ -606,6 +646,8 @@ def update_semester(sid):
         _invalidate_academic_cache()
         return jsonify({'success': True, 'semester': result})
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         return jsonify({'error': str(e)}), 500
 
 
@@ -622,6 +664,8 @@ def delete_semester(sid):
         _invalidate_academic_cache()
         return jsonify({'success': True, 'message': 'Semestre supprimé'})
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         return jsonify({'error': str(e)}), 500
 
 
@@ -648,6 +692,8 @@ def create_ue():
         _invalidate_academic_cache()
         return jsonify({'success': True, 'ue': result}), 201
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         return jsonify({'error': str(e)}), 500
 
 
@@ -671,6 +717,8 @@ def update_ue(uid):
         _invalidate_academic_cache()
         return jsonify({'success': True, 'ue': result})
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         return jsonify({'error': str(e)}), 500
 
 
@@ -687,6 +735,8 @@ def delete_ue(uid):
         _invalidate_academic_cache()
         return jsonify({'success': True, 'message': 'UE supprimée'})
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         return jsonify({'error': str(e)}), 500
 
 
@@ -716,6 +766,8 @@ def create_ec():
         _invalidate_academic_cache()
         return jsonify({'success': True, 'ec': result}), 201
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         return jsonify({'error': str(e)}), 500
 
 
@@ -739,6 +791,8 @@ def update_ec(eid):
         _invalidate_academic_cache()
         return jsonify({'success': True, 'ec': result})
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         return jsonify({'error': str(e)}), 500
 
 
@@ -755,6 +809,8 @@ def delete_ec(eid):
         _invalidate_academic_cache()
         return jsonify({'success': True, 'message': 'EC supprimé'})
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         return jsonify({'error': str(e)}), 500
 
 
@@ -791,6 +847,8 @@ def assign_ec_to_professor():
         session.close()
         return jsonify({'success': True, 'message': 'EC affecté avec succès'}), 201
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         return jsonify({'error': str(e)}), 500
 
 
@@ -822,6 +880,8 @@ def assign_ec_by_id(eid):
         session.close()
         return jsonify({'success': True, 'message': 'EC affecté avec succès'}), 201
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         return jsonify({'error': str(e)}), 500
 
 
@@ -837,6 +897,8 @@ def remove_ec_assignment(aid):
         session.delete(a); session.commit(); session.close()
         return jsonify({'success': True, 'message': 'Affectation supprimée'})
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         return jsonify({'error': str(e)}), 500
 
 
@@ -910,6 +972,8 @@ def enroll_student_to_ue():
         session.close()
         return jsonify({'success': True, 'message': 'Étudiant inscrit avec succès'}), 201
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         return jsonify({'error': str(e)}), 500
 
 
@@ -961,6 +1025,8 @@ def enroll_students_bulk():
             'errors': errors,
         }), 201
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         return jsonify({'error': str(e)}), 500
 
 
@@ -990,6 +1056,8 @@ def unenroll_students_bulk():
         session.close()
         return jsonify({'success': True, 'removed': removed}), 200
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         return jsonify({'error': str(e)}), 500
 
 
@@ -1026,6 +1094,8 @@ def enroll_student_by_id(student_id):
         session.close()
         return jsonify({'success': True, 'message': 'Étudiant inscrit avec succès'}), 201
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         return jsonify({'error': str(e)}), 500
 
 
@@ -1122,6 +1192,8 @@ def get_professor_students():
         session.close()
         return jsonify({'ecs': ecs_out, 'students': students_out, 'total': len(students_out)})
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         return jsonify({'error': str(e)}), 500
 
 
@@ -1159,6 +1231,8 @@ def get_all_students_enrollments():
         session.close()
         return jsonify(result)
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         return jsonify({'error': str(e)}), 500
 
 
@@ -1187,6 +1261,8 @@ def get_student_enrollments(student_id):
         session.close()
         return jsonify(result)
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         return jsonify({'error': str(e)}), 500
 
 
@@ -1218,6 +1294,8 @@ def set_student_formation(student_id):
         return jsonify({'success': True, 'added': added, 'formation_name': formation_name,
                         'message': f'Formation : {formation_name} — {added} UE(s) ajoutée(s).'}), 200
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         import traceback; traceback.print_exc()
         return jsonify({'error': str(e)}), 500
 
@@ -1234,6 +1312,8 @@ def remove_student_enrollment(eid):
         session.delete(e); session.commit(); session.close()
         return jsonify({'success': True, 'message': 'Inscription supprimée'})
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         return jsonify({'error': str(e)}), 500
 
 
@@ -1258,6 +1338,8 @@ def list_proctor_groups():
         session.close()
         return jsonify(result)
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         return jsonify({'error': str(e)}), 500
 
 
@@ -1278,6 +1360,8 @@ def create_proctor_group():
         session.close()
         return jsonify(result), 201
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         return jsonify({'error': str(e)}), 500
 
 
@@ -1300,6 +1384,8 @@ def update_proctor_group(gid):
         session.close()
         return jsonify(result)
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         return jsonify({'error': str(e)}), 500
 
 
@@ -1322,6 +1408,8 @@ def delete_proctor_group(gid):
         session.close()
         return jsonify({'success': True, 'message': 'Groupe supprimé'})
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         return jsonify({'error': str(e)}), 500
 
 
@@ -1373,6 +1461,8 @@ def add_proctor_group_member(gid):
         session.close()
         return jsonify({'success': True, 'added': added, 'already': already, 'group': result}), 201
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         return jsonify({'error': str(e)}), 500
 
 
@@ -1396,6 +1486,8 @@ def remove_proctor_group_member(gid, mid):
         session.close()
         return jsonify({'success': True, 'message': 'Membre retiré'})
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         return jsonify({'error': str(e)}), 500
 
 
@@ -1447,6 +1539,8 @@ def link_proctor_group_ec(gid):
         session.close()
         return jsonify(result), 201
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         return jsonify({'error': str(e)}), 500
 
 
@@ -1469,4 +1563,6 @@ def unlink_proctor_group_ec(gid, ec_id):
         session.close()
         return jsonify({'success': True, 'message': 'Rattachement retiré'})
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         return jsonify({'error': str(e)}), 500

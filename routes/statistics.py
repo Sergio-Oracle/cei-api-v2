@@ -120,6 +120,8 @@ def get_subject_statistics(subject_id):
             'online_exams':    online_exams_info,
         })
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         print(f"ERROR get_subject_statistics: {e}")
         import traceback; traceback.print_exc()
         return jsonify({'error': str(e)}), 500

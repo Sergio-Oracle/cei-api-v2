@@ -47,6 +47,8 @@ def professor_dashboard():
             'papers_corrected':papers_corrected + online_corrected,
         })
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         print(f"ERROR professor_dashboard: {e}")
         import traceback; traceback.print_exc()
         return jsonify({'error': str(e)}), 500
@@ -102,6 +104,8 @@ def get_student_online_results():
         session.close()
         return jsonify(results)
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         print(f"ERROR get_student_online_results: {e}")
         return jsonify([])
 
@@ -141,5 +145,7 @@ def get_student_papers():
         session.close()
         return jsonify(papers_list)
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         print(f"ERROR get_student_papers: {e}")
         return jsonify({'error': str(e)}), 500

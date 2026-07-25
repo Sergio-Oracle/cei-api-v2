@@ -84,6 +84,8 @@ def admin_dashboard():
         session.close()
         return jsonify(data)
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         print(f"ERROR admin_dashboard: {e}")
         return jsonify({'error': str(e)}), 500
 
@@ -118,6 +120,8 @@ def admin_corrected_papers():
         session.close()
         return jsonify({'papers': result})
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         print(f"ERROR admin_corrected_papers: {e}")
         return jsonify({'error': str(e)}), 500
 
@@ -141,6 +145,8 @@ def get_proctor_users():
         session.close()
         return jsonify(result)
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         print(f"ERROR get_proctor_users: {e}")
         return jsonify({'error': str(e)}), 500
 
@@ -177,6 +183,8 @@ def get_all_users():
         session.close()
         return jsonify(result)
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         print(f"ERROR get_all_users: {e}")
         return jsonify({'error': str(e)}), 500
 
@@ -434,6 +442,8 @@ def get_students_list():
         session.close()
         return jsonify(result)
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         print(f"ERROR get_students_list: {e}")
         return jsonify({'error': str(e)}), 500
 
@@ -492,5 +502,7 @@ def create_student_no_email():
             'temp_password': password,
         }), 201
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         print(f"ERROR create_student_no_email: {e}")
         return jsonify({'error': str(e)}), 500

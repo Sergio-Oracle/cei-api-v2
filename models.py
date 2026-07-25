@@ -1051,7 +1051,7 @@ if not DATABASE_URL:
     raise ValueError(
         "❌ ERREUR: DATABASE_URL non défini dans .env!\n"
         "Créez un fichier .env avec:\n"
-        "DATABASE_URL=postgresql://exam_user:passer@localhost:5432/exam_grader_db"
+        "DATABASE_URL=postgresql://<user>:<password>@localhost:5432/<db_name>"
     )
 
 print(f"🔗 Connexion à: {DATABASE_URL.split('@')[1] if '@' in DATABASE_URL else DATABASE_URL}")

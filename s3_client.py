@@ -1,12 +1,9 @@
 """
 Client S3/MinIO pour CEI — snapshots caméra et fichiers partagés.
 
-Variables d'environnement (déjà présentes dans .env) :
-  S3_KEY_ID            = serge
-  S3_KEY_SECRET        = passer123
-  S3_ENDPOINT          = http://62.171.190.6:9000
-  S3_REGION            = us-east-1
-  S3_SNAPSHOTS_BUCKET  = cei-snapshots   (bucket dédié aux snapshots)
+Variables d'environnement requises (voir .env — ne pas documenter les valeurs
+réelles ici, ce module est versionné dans git) :
+  S3_KEY_ID, S3_KEY_SECRET, S3_ENDPOINT, S3_REGION, S3_SNAPSHOTS_BUCKET
 
 Usage :
     from s3_client import upload_snapshot, get_snapshot_url

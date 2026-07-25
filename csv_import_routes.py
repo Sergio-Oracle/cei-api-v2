@@ -227,6 +227,8 @@ def register_csv_routes(app):
                 download_name=f'template_utilisateurs_{datetime.now().strftime("%Y%m%d")}.csv'
             )
         except Exception as e:
+            try: session.rollback(); session.close()
+            except Exception: pass
             print(f"❌ Erreur download_users_csv_template: {e}")
             return jsonify({'error': str(e)}), 500
 
@@ -254,6 +256,8 @@ def register_csv_routes(app):
                 download_name=f'template_maquette_{datetime.now().strftime("%Y%m%d")}.csv'
             )
         except Exception as e:
+            try: session.rollback(); session.close()
+            except Exception: pass
             print(f"❌ Erreur download_maquette_csv_template: {e}")
             return jsonify({'error': str(e)}), 500
 
@@ -278,6 +282,8 @@ def register_csv_routes(app):
                 download_name=f'template_maquette_excel_{datetime.now().strftime("%Y%m%d")}.xlsx'
             )
         except Exception as e:
+            try: session.rollback(); session.close()
+            except Exception: pass
             print(f"❌ Erreur download_maquette_excel_template: {e}")
             return jsonify({'error': str(e)}), 500
 
@@ -393,6 +399,7 @@ def register_csv_routes(app):
                     })
 
                 except Exception as e:
+                    session.rollback()  # sans ça, une erreur sur une ligne invalide la session pour les suivantes
                     errors.append(f"Ligne {idx+2}: {str(e)}")
 
             session.commit()
@@ -410,6 +417,8 @@ def register_csv_routes(app):
         except RequestEntityTooLarge:
             raise  # laisser remonter au handler 413 global (app.py) — pas de message générique
         except Exception as e:
+            try: session.rollback(); session.close()
+            except Exception: pass
             print(f"❌ Erreur import_users_csv: {e}")
             import traceback
             traceback.print_exc()
@@ -743,6 +752,7 @@ def register_csv_routes(app):
                         print(f"   ⚠️ Type inconnu: {row_type}")
 
                 except Exception as e:
+                    session_db.rollback()  # sans ça, une erreur sur une ligne invalide la session pour les suivantes
                     error_msg = f"Erreur: {str(e)}"
                     errors.append(f"Ligne {index+2}: {error_msg}")
                     print(f"   ❌ {error_msg}")

@@ -42,6 +42,8 @@ def list_question_bank():
         session.close()
         return jsonify(result)
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         return jsonify({'error': str(e)}), 500
 
 
@@ -85,6 +87,8 @@ def save_question_bank():
         result = q.to_dict(); session.close()
         return jsonify({'success': True, 'question': result, 'duplicates': duplicates}), 201
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         return jsonify({'error': str(e)}), 500
 
 
@@ -104,6 +108,8 @@ def delete_question_bank(q_id):
         session.delete(q); session.commit(); session.close()
         return jsonify({'success': True})
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         return jsonify({'error': str(e)}), 500
 
 
@@ -149,6 +155,8 @@ def update_question_bank(q_id):
         result = q.to_dict(); session.close()
         return jsonify({'success': True, 'question': result})
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         return jsonify({'error': str(e)}), 500
 
 
@@ -182,6 +190,8 @@ def duplicate_question_bank(q_id):
         result = copy.to_dict(); session.close()
         return jsonify({'success': True, 'question': result}), 201
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         return jsonify({'error': str(e)}), 500
 
 
@@ -213,6 +223,8 @@ def bulk_move_question_bank():
         session.commit(); session.close()
         return jsonify({'success': True, 'moved': moved, 'skipped': skipped})
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         return jsonify({'error': str(e)}), 500
 
 
@@ -225,6 +237,8 @@ def bulk_delete_question_bank():
         user_id = get_current_user_id()
         session = get_session()
         user    = session.query(User).filter_by(id=user_id).first()
+        if not user or user.role not in [UserRole.ADMIN, UserRole.PROFESSOR]:
+            session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
 
         data = request.get_json() or {}
         question_ids = data.get('question_ids') or []
@@ -243,6 +257,8 @@ def bulk_delete_question_bank():
         session.commit(); session.close()
         return jsonify({'success': True, 'deleted': deleted, 'skipped': skipped})
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         return jsonify({'error': str(e)}), 500
 
 
@@ -271,6 +287,8 @@ def find_duplicates():
         session.close()
         return jsonify({'duplicates': pairs, 'count': len(pairs)})
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         return jsonify({'error': str(e)}), 500
 
 
@@ -348,6 +366,8 @@ def check_duplicate():
         session.close()
         return jsonify({'duplicates': found, 'is_duplicate': len(found) > 0})
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         return jsonify({'error': str(e)}), 500
 
 
@@ -454,5 +474,7 @@ def assemble_from_bank():
         result = subject.to_dict(); session.close()
         return jsonify({'success': True, 'subject': result, 'duplicates': duplicates}), 201
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         import traceback; traceback.print_exc()
         return jsonify({'error': str(e)}), 500

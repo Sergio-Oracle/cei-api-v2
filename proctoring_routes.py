@@ -169,6 +169,9 @@ def get_teacher_proctor_token(exam_id):
         if not exam:
             return jsonify({'error': 'Examen introuvable'}), 404
 
+        if role == 'professor' and exam.created_by_id != user_id:
+            return jsonify({'error': 'Vous ne pouvez surveiller que vos propres examens'}), 403
+
         if role == 'surveillant':
             assigned = session.query(ExamProctor).filter_by(
                 exam_id=exam_id, proctor_id=user_id
@@ -379,6 +382,9 @@ def send_proctoring_warning(attempt_id):
         if not attempt:
             return jsonify({'error': 'Tentative introuvable'}), 404
 
+        if role == 'professor' and attempt.exam.created_by_id != user_id:
+            return jsonify({'error': 'Vous ne pouvez agir que sur vos propres examens'}), 403
+
         if role == 'surveillant':
             assigned = session.query(ProctorAssignment).filter_by(
                 proctor_id=user_id, exam_id=attempt.exam_id
@@ -430,6 +436,9 @@ def proctor_ban_student(attempt_id):
         attempt = session.query(ExamAttempt).filter_by(id=attempt_id).first()
         if not attempt:
             return jsonify({'error': 'Tentative introuvable'}), 404
+
+        if role == 'professor' and attempt.exam.created_by_id != user_id:
+            return jsonify({'error': 'Vous ne pouvez agir que sur vos propres examens'}), 403
 
         if role == 'surveillant':
             assigned = session.query(ProctorAssignment).filter_by(
@@ -945,6 +954,8 @@ def add_exam_proctor(exam_id):
         exam = session.query(OnlineExam).filter_by(id=exam_id).first()
         if not exam:
             return jsonify({'error': 'Examen introuvable'}), 404
+        if role == 'professor' and exam.created_by_id != user_id:
+            return jsonify({'error': 'Vous ne pouvez affecter des surveillants qu\'à vos propres examens'}), 403
 
         data = request.get_json() or {}
         proctor_id = data.get('proctor_id')
@@ -985,13 +996,19 @@ def add_exam_proctor(exam_id):
 @paseto_required
 def remove_exam_proctor(exam_id, proctor_id):
     """Retirer un surveillant d'un examen"""
+    user_id = get_current_user_id()
     role = get_current_user_role()
-    
+
     if role not in ['professor', 'admin']:
         return jsonify({'error': 'Accès réservé aux enseignants'}), 403
 
     session = get_session()
     try:
+        if role == 'professor':
+            exam = session.query(OnlineExam).filter_by(id=exam_id).first()
+            if not exam or exam.created_by_id != user_id:
+                return jsonify({'error': 'Vous ne pouvez retirer des surveillants que de vos propres examens'}), 403
+
         ep = session.query(ExamProctor).filter_by(
             exam_id=exam_id, proctor_id=proctor_id
         ).first()
@@ -1076,6 +1093,8 @@ def proctor_heartbeat(exam_id):
             session.close()
         return jsonify({'success': True})
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         return jsonify({'error': str(e)}), 500
 
 
@@ -1086,8 +1105,9 @@ def distribute_proctors(exam_id):
     - Si des ExamAttempt existent → répartition par attempt (examen en cours)
     - Sinon → répartition par inscription UE (pré-affectation avant l'examen)
     """
+    user_id = get_current_user_id()
     role = get_current_user_role()
-    
+
     if role not in ['professor', 'admin']:
         return jsonify({'error': 'Accès réservé aux enseignants'}), 403
 
@@ -1096,6 +1116,8 @@ def distribute_proctors(exam_id):
         exam = session.query(OnlineExam).filter_by(id=exam_id).first()
         if not exam:
             return jsonify({'error': 'Examen introuvable'}), 404
+        if role == 'professor' and exam.created_by_id != user_id:
+            return jsonify({'error': 'Vous ne pouvez répartir les surveillants que sur vos propres examens'}), 403
 
         proctors = session.query(ExamProctor).filter_by(exam_id=exam_id).all()
         if not proctors:
@@ -1292,6 +1314,9 @@ def toggle_recording(attempt_id):
         attempt = session.query(ExamAttempt).filter_by(id=attempt_id).first()
         if not attempt:
             return jsonify({'error': 'Tentative introuvable'}), 404
+
+        if role == 'professor' and attempt.exam.created_by_id != user_id:
+            return jsonify({'error': 'Vous ne pouvez agir que sur vos propres examens'}), 403
 
         if role == 'surveillant':
             # Vérifier affectation par attempt_id ou student_id (pré-affectation)
@@ -1986,6 +2011,8 @@ def get_exam_recordings(exam_id):
         return jsonify({'exam_id': exam_id, 'students': result})
 
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         print(f"❌ Erreur get_exam_recordings: {e}")
         import traceback
         traceback.print_exc()
@@ -2340,6 +2367,8 @@ def get_video_recordings(exam_id):
         })
 
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         print(f"❌ Erreur get_video_recordings: {e}")
         import traceback
         traceback.print_exc()
@@ -2655,4 +2684,6 @@ def agent_status():
         return jsonify(result)
 
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         return jsonify({'error': str(e), 'alive': False}), 500

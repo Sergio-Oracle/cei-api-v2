@@ -49,6 +49,9 @@ def upload_paper():
         session = get_session()
         user    = session.query(User).filter_by(id=user_id).first()
 
+        if not user or user.role not in (UserRole.PROFESSOR, UserRole.ADMIN):
+            session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
+
         if 'file' not in request.files:
             session.close(); return jsonify({'error': 'Aucun fichier fourni'}), 400
 
@@ -175,6 +178,8 @@ def upload_paper():
     except Exception as e:
         print(f"ERROR upload_paper: {e}")
         import traceback; traceback.print_exc()
+        try: session.rollback(); session.close()
+        except Exception: pass
         return jsonify({'error': str(e)}), 500
 
 
@@ -295,6 +300,7 @@ def upload_papers_batch():
 
                 results.append({'filename': file.filename, 'student_name': student_name, 'score': score, 'success': True})
             except Exception as e:
+                session.rollback()  # sans ça, une erreur sur un fichier invalide la session pour tous les suivants
                 errors.append(f"Fichier {idx+1}: {str(e)}")
 
         session.commit(); session.close()
@@ -305,6 +311,8 @@ def upload_papers_batch():
     except Exception as e:
         print(f"ERROR upload_papers_batch: {e}")
         import traceback; traceback.print_exc()
+        try: session.rollback(); session.close()
+        except Exception: pass
         return jsonify({'error': str(e)}), 500
 
 
@@ -347,6 +355,8 @@ def get_papers_by_subject(subject_id):
     except Exception as e:
         print(f"ERROR get_papers_by_subject: {e}")
         import traceback; traceback.print_exc()
+        try: session.rollback(); session.close()
+        except Exception: pass
         return jsonify({'error': str(e)}), 500
 
 
@@ -374,4 +384,6 @@ def get_paper_detail(paper_id):
     except Exception as e:
         print(f"ERROR get_paper_detail: {e}")
         import traceback; traceback.print_exc()
+        try: session.rollback(); session.close()
+        except Exception: pass
         return jsonify({'error': str(e)}), 500

@@ -246,6 +246,8 @@ def create_online_exam():
         return jsonify({'success': True, 'exam': exam_dict}), 201
     except Exception as e:
         print(f"❌ Erreur create_online_exam: {e}")
+        try: session.rollback(); session.close()
+        except Exception: pass
         return jsonify({'error': 'Erreur lors de la création de l\'examen'}), 500
 
 @exams_bp.route('/api/online_exams/<int:exam_id>/activate', methods=['POST'])
@@ -300,6 +302,8 @@ def activate_online_exam(exam_id):
         session.close()
         return jsonify({'success': True, 'exam': exam_dict})
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         print(f"Erreur activate_online_exam: {e}")
         return jsonify({'error': str(e)}), 500
 
@@ -340,6 +344,8 @@ def extend_online_exam(exam_id):
             'new_duration_minutes': exam_dict.get('duration_minutes'),
         })
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         print(f"❌ Erreur extend_online_exam: {e}")
         return jsonify({'error': str(e)}), 500
 
@@ -394,6 +400,8 @@ def close_online_exam(exam_id):
 
         return jsonify({'success': True, 'exam': exam_dict})
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         print(f"❌ Erreur close_online_exam: {e}")
         return jsonify({'error': str(e)}), 500
 
@@ -587,6 +595,8 @@ def get_online_exam_details(exam_id):
         return jsonify(exam_dict)
         
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         print(f"❌ Erreur get_online_exam_details: {e}")
         import traceback
         traceback.print_exc()
@@ -708,6 +718,8 @@ def start_exam_attempt(exam_id):
         print(f"❌ Erreur start_exam_attempt: {e}")
         import traceback
         traceback.print_exc()
+        try: session.rollback(); session.close()
+        except Exception: pass
         return jsonify({'error': str(e)}), 500
 
 @exams_bp.route('/api/exam_attempts/<int:attempt_id>/save', methods=['POST'])
@@ -736,6 +748,8 @@ def save_exam_answers(attempt_id):
         return jsonify({'success': True, 'message': 'Réponses sauvegardées'})
     except Exception as e:
         print(f"❌ Erreur save_exam_answers: {e}")
+        try: session.rollback(); session.close()
+        except Exception: pass
         return jsonify({'error': str(e)}), 500
 
 @exams_bp.route('/api/exam_attempts/<int:attempt_id>/log_activity', methods=['POST'])
@@ -926,6 +940,8 @@ def log_exam_activity(attempt_id):
         print(f"❌ Erreur log_exam_activity: {e}")
         import traceback
         traceback.print_exc()
+        try: session.rollback(); session.close()
+        except Exception: pass
         return jsonify({'error': str(e)}), 500
 
 @exams_bp.route('/api/exam_attempts/<int:attempt_id>/result', methods=['GET'])
@@ -956,6 +972,8 @@ def get_exam_attempt_result(attempt_id):
         session.close()
         return jsonify(result)
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         return jsonify({'error': str(e)}), 500
 
 @exams_bp.route('/api/exam_attempts/<int:attempt_id>/subject', methods=['GET'])
@@ -1011,6 +1029,8 @@ def get_exam_attempt_subject(attempt_id):
 
     except Exception as e:
         print(f"❌ Erreur get_exam_attempt_subject: {e}")
+        try: session.rollback(); session.close()
+        except Exception: pass
         return jsonify({'error': str(e)}), 500
 
 
@@ -1765,6 +1785,8 @@ def unban_exam_attempt(attempt_id):
         session.close()
         return jsonify({'success': True, 'message': f'Bannissement de {student_name} levé avec succès.'})
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         print(f"❌ Erreur unban_exam_attempt: {e}")
         return jsonify({'error': str(e)}), 500
 
@@ -1848,6 +1870,8 @@ def export_exam_results_csv(exam_id):
             headers={'Content-Disposition': f'attachment; filename="{filename}"'}
         )
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         print(f"❌ Erreur export_exam_results_csv: {e}")
         return jsonify({'error': str(e)}), 500
 
@@ -2287,6 +2311,9 @@ def get_exam_stats(exam_id):
         if not exam:
             session.close()
             return jsonify({'error': 'Examen non trouvé'}), 404
+        if user.role == UserRole.PROFESSOR and exam.created_by_id != user_id:
+            session.close()
+            return jsonify({'error': 'Accès non autorisé'}), 403
         attempts = session.query(ExamAttempt).filter_by(exam_id=exam_id).all()
         done = [a for a in attempts if a.status.value in ('submitted', 'auto_submitted')]
         scores = [a.score for a in done if a.score is not None]
@@ -2346,6 +2373,9 @@ def get_exam_bilan(exam_id):
         if not exam:
             session.close()
             return jsonify({'error': 'Examen non trouvé'}), 404
+        if user.role == UserRole.PROFESSOR and exam.created_by_id != user_id:
+            session.close()
+            return jsonify({'error': 'Accès non autorisé'}), 403
 
         from sqlalchemy import func as sa_func
         attempts = session.query(ExamAttempt).filter_by(exam_id=exam_id).all()
@@ -2417,6 +2447,9 @@ def get_exam_bilan_pdf(exam_id):
         if not exam:
             session.close()
             return jsonify({'error': 'Examen non trouvé'}), 404
+        if user.role == UserRole.PROFESSOR and exam.created_by_id != user_id:
+            session.close()
+            return jsonify({'error': 'Accès non autorisé'}), 403
 
         attempts = session.query(ExamAttempt).filter_by(exam_id=exam_id).all()
         exam_title = exam.title
@@ -3335,6 +3368,8 @@ def get_exam_incidents(exam_id):
         })
         
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         print(f"❌ Erreur get_exam_incidents: {e}")
         return jsonify({'error': str(e)}), 500
 
@@ -3445,6 +3480,8 @@ def get_professor_recent_incidents():
         })
 
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         print(f"❌ Erreur get_professor_recent_incidents: {e}")
         return jsonify({'error': str(e)}), 500
 
@@ -3484,6 +3521,8 @@ def dismiss_recent_incidents():
         session.close()
         return jsonify({'success': True, 'dismissed': added})
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         print(f"❌ Erreur dismiss_recent_incidents: {e}")
         return jsonify({'error': str(e)}), 500
 
@@ -3548,6 +3587,8 @@ def get_exams_history():
         return jsonify(history_list)
         
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         print(f" Erreur get_exams_history: {e}")
         return jsonify({'error': str(e)}), 500
 
@@ -3628,6 +3669,8 @@ def professor_corrected_papers():
         return jsonify({'papers': papers_list})
 
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         print(f"❌ Erreur professor_corrected_papers: {e}")
         return jsonify({'error': str(e)}), 500
 
@@ -4140,6 +4183,8 @@ Règles ABSOLUES pour le BARÈME (notation automatique sans IA pour QCM/Vrai-Fau
         })
 
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         import traceback
         traceback.print_exc()
         err_str = str(e)
@@ -4301,6 +4346,8 @@ RÈGLES ABSOLUES :
             'duplicates': duplicates,
         })
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         import traceback
         traceback.print_exc()
         return jsonify({'error': 'Erreur lors de la génération des questions supplémentaires'}), 500
@@ -4336,6 +4383,8 @@ Réponds STRICTEMENT avec un nombre entier seul, rien d'autre (pas de phrase, pa
         suggested = max(1, min(suggested, 60))
         return jsonify({'success': True, 'suggested_count': suggested})
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         # Repli heuristique si l'IA est indisponible — ne bloque jamais l'UI
         fallback = max(1, min(duration // 5, 60))
         return jsonify({'success': True, 'suggested_count': fallback, 'fallback': True})
@@ -4408,6 +4457,13 @@ def create_subject_from_suggestion():
         return jsonify({'success': False, 'error': 'Champs title et content obligatoires'}), 400
 
     try:
+        ec_id = data.get('ec_id') or None
+        if ec_id and user.role == UserRole.PROFESSOR:
+            asgn = session.query(ECAssignment).filter_by(ec_id=ec_id, professor_id=int(current_user_id)).first()
+            if not asgn:
+                session.close()
+                return jsonify({'success': False, 'error': "Vous n'êtes pas responsable de cet EC"}), 403
+
         # Utiliser le barème fourni — NE PAS appeler l'IA ici (déjà fait lors de la génération)
         rubric = data.get('rubric_override') or None
 
@@ -4416,7 +4472,7 @@ def create_subject_from_suggestion():
             content=content,
             rubric=rubric,
             creator_id=int(current_user_id),
-            ec_id=data.get('ec_id') or None,
+            ec_id=ec_id,
             is_active=True
         )
 
@@ -4496,6 +4552,11 @@ def upload_subject_media_route():
         if not link_key and not subject_id:
             session.close(); return jsonify({'error': 'link_key ou subject_id requis'}), 400
 
+        if subject_id and user.role == UserRole.PROFESSOR:
+            subj = session.query(Subject).filter_by(id=subject_id).first()
+            if not subj or subj.creator_id != user_id:
+                session.close(); return jsonify({'error': 'Vous ne pouvez ajouter un média qu\'à vos propres sujets'}), 403
+
         if 'file' not in request.files:
             session.close(); return jsonify({'error': 'Aucun fichier fourni'}), 400
         f = request.files['file']
@@ -4527,6 +4588,8 @@ def upload_subject_media_route():
     except RequestEntityTooLarge:
         raise  # laisser remonter au handler 413 global (app.py) — pas de message générique
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         return jsonify({'error': str(e)}), 500
 
 
@@ -4546,6 +4609,8 @@ def get_subject_media(subject_id):
         session.close()
         return jsonify(result)
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         return jsonify({'error': str(e)}), 500
 
 
@@ -4789,6 +4854,19 @@ def grant_extra_time(attempt_id):
         if not attempt:
             session.close()
             return jsonify({'error': 'Tentative non trouvée'}), 404
+        if role == 'professor' and attempt.exam.created_by_id != user_id:
+            session.close()
+            return jsonify({'error': 'Vous ne pouvez accorder du temps que sur vos propres examens'}), 403
+        if role == 'surveillant':
+            assigned = session.query(ProctorAssignment).filter_by(
+                proctor_id=user_id, exam_id=attempt.exam_id
+            ).filter(
+                (ProctorAssignment.attempt_id == attempt_id) |
+                (ProctorAssignment.student_id == attempt.student_id)
+            ).first()
+            if not assigned:
+                session.close()
+                return jsonify({'error': 'Cet étudiant ne vous est pas affecté'}), 403
         # Refuser si l'étudiant a déjà terminé
         if attempt.status != AttemptStatus.IN_PROGRESS:
             session.close()
@@ -4845,6 +4923,19 @@ def add_proctor_note(attempt_id):
         if not attempt:
             session.close()
             return jsonify({'error': 'Tentative non trouvée'}), 404
+        if role == 'professor' and attempt.exam.created_by_id != user_id:
+            session.close()
+            return jsonify({'error': 'Vous ne pouvez noter que vos propres examens'}), 403
+        if role == 'surveillant':
+            assigned = session.query(ProctorAssignment).filter_by(
+                proctor_id=user_id, exam_id=attempt.exam_id
+            ).filter(
+                (ProctorAssignment.attempt_id == attempt_id) |
+                (ProctorAssignment.student_id == attempt.student_id)
+            ).first()
+            if not assigned:
+                session.close()
+                return jsonify({'error': 'Cet étudiant ne vous est pas affecté'}), 403
         data = request.get_json(silent=True) or {}
         note = (data.get('note') or '').strip()
         if not note:
@@ -4995,6 +5086,8 @@ def _send_exam_closure_summary(exam_id: int, professor_email: str, professor_nam
         _send_email(professor_email, subject_line, html_body)
         print(f"📧 Email clôture envoyé à {professor_email} pour exam#{exam_id}")
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         print(f"⚠️  Email clôture exam#{exam_id}: {e}")
 
 

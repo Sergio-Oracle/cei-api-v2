@@ -108,6 +108,8 @@ def login():
         set_refresh_cookie(resp, refresh_token)
         return resp, 200
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         return jsonify({'error': str(e)}), 500
 
 
@@ -202,6 +204,8 @@ def get_current_user():
         result = user.to_dict(); session.close()
         return jsonify(result)
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         return jsonify({'error': str(e)}), 500
 
 
@@ -232,6 +236,8 @@ def update_profile():
         result = user.to_dict(); session.close()
         return jsonify({'success': True, 'user': result})
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         return jsonify({'error': str(e)}), 500
 
 
@@ -273,6 +279,8 @@ def change_password():
         session.close()
         return jsonify({'success': True, 'message': 'Mot de passe modifié avec succès'})
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         return jsonify({'error': str(e)}), 500
 
 
@@ -312,6 +320,8 @@ def forgot_password():
         session.close()
         return jsonify({'success': True, 'masked_email': masked, 'email_sent': email_sent})
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         return jsonify({'error': str(e)}), 500
 
 
@@ -358,4 +368,6 @@ def reset_password():
         session.close()
         return jsonify({'success': True, 'message': 'Mot de passe mis à jour avec succès.'})
     except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
         return jsonify({'error': str(e)}), 500

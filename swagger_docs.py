@@ -8,18 +8,22 @@ automatiquement — le mettre à jour ici et dans les deux badges HTML plus bas
 """
 import os
 import base64
+import secrets as _secrets
 from functools import wraps
 from flask import Blueprint, jsonify, request, Response
 
 swagger_bp = Blueprint('swagger', __name__)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Basic Auth — credentials lus depuis .env (DOCS_USER / DOCS_PASS)
-# Valeurs par défaut conservées pour compatibilité Serveur A
+# Basic Auth — credentials lus depuis .env (DOCS_USER / DOCS_PASS). Si absents,
+# on génère un mot de passe aléatoire au démarrage plutôt que de retomber sur
+# un identifiant connu/faible codé en dur : /api/docs reste alors verrouillé
+# (fail closed) au lieu d'être protégé par un secret déjà présent en clair
+# dans l'historique git.
 # ─────────────────────────────────────────────────────────────────────────────
 
-_DOCS_USER = os.getenv('DOCS_USER', 'serge@rtn.sn')
-_DOCS_PASS = os.getenv('DOCS_PASS', 'passer')
+_DOCS_USER = os.getenv('DOCS_USER') or 'admin'
+_DOCS_PASS = os.getenv('DOCS_PASS') or _secrets.token_urlsafe(24)
 
 def _require_docs_auth(f):
     @wraps(f)

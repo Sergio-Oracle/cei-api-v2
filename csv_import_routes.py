@@ -92,6 +92,14 @@ def detect_encoding(file):
 # TEMPLATES CSV - GÉNÉRATION
 # ============================================================================
 
+# Emails d'exemple du template (voir generate_users_csv_template ci-dessous) —
+# un admin qui télécharge le template puis l'importe sans le modifier créait
+# silencieusement de faux comptes "Jean Dupont"/"Marie Martin" (déjà arrivé en
+# production). Ces lignes sont désormais rejetées explicitement au lieu
+# d'être traitées comme de vraies données.
+_TEMPLATE_PLACEHOLDER_EMAILS = {'jean.dupont@exemple.com', 'marie.martin@exemple.com'}
+
+
 def generate_users_csv_template():
     """Générer template CSV pour import utilisateurs"""
     template_data = {
@@ -341,6 +349,14 @@ def register_csv_routes(app):
 
             for idx, row in df.iterrows():
                 try:
+                    row_email = str(row['email']).strip().lower()
+                    if row_email in _TEMPLATE_PLACEHOLDER_EMAILS:
+                        errors.append(
+                            f"Ligne {idx+2}: '{row['email']}' est une donnée d'exemple du template — "
+                            "remplacez cette ligne par les vraies informations avant d'importer"
+                        )
+                        continue
+
                     # Valider rôle
                     role_str = str(row['role']).strip().upper()
                     if role_str not in ['STUDENT', 'PROFESSOR', 'ADMIN']:

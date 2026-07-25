@@ -26,6 +26,7 @@ from models import (
     GradeTranscript, ExamAttempt, ExamActivityLog, CameraLog,
     ProctorAssignment, ReclamationStatus, TokenBlocklist,
     OnlineExam, ExamProctor, QuestionBank,
+    ProctorGroup, ProctorGroupMember, SubjectMedia, IncidentDismissal,
 )
 from utils import send_account_created_email
 
@@ -351,6 +352,9 @@ def delete_user(target_id):
         n = session.query(CorrectionHistory).filter_by(corrector_id=target_id).count()
         if n:
             blocking.append(f"{n} correction(s) effectuée(s) (historique)")
+        n = session.query(ProctorGroup).filter_by(created_by_id=target_id).count()
+        if n:
+            blocking.append(f"{n} groupe(s) de surveillants créé(s)")
         if blocking:
             session.close()
             return jsonify({'error': 'Suppression impossible : ' + ', '.join(blocking) +
@@ -366,6 +370,9 @@ def delete_user(target_id):
             ProctorAssignment.proctor_id == target_id, ProctorAssignment.student_id == target_id
         )).delete(synchronize_session=False)
         session.query(ExamProctor).filter_by(proctor_id=target_id).delete(synchronize_session=False)
+        session.query(ProctorGroupMember).filter_by(proctor_id=target_id).delete(synchronize_session=False)
+        session.query(SubjectMedia).filter_by(uploaded_by_id=target_id).delete(synchronize_session=False)
+        session.query(IncidentDismissal).filter_by(user_id=target_id).delete(synchronize_session=False)
 
         # Copies de l'étudiant → dépendances en cascade
         paper_ids = [p.id for p in session.query(StudentPaper).filter_by(student_id=target_id).all()]

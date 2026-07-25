@@ -339,11 +339,15 @@ def delete_user(target_id):
         n = session.query(QuestionBank).filter_by(created_by_id=target_id).count()
         if n:
             blocking.append(f"{n} question(s) de banque créée(s)")
-        n = session.query(ExamProctor).filter(or_(
-            ExamProctor.proctor_id == target_id, ExamProctor.assigned_by_id == target_id
-        )).count()
+        # Être affecté comme surveillant (proctor_id) n'est PAS bloquant — un
+        # admin doit pouvoir supprimer un compte surveillant même s'il est
+        # encore affecté à un examen ; l'affectation est simplement retirée
+        # ci-dessous (cf. section cleanup). Seul le fait d'avoir SOI-MÊME
+        # affecté des surveillants (assigned_by_id, colonne NOT NULL, donc
+        # non annulable) reste bloquant.
+        n = session.query(ExamProctor).filter(ExamProctor.assigned_by_id == target_id).count()
         if n:
-            blocking.append(f"{n} affectation(s) de surveillance")
+            blocking.append(f"{n} affectation(s) de surveillance effectuée(s) (en tant qu'assignateur)")
         n = session.query(CorrectionHistory).filter_by(corrector_id=target_id).count()
         if n:
             blocking.append(f"{n} correction(s) effectuée(s) (historique)")
@@ -361,6 +365,7 @@ def delete_user(target_id):
         session.query(ProctorAssignment).filter(or_(
             ProctorAssignment.proctor_id == target_id, ProctorAssignment.student_id == target_id
         )).delete(synchronize_session=False)
+        session.query(ExamProctor).filter_by(proctor_id=target_id).delete(synchronize_session=False)
 
         # Copies de l'étudiant → dépendances en cascade
         paper_ids = [p.id for p in session.query(StudentPaper).filter_by(student_id=target_id).all()]

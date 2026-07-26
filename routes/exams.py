@@ -5528,6 +5528,12 @@ def download_attempt_report_pdf(attempt_id):
         def _cell(text):
             return Paragraph(_html.escape(str(text)), cell_style)
 
+        status_labels = {
+            'submitted': 'Soumis', 'auto_submitted': 'Auto-soumis',
+            'in_progress': 'En cours', 'banned': 'Exclu',
+        }
+        status_label = status_labels.get(attempt.status.value, attempt.status.value)
+
         info_data = [
             ['Étudiant', _cell(attempt.student.full_name if attempt.student else '—'),
              'Note',        f"{attempt.score}/20" if attempt.score is not None else '—'],
@@ -5535,7 +5541,7 @@ def download_attempt_report_pdf(attempt_id):
              'Risque',      f"{risk_val}%"],
             ['Matière',  _cell(attempt.exam.subject.title if attempt.exam and attempt.exam.subject else '—'),
              'Durée',       duration_str],
-            ['Statut',   attempt.status.value,
+            ['Statut',   status_label,
              'Extra-temps', f"{attempt.extra_minutes or 0} min"],
         ]
         info_tbl = Table(info_data, colWidths=[3*cm, 9*cm, 2.5*cm, 3.5*cm])

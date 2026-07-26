@@ -5519,12 +5519,21 @@ def download_attempt_report_pdf(attempt_id):
         risk_color  = (rl_colors.HexColor('#ef4444') if risk_val >= 70 else
                        rl_colors.HexColor('#f59e0b') if risk_val >= 40 else rl_colors.HexColor('#10b981'))
 
+        # Les valeurs texte (nom d'étudiant, titre d'examen/matière) peuvent être
+        # longues — une chaîne brute dans une cellule Table ne passe jamais à la
+        # ligne et déborde sur la colonne voisine (ex: "Matière" qui recouvrait
+        # "Durée"). On les enveloppe dans un Paragraph pour un wrap correct.
+        import html as _html
+        cell_style = ParagraphStyle('cell', parent=styles['Normal'], fontSize=9, leading=11)
+        def _cell(text):
+            return Paragraph(_html.escape(str(text)), cell_style)
+
         info_data = [
-            ['Étudiant', attempt.student.full_name if attempt.student else '—',
+            ['Étudiant', _cell(attempt.student.full_name if attempt.student else '—'),
              'Note',        f"{attempt.score}/20" if attempt.score is not None else '—'],
-            ['Examen',   attempt.exam.title if attempt.exam else '—',
+            ['Examen',   _cell(attempt.exam.title if attempt.exam else '—'),
              'Risque',      f"{risk_val}%"],
-            ['Matière',  attempt.exam.subject.title if attempt.exam and attempt.exam.subject else '—',
+            ['Matière',  _cell(attempt.exam.subject.title if attempt.exam and attempt.exam.subject else '—'),
              'Durée',       duration_str],
             ['Statut',   attempt.status.value,
              'Extra-temps', f"{attempt.extra_minutes or 0} min"],

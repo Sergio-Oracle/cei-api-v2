@@ -1341,9 +1341,12 @@ def _build_readable_student_answers(subject_content: str, answers_data, exclude_
     questions = _parse_subject_questions_for_grading(subject_content or '')
     lines = []
 
-    # Regrouper les clés pq_N* par numéro de question
-    nums = sorted({k.split('_')[1] for k in answers_data if k.startswith('pq_') and len(k.split('_')) >= 2},
-                  key=lambda x: int(x) if x.isdigit() else 0)
+    # Itère sur TOUTES les questions du sujet (pas seulement celles ayant une
+    # clé pq_N dans les réponses brutes) — sinon une question laissée vierge
+    # disparaissait silencieusement du rapport au lieu d'apparaître comme
+    # "sans réponse", donnant l'impression d'un rapport tronqué (ex: la liste
+    # commençait à la Question 4 sans qu'on sache ce qui était arrivé à 1-3).
+    nums = sorted(questions.keys(), key=lambda x: int(x) if x.isdigit() else 0)
 
     for num in nums:
         if exclude_nums and num in exclude_nums:
@@ -1352,6 +1355,7 @@ def _build_readable_student_answers(subject_content: str, answers_data, exclude_
         marker = q.get('marker')
         qtext = q.get('text', '')
         direct_key = f'pq_{num}'
+        no_answer = f"Question {num} ({qtext}) — Pas de réponse fournie."
 
         if marker == 'APPARIEMENT' and q.get('pairs'):
             parts = []
@@ -1359,31 +1363,32 @@ def _build_readable_student_answers(subject_content: str, answers_data, exclude_
                 ans = answers_data.get(f'{direct_key}_{idx}', '').strip()
                 if ans:
                     parts.append(f"  • {pair['left']} → {ans}")
-            if parts:
-                lines.append(f"Question {num} ({qtext}) — Appariements de l'étudiant :\n" + '\n'.join(parts))
+            lines.append(f"Question {num} ({qtext}) — Appariements de l'étudiant :\n" + '\n'.join(parts) if parts else no_answer)
         elif marker == 'SUBOPEN' and q.get('choices'):
             parts = []
             for letter, ctext in q['choices'].items():
                 ans = answers_data.get(f'{direct_key}_{letter}', '').strip()
                 if ans:
                     parts.append(f"  • {ctext} : {ans}")
-            if parts:
-                lines.append(f"Question {num} ({qtext}) :\n" + '\n'.join(parts))
+            lines.append(f"Question {num} ({qtext}) :\n" + '\n'.join(parts) if parts else no_answer)
         elif marker == 'QCM_MULTI':
             raw = answers_data.get(direct_key, '').strip()
             if raw:
                 letters = [l.strip() for l in raw.split(',') if l.strip()]
                 resolved = [f"{l}) {q.get('choices', {}).get(l, '')}" for l in letters]
                 lines.append(f"Question {num} ({qtext}) — Réponses cochées : {', '.join(resolved)}")
+            else:
+                lines.append(no_answer)
         elif marker == 'QCM':
             raw = answers_data.get(direct_key, '').strip()
             if raw:
                 ctext = q.get('choices', {}).get(raw, '')
                 lines.append(f"Question {num} ({qtext}) — Réponse : {raw}) {ctext}" if ctext else f"Question {num} ({qtext}) — Réponse : {raw}")
+            else:
+                lines.append(no_answer)
         else:
             raw = answers_data.get(direct_key, '').strip()
-            if raw:
-                lines.append(f"Question {num} ({qtext}) — Réponse : {raw}")
+            lines.append(f"Question {num} ({qtext}) — Réponse : {raw}" if raw else no_answer)
 
     if lines:
         return '\n\n'.join(lines)

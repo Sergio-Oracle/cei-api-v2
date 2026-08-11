@@ -2441,7 +2441,11 @@ OPENAPI_SPEC = {
                 "`suggestion.question_types` peut inclure \"Questions dépendantes (sous-questions liées)\" (marqueur [SUBOPEN]) — exercices en "
                 "plusieurs parties a/b/c où chaque sous-question s'appuie explicitement sur le résultat de la précédente ; le barème généré "
                 "applique systématiquement la règle de l'erreur reportée. `suggestion.grading_criteria`, s'il est fourni (éventuellement "
-                "adapté par l'enseignant avant génération), guide la répartition des points du barème détaillé."
+                "adapté par l'enseignant avant génération), guide la répartition des points du barème détaillé. "
+                "`suggestion.difficulty` reste la tendance dominante de l'examen, mais les questions individuelles couvrent TOUJOURS un mélange "
+                "des trois niveaux (Facile/Moyen/Difficile) — chaque titre de question porte un second marqueur juste après son marqueur de "
+                "type, ex. `[QCM] [Difficile]`, visible dans `content` pour l'enseignant mais retiré automatiquement de l'affichage étudiant "
+                "côté frontend (comme les marqueurs [QCM]/[VF]/[OUVERT])."
             ),
             "requestBody": {"required": True, "content": {"application/json": {"schema": {
                 "type": "object", "required": ["suggestion"],
@@ -2481,7 +2485,7 @@ OPENAPI_SPEC = {
         "/api/subjects/generate-more-questions": {"post": {
             "tags": ["Intelligence Artificielle"],
             "summary": "Générer des questions supplémentaires à ajouter à un sujet (prof/admin)",
-            "description": "Ajoute N nouvelles questions d'un type donné à un sujet déjà généré (sans le remplacer), en évitant les thèmes déjà couverts. Redistribue automatiquement les points sur 20 au total (anciennes + nouvelles) et étend le barème d'une entrée par nouvelle question.",
+            "description": "Ajoute N nouvelles questions d'un type donné à un sujet déjà généré (sans le remplacer), en évitant les thèmes déjà couverts. Redistribue automatiquement les points sur 20 au total (anciennes + nouvelles) et étend le barème d'une entrée par nouvelle question. `difficulty` reste le niveau dominant demandé ; si `count` > 1, les nouvelles questions varient légèrement de niveau (marqueur [Facile]/[Moyen]/[Difficile] après le marqueur de type) plutôt que d'être toutes identiques.",
             "requestBody": {"required": True, "content": {"application/json": {"schema": {
                 "type": "object", "required": ["existing_content"],
                 "properties": {

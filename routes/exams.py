@@ -4505,6 +4505,38 @@ C) [Sous-question c) — DOIT s'appuyer sur b) (et/ou a)), poursuivant la même 
             + ". Si l'une d'elles manque dans ta première rédaction, ajoute-la avant de terminer ta réponse."
         )
 
+    # Répartition des niveaux de difficulté par QUESTION (Retour — un examen ne
+    # doit pas être uniformément d'un seul niveau) : le niveau choisi par
+    # l'enseignant ({difficulty}) reste la tendance dominante de l'EXAMEN (donc
+    # inchangé pour son étiquette/durée/filtrage), mais chaque question
+    # individuelle est taguée avec son propre niveau réel via un second
+    # marqueur juste après le marqueur de type — ex. "[QCM] [Facile]" —
+    # exactement comme [QCM]/[VF]/[OUVERT] sont déjà utilisés. Ce marqueur
+    # reste visible pour l'enseignant dans l'aperçu (avant publication) mais
+    # est retiré automatiquement de l'affichage étudiant côté frontend.
+    _DIFFICULTY_SPREAD = {
+        'Facile':    "environ 60% de questions [Facile], 30% [Moyen], 10% [Difficile]",
+        'Moyen':     "environ 25% de questions [Facile], 50% [Moyen], 25% [Difficile]",
+        'Difficile': "environ 10% de questions [Facile], 30% [Moyen], 60% [Difficile]",
+    }
+    difficulty_spread_line = _DIFFICULTY_SPREAD.get(difficulty, _DIFFICULTY_SPREAD['Moyen'])
+    format_rules += (
+        f"\n- RÉPARTITION DE LA DIFFICULTÉ (OBLIGATOIRE) : le niveau « {difficulty} » choisi par l'enseignant "
+        f"reste la tendance dominante de l'examen, mais couvre TOUJOURS les trois niveaux — {difficulty_spread_line}. "
+        "N'IMPOSE JAMAIS le même niveau à toutes les questions.\n"
+        "- OBLIGATOIRE : chaque titre de question se termine par un second marqueur juste après son marqueur de "
+        "type, reflétant le niveau RÉEL de CETTE question précise — [Facile], [Moyen] ou [Difficile] "
+        "(ex: \"Question 3 — [Titre] ............. (2 pts) [QCM] [Difficile]\")."
+    )
+    checklist_line += (
+        "\n\nVÉRIFIE ÉGALEMENT que CHAQUE question porte bien son marqueur de difficulté ([Facile]/[Moyen]/"
+        "[Difficile]) juste après son marqueur de type, et que les trois niveaux sont représentés."
+    ) if checklist_line else (
+        "\n\nAVANT DE RÉPONDRE, VÉRIFIE que CHAQUE question porte bien son marqueur de difficulté "
+        "([Facile]/[Moyen]/[Difficile]) juste après son marqueur de type, et que les trois niveaux sont "
+        "représentés dans le sujet."
+    )
+
     prompt = f"""Tu es un expert en création d'examens universitaires francophones, compétent dans TOUS les domaines académiques (sciences, droit, médecine, lettres, arts, ingénierie, langues, économie, histoire, philosophie, agronomie, architecture, etc.).
 
 Crée un sujet d'examen COMPLET et DÉTAILLÉ avec ces informations :
@@ -4993,6 +5025,24 @@ def generate_more_questions():
     existing_numbers = [int(n) for n in re.findall(r'Question\s+(\d{1,3})\s*[—\-–:.]', existing_content)]
     next_num = (max(existing_numbers) + 1) if existing_numbers else 1
 
+    # Même logique de répartition des niveaux de difficulté que
+    # generate_full_exam_from_suggestion — le niveau choisi par l'enseignant
+    # reste dominant mais les nouvelles questions ne doivent pas être toutes
+    # du même niveau dès qu'il y en a plusieurs.
+    _DIFFICULTY_SPREAD = {
+        'Facile':    "majoritairement [Facile], avec un peu de [Moyen]",
+        'Moyen':     "un mélange de [Facile], [Moyen] et [Difficile]",
+        'Difficile': "majoritairement [Difficile], avec un peu de [Moyen]",
+    }
+    difficulty_spread_line = _DIFFICULTY_SPREAD.get(difficulty, _DIFFICULTY_SPREAD['Moyen'])
+    difficulty_rule = (
+        f"- Niveau de difficulté dominant demandé : {difficulty} — si plusieurs questions sont générées, varie "
+        f"légèrement leur niveau individuel ({difficulty_spread_line}) plutôt que de les rendre toutes identiques ; "
+        "chaque titre de question se termine par [{marker}] PUIS un second marqueur [Facile], [Moyen] ou "
+        "[Difficile] reflétant le niveau réel de cette question précise (ex: \"Question {next_num} — [Titre] "
+        "............. (1 pt) [{marker}] [Moyen]\")."
+    ).format(marker=marker, next_num=next_num)
+
     prompt = f"""Tu es un expert en création d'examens universitaires francophones.
 
 Voici un sujet d'examen déjà généré (titre : {title}, niveau {student_level}, difficulté {difficulty}) :
@@ -5007,6 +5057,7 @@ RÈGLES ABSOLUES :
 - Numérote-les en continuant à partir de {next_num} (Question {next_num}, Question {next_num + 1}, ...)
 - Ces nouvelles questions doivent couvrir des thèmes ou aspects DIFFÉRENTS de ceux déjà présents dans le sujet existant ci-dessus — aucune reformulation ni répétition d'une question déjà posée
 - Chaque titre de question se termine par [{marker}]
+{difficulty_rule}
 - Respecte STRICTEMENT le même format que les questions [{marker}] déjà visibles dans le sujet existant (nombre de choix, structure des paires, etc.)
 - Réponds UNIQUEMENT avec les {count} nouvelles questions, rien d'autre (pas de titre de section, pas de commentaire, pas de barème)"""
 

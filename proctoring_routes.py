@@ -2843,6 +2843,39 @@ def _mark_read(attempt_ids: set) -> None:
         _alerts_log.warning('Redis mark read failed: %s', exc)
 
 
+@proctoring_bp.route('/api/agent/claim_lock', methods=['POST'])
+def agent_claim_lock():
+    """Réclame atomiquement un verrou partagé (Redis SETNX) entre TOUTES les
+    instances de l'agent autonome (ex. plusieurs serveurs surveillant la même
+    plateforme en parallèle pour la résilience) — évite les doublons d'alerte/
+    email quand plus d'un agent tourne en même temps. `key` est un identifiant
+    arbitraire choisi par l'agent (ex. "alert:{attempt_id}", "summary:{exam_id}"),
+    `ttl_seconds` la durée du verrou. Retourne claimed=true seulement pour le
+    PREMIER agent à réclamer cette clé pendant la fenêtre ; claimed=false pour
+    tout autre agent qui tente la même clé avant expiration — il doit alors
+    considérer que l'action a déjà été prise ailleurs et ne rien refaire.
+    En cas de panne Redis, retourne claimed=true (laisser passer plutôt que
+    bloquer silencieusement toute alerte)."""
+    if not _agent_auth():
+        return jsonify({'error': 'Non autorisé'}), 403
+    data = request.get_json(silent=True) or {}
+    key = data.get('key')
+    if not key:
+        return jsonify({'error': 'key requis'}), 400
+    try:
+        ttl_seconds = max(1, min(86400, int(data.get('ttl_seconds', 600))))
+    except (TypeError, ValueError):
+        ttl_seconds = 600
+    try:
+        r = _redis_alerts()
+        claimed = r.set(f'cei:agent:lock:{key}', '1', nx=True, ex=ttl_seconds)
+        r.close()
+        return jsonify({'claimed': bool(claimed)})
+    except Exception as exc:
+        _alerts_log.warning('claim_lock failed (%s): %s', key, exc)
+        return jsonify({'claimed': True})
+
+
 @proctoring_bp.route('/api/agent/alerts', methods=['POST'])
 def agent_push_alert():
     """L'agent autonome pousse une nouvelle alerte (stockée dans Redis)."""

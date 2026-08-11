@@ -22,9 +22,6 @@ from agent_proctor.config import (
 from agent_proctor.email_alerts import send_alert_email, send_summary_email
 
 # ── État interne ──────────────────────────────────────────────────────────────
-# cooldown par étudiant : attempt_id → timestamp dernière alerte
-_alert_cooldown: dict[int, float] = {}
-
 # stats par examen pour le rapport périodique : exam_id → dict
 _exam_stats: dict[int, dict] = {}
 
@@ -111,6 +108,29 @@ def _push_alert(alert: dict):
         print(f"⚠️  Push alerte dashboard : {e}")
 
 
+def _claim_lock(key: str, ttl_seconds: int) -> bool:
+    """Réclame un verrou PARTAGÉ côté serveur (Redis, via l'API) — permet à
+    plusieurs instances de cet agent (ex. une par serveur, pour la
+    résilience : si l'une tombe, l'autre continue à surveiller la même
+    plateforme) de tourner en parallèle SANS dupliquer les alertes/emails
+    envoyés aux surveillants et enseignants. Remplace l'ancien cooldown
+    purement local (_alert_cooldown), qui ne protégeait qu'une seule
+    instance à la fois. Retourne True si CETTE instance a gagné la course
+    (doit agir), False si une autre instance a déjà réclamé cette clé
+    récemment (ne rien refaire). En cas de panne réseau/API, retourne True
+    par défaut — un doublon occasionnel est préférable à un silence total."""
+    try:
+        r = requests.post(
+            f"{CEI_BASE_URL}/api/agent/claim_lock",
+            headers=_cei_headers(), json={"key": key, "ttl_seconds": ttl_seconds}, timeout=5
+        )
+        if r.ok:
+            return bool(r.json().get("claimed"))
+    except Exception as e:
+        print(f"⚠️  claim_lock({key}) : {e}")
+    return True
+
+
 # ── Analyse IA ────────────────────────────────────────────────────────────────
 
 def _ai_analyze(student_name: str, risk_score: int, no_face: int,
@@ -187,7 +207,10 @@ def _process_exam(exam: dict):
         _exam_stats[exam_id]["banned"] = sum(1 for a in attempts if a.get("status") == "banned")
         _exam_stats[exam_id]["active"] = any(a.get("status") == "in_progress" for a in attempts)
 
-    # Filtrer les étudiants à risque non encore en cooldown
+    # Filtrer les étudiants à risque non encore en cooldown — le cooldown
+    # lui-même est réclamé côté serveur (Redis, voir _claim_lock) AVANT
+    # l'analyse IA coûteuse, pour qu'une instance qui perd la course auprès
+    # d'une autre instance de l'agent ne gaspille pas un appel Ollama.
     to_alert = []
     for a in attempts:
         risk    = a.get("risk_score", 0)
@@ -197,9 +220,8 @@ def _process_exam(exam: dict):
         if risk < RISK_ALERT or status in ("banned", "graded", "submitted", "auto_submitted"):
             continue
 
-        last_alert = _alert_cooldown.get(att_id, 0)
-        if now - last_alert < ALERT_COOLDOWN:
-            continue  # encore en cooldown
+        if not _claim_lock(f"alert:{att_id}", ALERT_COOLDOWN):
+            continue  # une autre instance de l'agent a déjà alerté récemment
 
         level = "URGENT" if risk >= RISK_URGENT else "ALERTE"
         no_face    = a.get("no_face_detected_count", 0)
@@ -228,9 +250,7 @@ def _process_exam(exam: dict):
         }
         to_alert.append(alert_obj)
 
-        # Marquer le cooldown
         with _lock:
-            _alert_cooldown[att_id] = now
             _exam_stats[exam_id]["alerts"] += 1
 
     if not to_alert:
@@ -305,7 +325,11 @@ def _send_periodic_summaries():
     for exam_id, stats in snapshot.items():
         teacher = stats.get("teacher")
         if teacher and stats.get("alerts", 0) > 0:
-            send_summary_email([teacher], stats["title"], stats)
+            # Une seule instance de l'agent doit envoyer ce rapport, même si
+            # plusieurs tournent en parallèle — sinon l'enseignant reçoit un
+            # email par instance active.
+            if _claim_lock(f"summary:{exam_id}", SUMMARY_INTERVAL):
+                send_summary_email([teacher], stats["title"], stats)
             with _lock:
                 if exam_id in _exam_stats:
                     _exam_stats[exam_id]["alerts"] = 0

@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from flask import Blueprint, request, jsonify, send_file, make_response, Response, current_app
-from sqlalchemy import desc, func as sa_func
+from sqlalchemy import desc, func as sa_func, update as sql_update
 from sqlalchemy.orm import joinedload
 
 from auth_paseto import paseto_required, get_current_user_id, get_current_user_role
@@ -2335,22 +2335,35 @@ def agent_due_corrections():
 def agent_run_scheduled_correction(exam_id):
     """Déclenche la correction IA de toutes les tentatives soumises et pas
     encore corrigées d'un examen, pour le compte de sa correction planifiée.
-    Marque correction_triggered_at AVANT de corriger (et non après) pour
-    qu'un redémarrage/chevauchement de l'agent ne puisse jamais déclencher
-    deux fois la même correction planifiée. Une tentative en échec (ex.
-    réponses vides) n'interrompt pas les suivantes. Requiert X-Agent-Secret."""
+    Réclame correction_triggered_at via un UPDATE atomique conditionné sur
+    "IS NULL" (compare-and-set au niveau de la base, pas un simple
+    check-then-write en Python) — indispensable maintenant que PLUSIEURS
+    instances de l'agent peuvent tourner en parallèle sur des serveurs
+    différents (résilience) et pourraient sinon appeler cet endpoint à
+    quelques millisecondes d'écart pour le même examen. Une tentative en
+    échec (ex. réponses vides) n'interrompt pas les suivantes. Requiert
+    X-Agent-Secret."""
     if not _agent_auth():
         return jsonify({'error': 'Non autorisé'}), 403
     session = get_session()
     try:
-        exam = session.query(OnlineExam).options(joinedload(OnlineExam.subject)).filter_by(id=exam_id).first()
-        if not exam:
-            return jsonify({'error': 'Examen introuvable'}), 404
-        if exam.correction_triggered_at is not None:
+        now = utcnow()
+        claim = session.execute(
+            sql_update(OnlineExam)
+            .where(OnlineExam.id == exam_id, OnlineExam.correction_triggered_at.is_(None))
+            .values(correction_triggered_at=now)
+        )
+        session.commit()
+
+        if claim.rowcount == 0:
+            exists = session.query(OnlineExam.id).filter_by(id=exam_id).first()
+            if not exists:
+                return jsonify({'error': 'Examen introuvable'}), 404
+            # Déjà réclamé par une autre instance de l'agent (ou déjà traité) —
+            # ne rien refaire.
             return jsonify({'success': True, 'already_triggered': True, 'corrected': 0, 'failed': 0}), 200
 
-        exam.correction_triggered_at = utcnow()
-        session.commit()
+        exam = session.query(OnlineExam).options(joinedload(OnlineExam.subject)).filter_by(id=exam_id).first()
 
         attempts = session.query(ExamAttempt).options(
             joinedload(ExamAttempt.exam).joinedload(OnlineExam.subject),

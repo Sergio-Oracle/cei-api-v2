@@ -2338,6 +2338,35 @@ OPENAPI_SPEC = {
                 "404": {"$ref": "#/components/responses/NotFound"}
             }
         }},
+        "/api/agent/claim_lock": {"post": {
+            "tags": ["Agent autonome"],
+            "summary": "Réclame un verrou partagé (coordination entre plusieurs instances de l'agent)",
+            "description": (
+                "Plusieurs instances de l'agent autonome peuvent tourner en parallèle sur des serveurs "
+                "différents (résilience — si l'une tombe, l'autre continue de surveiller la plateforme). "
+                "Cet endpoint réclame atomiquement (Redis SETNX) une clé arbitraire pendant `ttl_seconds` : "
+                "`claimed: true` pour la PREMIÈRE instance à la réclamer, `claimed: false` pour toute autre "
+                "instance qui tente la même clé avant expiration. Utilisé en interne par l'agent pour éviter "
+                "les alertes/emails en double (clé `alert:{attempt_id}`, ttl = cooldown d'alerte) et les "
+                "rapports enseignant en double (clé `summary:{exam_id}`, ttl = intervalle de rapport). En cas "
+                "de panne Redis, retourne `claimed: true` par défaut (un doublon occasionnel est préférable à "
+                "un silence total). Requiert `X-Agent-Secret`. **Inaccessible via JWT.**"
+            ),
+            "requestBody": {"required": True, "content": {"application/json": {"schema": {
+                "type": "object", "required": ["key"],
+                "properties": {
+                    "key":         {"type": "string", "example": "alert:1234", "description": "Identifiant arbitraire du verrou"},
+                    "ttl_seconds": {"type": "integer", "default": 600, "minimum": 1, "maximum": 86400, "description": "Durée du verrou"}
+                }
+            }}}},
+            "responses": {
+                "200": {"description": "Résultat de la tentative de réclamation", "content": {"application/json": {"schema": {
+                    "type": "object", "properties": {"claimed": {"type": "boolean"}}
+                }}}},
+                "400": {"description": "key manquant"},
+                "403": {"description": "Header X-Agent-Secret absent ou incorrect — inaccessible via JWT"}
+            }
+        }},
 
         "/api/agent/alerts": {
             "post": {

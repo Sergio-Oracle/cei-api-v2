@@ -1,10 +1,14 @@
 """
 CEI — Documentation API Swagger / OpenAPI 3.0
 Accessible à /api/docs (Swagger UI) et /api/docs/openapi.json (spec brute)
-Scan exhaustif v4 — app.py, proctoring_routes.py, csv_import_routes.py, export_route.py
-184 endpoints documentés dans la spec OpenAPI 3.0 (ce nombre n'est PAS calculé
+Scan exhaustif — couvre tous les blueprints : app.py, proctoring_routes.py,
+csv_import_routes.py, export_route.py, routes/{auth,exams,professor,admin_users,
+formations,superviseur,subjects,question_bank,papers,reclamations,transcripts,
+statistics,notifications}.py
+210 endpoints documentés dans la spec OpenAPI 3.0 (ce nombre n'est PAS calculé
 automatiquement — le mettre à jour ici et dans les deux badges HTML plus bas
-à chaque route ajoutée/retirée dans OPENAPI_SPEC["paths"])
+à chaque route ajoutée/retirée dans OPENAPI_SPEC["paths"]. Vérifiable avec :
+sum(len([k for k in v if k in ('get','post','put','delete','patch')]) for v in OPENAPI_SPEC['paths'].values()))
 """
 import os
 import base64
@@ -66,7 +70,7 @@ _SCHEMAS = {
             "id":              {"type": "integer"},
             "email":           {"type": "string", "example": "user@ec2lt.sn"},
             "full_name":       {"type": "string", "example": "Moussa Diallo"},
-            "role":            {"type": "string", "enum": ["admin","professor","surveillant","student"]},
+            "role":            {"type": "string", "enum": ["admin","professor","surveillant","superviseur","student"]},
             "niveau":          {"type": "string", "description": "Étudiant seulement. Code court (ex: 'L3') — dérivé automatiquement de formation.niveau.code quand formation_id est renseigné ; sinon texte libre parmi L1/L2/L3/M1/M2.", "example": "L3"},
             "niveau_name":     {"type": "string", "description": "Nom complet du niveau dérivé de la formation (ex: 'Licence 3'), absent si aucune formation n'est rattachée."},
             "formation_id":    {"type": "integer", "description": "Étudiant seulement. Rattacher une formation inscrit automatiquement l'étudiant à toutes les UE de cette formation."},
@@ -110,17 +114,34 @@ _SCHEMAS = {
     },
     "OnlineExam": {
         "type": "object",
+        "description": "Champs réels renvoyés par OnlineExam.to_dict() (models.py) — pas de champ access_code/max_attempts : la reprise après déconnexion utilise un code persistant et self-service par tentative (voir /api/online_exams/{exam_id}/start).",
         "properties": {
-            "id":               {"type": "integer"},
-            "title":            {"type": "string"},
-            "subject_id":       {"type": "integer"},
-            "duration_minutes": {"type": "integer", "example": 90},
-            "access_code":      {"type": "string", "example": "EXAM2026"},
-            "status":           {"type": "string", "enum": ["draft","active","closed","archived"]},
-            "max_attempts":     {"type": "integer"},
-            "starts_at":        {"type": "string", "format": "date-time"},
-            "ends_at":          {"type": "string", "format": "date-time"},
-            "created_at":       {"type": "string", "format": "date-time"}
+            "id":                  {"type": "integer"},
+            "subject_id":          {"type": "integer"},
+            "subject_title":       {"type": "string"},
+            "title":               {"type": "string"},
+            "instructions":        {"type": "string"},
+            "duration_minutes":    {"type": "integer", "example": 90, "description": "Calculé automatiquement à partir de start_time/end_time"},
+            "start_time":          {"type": "string", "format": "date-time"},
+            "end_time":            {"type": "string", "format": "date-time"},
+            "status":              {"type": "string", "enum": ["draft","scheduled","active","closed"]},
+            "max_tab_switches":    {"type": "integer", "default": 2},
+            "enable_copy_paste":   {"type": "boolean", "default": False},
+            "enable_right_click":  {"type": "boolean", "default": False},
+            "enable_file_download": {"type": "boolean", "default": False, "description": "Autoriser le téléchargement des fichiers du sujet"},
+            "randomize_questions": {"type": "boolean", "default": False},
+            "questions_per_page":  {"type": "integer", "default": 5},
+            "time_per_question_seconds": {"type": "integer", "nullable": True, "description": "Minuteur par page pour les questions fermées (QCM/Vrai-Faux uniquement, jamais les questions ouvertes). NULL/absent = désactivé. À expiration, avance automatique à la page suivante."},
+            "max_no_face_count":   {"type": "integer", "default": 10},
+            "ban_on_devtools":     {"type": "boolean", "default": True},
+            "auto_ban_enabled":    {"type": "boolean", "default": False},
+            "auto_correct":        {"type": "boolean", "default": False},
+            "results_published":   {"type": "boolean", "default": False},
+            "enable_calculator":   {"type": "boolean", "default": False, "description": "Calculatrice scientifique intégrée à la page de composition"},
+            "creator_name":        {"type": "string"},
+            "created_at":          {"type": "string", "format": "date-time"},
+            "is_active":           {"type": "boolean"},
+            "attempts_count":      {"type": "integer"}
         }
     },
     "ExamAttempt": {
@@ -136,7 +157,8 @@ _SCHEMAS = {
             "tab_switches":   {"type": "integer"},
             "warnings_count": {"type": "integer"},
             "started_at":     {"type": "string", "format": "date-time"},
-            "submitted_at":   {"type": "string", "format": "date-time"}
+            "submitted_at":   {"type": "string", "format": "date-time"},
+            "last_seen_at":   {"type": "string", "format": "date-time", "nullable": True, "description": "Horodatage du dernier heartbeat reçu (voir /api/exam_attempts/{attempt_id}/heartbeat). Purement informatif — ne déclenche jamais de violation/risk_score, sert uniquement au badge 'hors ligne' côté surveillant au-delà du seuil (60s)."}
         }
     },
     "Pole": {
@@ -233,6 +255,7 @@ _SCHEMAS = {
             "created_by": {"type": "string", "description": "Nom de l'admin ayant créé le groupe"},
             "created_at": {"type": "string", "format": "date-time"},
             "ec_ids":     {"type": "array", "items": {"type": "integer"}},
+            "vigilance_level": {"type": "string", "enum": ["A", "B", "C"], "default": "A", "description": "Niveau de vigilance exigé des membres pour être comptés 'actifs et engagés' côté superviseur"},
             "members": {
                 "type": "array",
                 "items": {
@@ -243,6 +266,19 @@ _SCHEMAS = {
                         "proctor_name":           {"type": "string"},
                         "proctor_email":          {"type": "string"},
                         "proctor_last_login":     {"type": "string", "format": "date-time", "nullable": True}
+                    }
+                }
+            },
+            "supervisors": {
+                "type": "array",
+                "description": "Un ou plusieurs superviseurs peuvent être rattachés au même groupe.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "id":                {"type": "integer", "description": "id de la ligne de rattachement (à utiliser pour DELETE .../supervisors/{id})"},
+                        "supervisor_id":     {"type": "integer"},
+                        "supervisor_name":   {"type": "string"},
+                        "supervisor_email":  {"type": "string"}
                     }
                 }
             }
@@ -340,6 +376,7 @@ OPENAPI_SPEC = {
             "| Rôle | Accès |\n|---|---|\n"
             "| `admin` | Complet |\n"
             "| `professor` | Sujets, examens, corrections |\n"
+            "| `superviseur` | Supervision des groupes de surveillants (dashboard, demandes d'appel) |\n"
             "| `surveillant` | Dashboard surveillance |\n"
             "| `student` | Examens, notes, réclamations |\n\n"
             "## Chaîne IA\n"
@@ -370,7 +407,8 @@ OPENAPI_SPEC = {
         {"name": "Copies",                   "description": "Upload, correction IA et export des copies étudiants"},
         {"name": "Examens en ligne",         "description": "Création, gestion du cycle de vie et tentatives étudiants"},
         {"name": "Surveillant",              "description": "Routes dédiées aux surveillants : examens assignés, monitoring en direct, avertissements, bannissements, messages, enregistrements"},
-        {"name": "Proctoring",               "description": "Infrastructure de surveillance vidéo LiveKit — tokens, snapshots caméra, événements, signatures, enregistrements"},
+        {"name": "Superviseur",              "description": "Rôle positionné au-dessus des surveillants : suivi de leur engagement réel (niveaux de vigilance A/B/C) et réponse aux demandes de reprise après déconnexion quand aucun surveillant n'est assigné"},
+        {"name": "Proctoring",               "description": "Infrastructure de surveillance vidéo LiveKit — tokens, snapshots caméra, événements, enregistrements"},
         {"name": "Agent autonome",           "description": "API du service de surveillance IA autonome — statut, alertes, heartbeat"},
         {"name": "Intelligence Artificielle","description": "Génération de sujets et suggestions par IA"},
         {"name": "Réclamations",             "description": "Dépôt, traitement IA et décision sur les réclamations"},
@@ -425,17 +463,18 @@ OPENAPI_SPEC = {
         }},
         "/api/auth/register": {"post": {
             "tags": ["Authentification"], "summary": "Créer un compte",
+            "description": "Auto-inscription publique — crée toujours un compte **student**, quoi qu'il arrive. Il n'y a pas de champ `role` : cette route ne permet de créer que des étudiants. Pour créer un compte professeur, surveillant, superviseur ou admin, un administrateur doit utiliser `POST /api/admin/users`.",
             "security": [],
             "requestBody": {"required": True, "content": {"application/json": {"schema": {
-                "type": "object", "required": ["email","password","full_name","role"],
+                "type": "object", "required": ["email","password","full_name"],
                 "properties": {
-                    "email":     {"type": "string"},
-                    "password":  {"type": "string"},
-                    "full_name": {"type": "string"},
-                    "role":      {"type": "string", "enum": ["professor","surveillant","student"]}
+                    "email":         {"type": "string"},
+                    "password":      {"type": "string"},
+                    "full_name":     {"type": "string"},
+                    "formation_id":  {"type": "integer", "description": "Optionnel — rattache l'étudiant à sa Formation et l'inscrit automatiquement à toutes les UE de cette formation."}
                 }
             }}}},
-            "responses": {"201": {"description": "Compte créé"}, "409": {"description": "Email déjà utilisé"}}
+            "responses": {"201": {"description": "Compte créé (toujours role=student)"}, "400": {"description": "Email déjà utilisé"}}
         }},
         "/api/auth/me": {"get": {
             "tags": ["Authentification"], "summary": "Profil de l'utilisateur connecté",
@@ -532,7 +571,7 @@ OPENAPI_SPEC = {
             "get": {
                 "tags": ["Administration"], "summary": "Liste de tous les utilisateurs (admin)",
                 "parameters": [
-                    {"name": "role",   "in": "query", "schema": {"type": "string", "enum": ["admin","professor","surveillant","student"]}},
+                    {"name": "role",   "in": "query", "schema": {"type": "string", "enum": ["admin","professor","surveillant","superviseur","student"]}},
                     {"name": "page",   "in": "query", "schema": {"type": "integer", "default": 1}},
                     {"name": "search", "in": "query", "schema": {"type": "string"}}
                 ],
@@ -546,7 +585,7 @@ OPENAPI_SPEC = {
                     "properties": {
                         "email":        {"type": "string"},
                         "full_name":    {"type": "string"},
-                        "role":         {"type": "string", "enum": ["professor","surveillant","student","admin"]},
+                        "role":         {"type": "string", "enum": ["professor","surveillant","superviseur","student","admin"]},
                         "password":     {"type": "string"},
                         "niveau":       {"type": "string", "enum": ["L1","L2","L3","M1","M2"], "description": "Étudiant seulement. Fallback texte libre — ignoré/écrasé si formation_id est fourni (le niveau est alors dérivé de la formation)."},
                         "formation_id": {"type": "integer", "description": "Étudiant seulement. Rattache à une Formation et inscrit automatiquement à toutes ses UE."}
@@ -557,16 +596,16 @@ OPENAPI_SPEC = {
                 }}}}, "400": {"description": "Email déjà utilisé ou rôle invalide"}}
             }
         },
-        "/api/admin/users/{target_user_id}": {
+        "/api/admin/users/{target_id}": {
             "put": {
                 "tags": ["Administration"], "summary": "Modifier un utilisateur (admin)",
-                "parameters": [{"name": "target_user_id", "in": "path", "required": True, "schema": {"type": "integer"}, "description": "ID de l'utilisateur à modifier"}],
+                "parameters": [{"name": "target_id", "in": "path", "required": True, "schema": {"type": "integer"}, "description": "ID de l'utilisateur à modifier"}],
                 "requestBody": {"content": {"application/json": {"schema": {
                     "type": "object",
                     "properties": {
                         "full_name":    {"type": "string"},
                         "email":        {"type": "string"},
-                        "role":         {"type": "string", "enum": ["admin","professor","surveillant","student"]},
+                        "role":         {"type": "string", "enum": ["admin","professor","surveillant","superviseur","student"]},
                         "password":     {"type": "string"},
                         "is_active":    {"type": "boolean"},
                         "niveau":       {"type": "string", "enum": ["L1","L2","L3","M1","M2"]},
@@ -578,7 +617,7 @@ OPENAPI_SPEC = {
             "delete": {
                 "tags": ["Administration"], "summary": "Supprimer un utilisateur (admin)",
                 "description": "Impossible de supprimer son propre compte.",
-                "parameters": [{"name": "target_user_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+                "parameters": [{"name": "target_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
                 "responses": {"200": {"description": "Supprimé"}, "400": {"description": "Impossible de se supprimer soi-même"}, "404": {"$ref": "#/components/responses/NotFound"}}
             }
         },
@@ -817,10 +856,10 @@ OPENAPI_SPEC = {
                 "type": "object", "properties": {"success": {"type": "boolean"}, "formation": {"$ref": "#/components/schemas/Formation"}}
             }}}}}
         }},
-        "/api/admin/formations/{formation_id}": {
+        "/api/admin/formations/{fid}": {
             "put": {
                 "tags": ["Académique"], "summary": "Modifier une formation (admin)",
-                "parameters": [{"name": "formation_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+                "parameters": [{"name": "fid", "in": "path", "required": True, "schema": {"type": "integer"}}],
                 "requestBody": {"content": {"application/json": {"schema": {
                     "type": "object",
                     "properties": {
@@ -833,7 +872,7 @@ OPENAPI_SPEC = {
             },
             "delete": {
                 "tags": ["Académique"], "summary": "Supprimer une formation (admin)",
-                "parameters": [{"name": "formation_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+                "parameters": [{"name": "fid", "in": "path", "required": True, "schema": {"type": "integer"}}],
                 "responses": {"200": {"description": "Supprimée"}, "404": {"$ref": "#/components/responses/NotFound"}}
             }
         },
@@ -849,10 +888,10 @@ OPENAPI_SPEC = {
             }}}},
             "responses": {"201": {"description": "Semestre créé"}}
         }},
-        "/api/admin/semesters/{semester_id}": {
+        "/api/admin/semesters/{sid}": {
             "put": {
                 "tags": ["Académique"], "summary": "Modifier un semestre (admin)",
-                "parameters": [{"name": "semester_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+                "parameters": [{"name": "sid", "in": "path", "required": True, "schema": {"type": "integer"}}],
                 "requestBody": {"content": {"application/json": {"schema": {
                     "type": "object",
                     "properties": {"name": {"type": "string"}, "order": {"type": "integer"}}
@@ -861,7 +900,7 @@ OPENAPI_SPEC = {
             },
             "delete": {
                 "tags": ["Académique"], "summary": "Supprimer un semestre (admin)",
-                "parameters": [{"name": "semester_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+                "parameters": [{"name": "sid", "in": "path", "required": True, "schema": {"type": "integer"}}],
                 "responses": {"200": {"description": "Supprimé"}}
             }
         },
@@ -879,10 +918,10 @@ OPENAPI_SPEC = {
             }}}},
             "responses": {"201": {"description": "UE créée"}}
         }},
-        "/api/admin/ues/{ue_id}": {
+        "/api/admin/ues/{uid}": {
             "put": {
                 "tags": ["Académique"], "summary": "Modifier une UE (admin)",
-                "parameters": [{"name": "ue_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+                "parameters": [{"name": "uid", "in": "path", "required": True, "schema": {"type": "integer"}}],
                 "requestBody": {"content": {"application/json": {"schema": {
                     "type": "object",
                     "properties": {"name": {"type": "string"}, "code": {"type": "string"},
@@ -892,7 +931,7 @@ OPENAPI_SPEC = {
             },
             "delete": {
                 "tags": ["Académique"], "summary": "Supprimer une UE (admin)",
-                "parameters": [{"name": "ue_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+                "parameters": [{"name": "uid", "in": "path", "required": True, "schema": {"type": "integer"}}],
                 "responses": {"200": {"description": "UE supprimée"}}
             }
         },
@@ -914,10 +953,10 @@ OPENAPI_SPEC = {
             }}}},
             "responses": {"201": {"description": "EC créé"}}
         }},
-        "/api/admin/ecs/{ec_id}": {
+        "/api/admin/ecs/{eid}": {
             "put": {
                 "tags": ["Académique"], "summary": "Modifier un EC (admin)",
-                "parameters": [{"name": "ec_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+                "parameters": [{"name": "eid", "in": "path", "required": True, "schema": {"type": "integer"}}],
                 "requestBody": {"content": {"application/json": {"schema": {
                     "type": "object",
                     "properties": {
@@ -936,7 +975,7 @@ OPENAPI_SPEC = {
             },
             "delete": {
                 "tags": ["Académique"], "summary": "Supprimer un EC (admin)",
-                "parameters": [{"name": "ec_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+                "parameters": [{"name": "eid", "in": "path", "required": True, "schema": {"type": "integer"}}],
                 "responses": {"200": {"description": "EC supprimé"}}
             }
         },
@@ -951,18 +990,18 @@ OPENAPI_SPEC = {
             }}}},
             "responses": {"201": {"description": "Affectation créée"}, "409": {"description": "Déjà affecté"}}
         }},
-        "/api/admin/ecs/{ec_id}/assign": {"post": {
+        "/api/admin/ecs/{eid}/assign": {"post": {
             "tags": ["Académique"], "summary": "Affecter un professeur à un EC via l'ID EC (admin)",
-            "parameters": [{"name": "ec_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+            "parameters": [{"name": "eid", "in": "path", "required": True, "schema": {"type": "integer"}}],
             "requestBody": {"required": True, "content": {"application/json": {"schema": {
                 "type": "object", "required": ["professor_id"],
                 "properties": {"professor_id": {"type": "integer"}}
             }}}},
             "responses": {"201": {"description": "Affectation créée"}}
         }},
-        "/api/admin/ec_assignments/{assignment_id}": {"delete": {
+        "/api/admin/ec_assignments/{aid}": {"delete": {
             "tags": ["Académique"], "summary": "Retirer l'affectation d'un professeur (admin)",
-            "parameters": [{"name": "assignment_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+            "parameters": [{"name": "aid", "in": "path", "required": True, "schema": {"type": "integer"}}],
             "responses": {"200": {"description": "Affectation supprimée"}}
         }},
         "/api/admin/student_enrollments": {"post": {
@@ -989,9 +1028,9 @@ OPENAPI_SPEC = {
             }}}},
             "responses": {"200": {"description": "Inscriptions effectuées"}}
         }},
-        "/api/admin/student_enrollments/{enrollment_id}": {"delete": {
+        "/api/admin/student_enrollments/{eid}": {"delete": {
             "tags": ["Académique"], "summary": "Désinscrire un étudiant (admin)",
-            "parameters": [{"name": "enrollment_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+            "parameters": [{"name": "eid", "in": "path", "required": True, "schema": {"type": "integer"}}],
             "responses": {"200": {"description": "Désinscrit"}}
         }},
         "/api/admin/student_enrollments/bulk": {"post": {
@@ -1062,12 +1101,16 @@ OPENAPI_SPEC = {
         },
         "/api/admin/proctor_groups/{gid}": {
             "put": {
-                "tags": ["Groupes Surveillants"], "summary": "Renommer un groupe (admin)",
+                "tags": ["Groupes Surveillants"], "summary": "Renommer un groupe ou régler son niveau de vigilance",
+                "description": "Accessible à l'admin ET au professeur propriétaire du groupe (ProctorGroup.created_by_id). Le rattachement des superviseurs se fait via les routes dédiées POST/DELETE .../supervisors, pas ici.",
                 "parameters": [{"name": "gid", "in": "path", "required": True, "schema": {"type": "integer"}}],
                 "requestBody": {"content": {"application/json": {"schema": {
-                    "type": "object", "properties": {"name": {"type": "string"}}
+                    "type": "object", "properties": {
+                        "name": {"type": "string"},
+                        "vigilance_level": {"type": "string", "enum": ["A", "B", "C"], "description": "A=interaction réelle · B=A+consultation d'un étudiant récente · C=B+vérification caméra périodique du surveillant (booléen seulement, aucune image transmise/stockée)"}
+                    }
                 }}}},
-                "responses": {"200": {"description": "Groupe mis à jour"}}
+                "responses": {"200": {"description": "Groupe mis à jour", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ProctorGroup"}}}}, "403": {"description": "Non géré par ce professeur"}}
             },
             "delete": {
                 "tags": ["Groupes Surveillants"], "summary": "Supprimer un groupe (admin)",
@@ -1093,6 +1136,26 @@ OPENAPI_SPEC = {
             "parameters": [
                 {"name": "gid", "in": "path", "required": True, "schema": {"type": "integer"}},
                 {"name": "mid", "in": "path", "required": True, "schema": {"type": "integer"}, "description": "id de la ligne d'appartenance (pas l'id du surveillant)"}
+            ],
+            "responses": {"200": {"description": "Retiré"}}
+        }},
+        "/api/admin/proctor_groups/{gid}/supervisors": {"post": {
+            "tags": ["Groupes Surveillants"], "summary": "Rattacher un ou plusieurs superviseurs à un groupe",
+            "description": "Accessible à l'admin ET au professeur propriétaire du groupe (ProctorGroup.created_by_id) — même règle que le reste de la gestion du groupe. Un groupe peut avoir plusieurs superviseurs.",
+            "parameters": [{"name": "gid", "in": "path", "required": True, "schema": {"type": "integer"}}],
+            "requestBody": {"required": True, "content": {"application/json": {"schema": {
+                "type": "object", "required": ["supervisor_ids"],
+                "properties": {"supervisor_ids": {"type": "array", "items": {"type": "integer"}, "description": "ids d'utilisateurs de rôle superviseur"}}
+            }}}},
+            "responses": {"201": {"description": "Superviseurs ajoutés", "content": {"application/json": {"schema": {
+                "type": "object", "properties": {"added": {"type": "integer"}, "already": {"type": "integer"}, "group": {"$ref": "#/components/schemas/ProctorGroup"}}
+            }}}}}
+        }},
+        "/api/admin/proctor_groups/{gid}/supervisors/{sid}": {"delete": {
+            "tags": ["Groupes Surveillants"], "summary": "Retirer un superviseur d'un groupe",
+            "parameters": [
+                {"name": "gid", "in": "path", "required": True, "schema": {"type": "integer"}},
+                {"name": "sid", "in": "path", "required": True, "schema": {"type": "integer"}, "description": "id de la ligne de rattachement (pas l'id du superviseur)"}
             ],
             "responses": {"200": {"description": "Retiré"}}
         }},
@@ -1311,19 +1374,21 @@ OPENAPI_SPEC = {
         },
         "/api/subjects/upload": {"post": {
             "tags": ["Sujets"],
-            "summary": "Uploader un fichier pour créer un sujet",
-            "description": "Envoie un PDF/DOCX/TXT. L'IA génère automatiquement le barème. Support OCR pour les PDF CIDFont illisibles.",
+            "summary": "Uploader un ou plusieurs fichiers pour créer un sujet",
+            "description": "Envoie un ou plusieurs PDF/DOCX/TXT via le champ répété `files`. Chaque fichier est extrait séparément puis concaténé avec un séparateur `--- Fichier: <nom> ---` avant d'être soumis à l'IA (utile pour un cours réparti en plusieurs documents : poly + TD + annales). L'IA génère automatiquement le barème. Support OCR pour les PDF CIDFont illisibles.",
             "requestBody": {"required": True, "content": {"multipart/form-data": {"schema": {
-                "type": "object", "required": ["file"],
+                "type": "object", "required": ["files"],
                 "properties": {
-                    "file":  {"type": "string", "format": "binary"},
+                    "files": {"type": "array", "items": {"type": "string", "format": "binary"}, "description": "Un ou plusieurs fichiers PDF/DOCX/TXT (champ répété)"},
                     "ec_id": {"type": "integer"},
-                    "title": {"type": "string"}
+                    "title": {"type": "string"},
+                    "rubric_mode": {"type": "string", "enum": ["ai", "manual"], "description": "'ai' = barème généré par l'IA (défaut), 'manual' = squelette vierge à compléter"},
+                    "total_points": {"type": "integer", "description": "Barème total souhaité (1-200, défaut 20)"}
                 }
             }}}},
             "responses": {
                 "201": {"description": "Sujet créé avec barème IA"},
-                "400": {"description": "Fichier invalide ou contenu illisible"}
+                "400": {"description": "Aucun fichier fourni, type non autorisé, ou contenu illisible"}
             }
         }},
 
@@ -1497,7 +1562,9 @@ OPENAPI_SPEC = {
                         "randomize_questions": {"type": "boolean", "default": False, "description": "Mélanger les questions"},
                         "max_no_face_count":   {"type": "integer", "default": 10, "description": "Nb de détections sans visage avant seuil"},
                         "ban_on_devtools":     {"type": "boolean", "default": True, "description": "Détecter l'ouverture des outils développeur"},
-                        "auto_ban_enabled":    {"type": "boolean", "default": False, "description": "Si false (défaut), un seuil atteint (onglets/visage/devtools) envoie une alerte (agent autonome + notification) au lieu d'exclure automatiquement l'étudiant — décision manuelle requise."}
+                        "auto_ban_enabled":    {"type": "boolean", "default": False, "description": "Si false (défaut), un seuil atteint (onglets/visage/devtools) envoie une alerte (agent autonome + notification) au lieu d'exclure automatiquement l'étudiant — décision manuelle requise."},
+                        "enable_file_download": {"type": "boolean", "default": False, "description": "Autoriser le téléchargement des fichiers du sujet (images/vidéos/audios) — si false, bloque notamment le bouton de téléchargement natif des lecteurs vidéo/audio, indépendamment du clic droit"},
+                        "enable_calculator":   {"type": "boolean", "default": False, "description": "Active une calculatrice scientifique intégrée à la page de composition (aucun appel réseau) — évite le recours à une calculatrice physique ou un téléphone, non vérifiables par le surveillant"}
                     }
                 }}}},
                 "responses": {"201": {"description": "Examen créé", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/OnlineExam"}}}}}
@@ -1526,14 +1593,27 @@ OPENAPI_SPEC = {
             "responses": {"200": {"description": "Clôturé"}}
         }},
         "/api/online_exams/{exam_id}/start": {"post": {
-            "tags": ["Examens en ligne"], "summary": "Démarrer une tentative (étudiant)",
+            "tags": ["Examens en ligne"], "summary": "Démarrer ou reprendre une tentative (étudiant)",
+            "description": (
+                "Premier démarrage : `access_code` non requis. Reprise d'une tentative déjà IN_PROGRESS (l'étudiant a quitté "
+                "puis revient) : `access_code` devient obligatoire. Le code est désormais **persistant et self-service** — "
+                "généré automatiquement au premier besoin (valable jusqu'à `end_time` de l'examen, réutilisable à chaque "
+                "reprise, plus de code à usage unique ni d'appel obligatoire à un surveillant). Il est renvoyé directement "
+                "dans le champ `code` des réponses 403 `code_required`/`code_invalid` — le frontend l'affiche à l'étudiant "
+                "avec un bouton copier. Chaque reprise réussie déclenche une notification (bip + toast) au surveillant/"
+                "superviseur assigné via /api/exam_attempts/{attempt_id}/heartbeat et notify_user, qui peut ensuite "
+                "librement décider d'appeler l'étudiant (voir /api/exam_attempts/{attempt_id}/call_request), sans que "
+                "cela bloque la reprise."
+            ),
             "parameters": [{"name": "exam_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
-            "requestBody": {"required": True, "content": {"application/json": {"schema": {
-                "type": "object", "required": ["access_code"],
-                "properties": {"access_code": {"type": "string", "example": "EXAM2026"}}
+            "requestBody": {"content": {"application/json": {"schema": {
+                "type": "object",
+                "properties": {
+                    "access_code": {"type": "string", "example": "483920", "description": "Requis uniquement pour reprendre une tentative déjà en cours ; réutilisable (non consommé)"}
+                }
             }}}},
             "responses": {
-                "200": {"description": "Tentative démarrée", "content": {"application/json": {"schema": {
+                "200": {"description": "Tentative démarrée ou reprise", "content": {"application/json": {"schema": {
                     "type": "object",
                     "properties": {
                         "success":    {"type": "boolean"},
@@ -1541,8 +1621,9 @@ OPENAPI_SPEC = {
                         "continuing": {"type": "boolean", "description": "True si une tentative en cours a été reprise"}
                     }
                 }}}},
-                "400": {"description": "Code incorrect ou examen non actif"},
-                "409": {"description": "Tentative déjà soumise"}
+                "201": {"description": "Nouvelle tentative créée (premier démarrage)"},
+                "400": {"description": "Examen non disponible (hors plage horaire, non activé) ou déjà soumis"},
+                "403": {"description": "code_required=true (code manquant/invalide) — la réponse inclut `code` (le code self-service valide) pour que le frontend l'affiche directement"}
             }
         }},
         "/api/online_exams/{exam_id}/attempts": {"get": {
@@ -1620,8 +1701,8 @@ OPENAPI_SPEC = {
                 "properties": {
                     "event_type": {
                         "type": "string",
-                        "enum": ["tab_switch","devtools_attempt","no_face_detected","multiple_faces","copy_paste","fullscreen_exit","window_blur"],
-                        "description": "tab_switch +15pts | devtools_attempt +10pts | no_face_detected +10pts | multiple_faces +20pts"
+                        "enum": ["tab_switch","devtools_attempt","no_face_detected","multiple_faces","copy_paste","fullscreen_exit","window_blur","tab_closed"],
+                        "description": "tab_switch/fullscreen_exit/window_blur/tab_closed comptent tous comme changement de contexte (tab_switches+1) | devtools_attempt +10pts | no_face_detected +10pts | multiple_faces +20pts. tab_closed est envoyé via fetch keepalive (survit à la fermeture brutale de l'onglet/navigateur, contrairement à un fetch normal qui serait annulé)."
                     },
                     "event_data": {"type": "string", "description": "Données supplémentaires (JSON stringifié, optionnel)"}
                 }
@@ -1637,6 +1718,26 @@ OPENAPI_SPEC = {
                     "ban_reason":     {"type": "string"}
                 }
             }}}}}
+        }},
+        "/api/exam_attempts/{attempt_id}/heartbeat": {"post": {
+            "tags": ["Examens en ligne"],
+            "summary": "Signaler la présence de l'étudiant pendant l'examen (heartbeat)",
+            "description": (
+                "Appelé automatiquement par le frontend toutes les 20 secondes pendant que l'étudiant compose "
+                "(voir enterExam() dans exam/[id]/page.tsx). Met à jour `ExamAttempt.last_seen_at`, utilisé par le "
+                "dashboard surveillant pour afficher un badge « hors ligne depuis Xs » quand ce signal s'arrête "
+                "(seuil 60s, voir /api/online_exams/{exam_id}/active_proctoring). "
+                "Purement informatif : l'absence de heartbeat ne déclenche jamais de violation ni de pénalité sur "
+                "le risk_score — une coupure réseau reste explicitement exclue du comptage de fraude."
+            ),
+            "parameters": [{"name": "attempt_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+            "responses": {
+                "200": {"description": "Heartbeat enregistré", "content": {"application/json": {"schema": {
+                    "type": "object", "properties": {"success": {"type": "boolean"}}
+                }}}},
+                "403": {"description": "La tentative n'appartient pas à l'utilisateur connecté"},
+                "404": {"$ref": "#/components/responses/NotFound"}
+            }
         }},
         "/api/exam_attempts/{attempt_id}/correct": {"post": {
             "tags": ["Examens en ligne"],
@@ -1701,8 +1802,8 @@ OPENAPI_SPEC = {
                 "properties": {
                     "event_type": {
                         "type": "string",
-                        "enum": ["no_face_detected","multiple_faces","tab_switch","camera_disabled","fullscreen_exit"],
-                        "description": "no_face_detected +10pts | multiple_faces +20pts | tab_switch +15pts"
+                        "enum": ["no_face_detected","no_face_low_light","multiple_faces","tab_switch","camera_disabled","fullscreen_exit","tab_closed"],
+                        "description": "no_face_detected +10pts | no_face_low_light +0pts (luminosité insuffisante/excessive détectée côté client — détection faciale jugée non fiable, signal informatif seulement, ne pénalise jamais l'étudiant) | multiple_faces +20pts | tab_switch +15pts | tab_closed +10pts (fermeture d'onglet/navigateur pendant l'examen — envoyé via fetch keepalive pour survivre à la fermeture brutale de la page)"
                     }
                 }
             }}}},
@@ -1842,9 +1943,40 @@ OPENAPI_SPEC = {
         }},
         "/api/exam_attempts/{attempt_id}/private_token": {"get": {
             "tags": ["Surveillant"],
-            "summary": "Token LiveKit pour appel privé surveillant ↔ étudiant",
+            "summary": "Token LiveKit pour appel privé (étudiant ↔ surveillant/professeur/superviseur/admin)",
+            "description": "Room LiveKit `private-{attempt_id}`, partagée par les deux sens d'appel : surveillant→étudiant pendant l'examen, ET étudiant→surveillant/superviseur/professeur depuis le tableau de bord (bouton optionnel « Besoin d'aide ? » — le code de reprise lui-même n'exige plus cet appel, voir /online_exams/{exam_id}/start). Rôles autorisés : student (uniquement le sien), professor, admin, surveillant, superviseur.",
             "parameters": [{"name": "attempt_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
             "responses": {"200": {"description": "Token appel privé"}}
+        }},
+        "/api/exam_attempts/{attempt_id}/call_request": {"post": {
+            "tags": ["Surveillant"],
+            "summary": "Étudiant demande un appel d'assistance (optionnel, hors page d'examen)",
+            "description": "Notifie, par ordre de priorité, le(s) surveillant(s) assigné(s) à cet étudiant, sinon le(s) superviseur(s) du groupe couvrant l'EC de l'examen, sinon le professeur créateur de l'examen — jamais plusieurs niveaux à la fois. Bouton « Besoin d'aide ? » optionnel côté étudiant : depuis le retour du code de reprise self-service (voir /online_exams/{exam_id}/start), cet appel n'est plus une étape obligatoire pour reprendre l'examen.",
+            "parameters": [{"name": "attempt_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+            "responses": {"200": {"description": "Notification envoyée", "content": {"application/json": {"schema": {
+                "type": "object", "properties": {"success": {"type": "boolean"}, "notified": {"type": "integer", "description": "Nombre de destinataires notifiés"}}
+            }}}}, "400": {"description": "Tentative non IN_PROGRESS"}}
+        }},
+        "/api/exam_attempts/{attempt_id}/access_code": {"post": {
+            "tags": ["Surveillant"],
+            "summary": "[Legacy/optionnel] Régénère manuellement le code de reprise d'une tentative",
+            "description": (
+                "Depuis le passage au code self-service (voir /online_exams/{exam_id}/start), ce code est normalement "
+                "émis automatiquement au premier besoin et reste valable jusqu'à la fin de l'examen — l'étudiant n'a "
+                "plus besoin qu'un surveillant/superviseur/professeur passe par cet endpoint. Il reste disponible pour "
+                "un usage manuel ponctuel (ex. régénérer un code perdu/compromis) : un seul rôle habilité à la fois par "
+                "tentative, par ordre de priorité : surveillant assigné → superviseur du groupe couvrant l'EC (si aucun "
+                "surveillant assigné) → professeur créateur (en dernier repli) → admin toujours. Invalide tout code "
+                "existant pour cette tentative. Code à 6 chiffres, valable 10 minutes (plus court que le code "
+                "self-service normal, par précaution puisqu'il est communiqué manuellement)."
+            ),
+            "parameters": [{"name": "attempt_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+            "responses": {"200": {"description": "Code généré", "content": {"application/json": {"schema": {
+                "type": "object", "properties": {
+                    "success": {"type": "boolean"}, "code": {"type": "string", "example": "483920"},
+                    "expires_at": {"type": "string", "format": "date-time"}, "generated_by_name": {"type": "string"}
+                }
+            }}}}, "403": {"description": "Rôle non habilité pour cette tentative (voir ordre de priorité ci-dessus)"}}
         }},
         "/api/online_exams/{exam_id}/proctor_token": {"get": {
             "tags": ["Surveillant"], "summary": "Token LiveKit surveillant — accès à tous les flux vidéo",
@@ -1920,11 +2052,29 @@ OPENAPI_SPEC = {
         }},
         "/api/online_exams/{exam_id}/proctor_heartbeat": {"post": {
             "tags": ["Surveillant"],
-            "summary": "Signaler la présence en direct d'un surveillant (heartbeat)",
-            "description": "Appelé périodiquement (ex. toutes les 30s) par la page de monitoring tant qu'elle reste ouverte. Sert aussi de déclencheur : si un AUTRE surveillant de cet examen n'a plus émis de heartbeat depuis 90s, ses étudiants sont automatiquement redistribués aux surveillants encore en ligne (Notes point 11).",
+            "summary": "Signaler la présence en direct d'un surveillant (heartbeat + signaux de vigilance)",
+            "description": (
+                "Appelé périodiquement (ex. toutes les 30s) par la page de monitoring tant qu'elle reste ouverte. Sert aussi de "
+                "déclencheur : si un AUTRE surveillant de cet examen n'a plus émis de heartbeat depuis 90s, ses étudiants sont "
+                "automatiquement redistribués aux surveillants encore en ligne (Notes point 11) — ce comportement se base "
+                "UNIQUEMENT sur l'appel lui-même, jamais sur les signaux `interacting`/`viewed_student`/`face_present` ci-dessous, "
+                "qui n'alimentent que l'affichage du superviseur (voir /api/superviseur/dashboard) et ne doivent jamais faire "
+                "perdre ses étudiants à un surveillant réellement présent."
+            ),
             "parameters": [{"name": "exam_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+            "requestBody": {"content": {"application/json": {"schema": {
+                "type": "object",
+                "properties": {
+                    "interacting":     {"type": "boolean", "description": "Interaction souris/clavier récente + onglet visible au premier plan (Tier A)"},
+                    "viewed_student":  {"type": "boolean", "description": "A consulté un élément lié à un étudiant précis récemment (Tier B)"},
+                    "face_present":    {"type": "boolean", "description": "Vérification caméra du surveillant positive (Tier C uniquement — jamais d'image transmise)"}
+                }
+            }}}},
             "responses": {"200": {"description": "Heartbeat enregistré", "content": {"application/json": {"schema": {
-                "type": "object", "properties": {"success": {"type": "boolean"}}
+                "type": "object", "properties": {
+                    "success": {"type": "boolean"},
+                    "vigilance_level": {"type": "string", "enum": ["A", "B", "C"], "description": "Niveau exigé par le groupe couvrant cet examen — indique au client quels signaux envoyer"}
+                }
             }}}}}
         }},
         "/api/surveillant/exams": {"get": {
@@ -1932,6 +2082,34 @@ OPENAPI_SPEC = {
             "responses": {"200": {"description": "Examens du surveillant", "content": {"application/json": {"schema": {
                 "type": "array", "items": {"$ref": "#/components/schemas/OnlineExam"}
             }}}}}
+        }},
+        "/api/superviseur/dashboard": {"get": {
+            "tags": ["Superviseur"], "summary": "Tableau de bord — groupes supervisés et statut de chaque surveillant",
+            "description": "Pour chaque groupe où l'utilisateur connecté figure parmi les superviseurs rattachés, liste ses membres avec un statut à 3 états calculé à partir du heartbeat ET des signaux de vigilance (voir /api/online_exams/{exam_id}/proctor_heartbeat) : engaged (actif et engagé selon le niveau A/B/C du groupe), idle (onglet ouvert mais signal(x) requis manquant(s)), disconnected (heartbeat expiré).",
+            "responses": {"200": {"description": "Groupes + statuts", "content": {"application/json": {"schema": {
+                "type": "object", "properties": {
+                    "groups": {"type": "array", "items": {"type": "object", "properties": {
+                        "id": {"type": "integer"}, "name": {"type": "string"}, "vigilance_level": {"type": "string", "enum": ["A", "B", "C"]},
+                        "members": {"type": "array", "items": {"type": "object", "properties": {
+                            "id": {"type": "integer"}, "full_name": {"type": "string"}, "email": {"type": "string"},
+                            "status": {"type": "string", "enum": ["engaged", "idle", "disconnected"]},
+                            "is_active_now": {"type": "boolean", "description": "Rétrocompatibilité — true pour engaged ET idle"},
+                            "monitoring_exam_id": {"type": "integer", "nullable": True}
+                        }}}
+                    }}},
+                    "total_groups": {"type": "integer"}, "total_surveillants": {"type": "integer"}, "active_surveillants": {"type": "integer", "description": "Compte uniquement les 'engaged', pas les 'idle'"}
+                }
+            }}}}, "403": {"description": "Réservé aux superviseurs"}}
+        }},
+        "/api/superviseur/call_requests": {"get": {
+            "tags": ["Superviseur"], "summary": "Demandes d'appel étudiant en attente (reprise après déconnexion)",
+            "description": "Ne retourne que les demandes pour lesquelles AUCUN surveillant n'est assigné à l'étudiant (sinon c'est au surveillant assigné de répondre — voir la règle d'autorité unique dans /api/exam_attempts/{attempt_id}/access_code), et uniquement pour les groupes dont l'EC couvert correspond à un groupe supervisé par l'utilisateur connecté.",
+            "responses": {"200": {"description": "Demandes en attente", "content": {"application/json": {"schema": {
+                "type": "object", "properties": {"requests": {"type": "array", "items": {"type": "object", "properties": {
+                    "attempt_id": {"type": "integer"}, "exam_id": {"type": "integer"}, "exam_title": {"type": "string"},
+                    "student_name": {"type": "string"}, "timestamp": {"type": "string", "format": "date-time"}
+                }}}}
+            }}}}, "403": {"description": "Réservé aux superviseurs"}}
         }},
         "/api/exam_attempts/{attempt_id}/recording": {"post": {
             "tags": ["Proctoring"],
@@ -2019,7 +2197,8 @@ OPENAPI_SPEC = {
                                     "timestamp":     {"type": "string", "format": "date-time"},
                                     "event_type":    {"type": "string"},
                                     "image_data":    {"type": "string", "description": "Base64 (peut être null)"},
-                                    "face_detected": {"type": "boolean"}
+                                    "face_detected": {"type": "boolean"},
+                                    "frame_analysis": {"type": "string", "nullable": True, "description": "JSON string {brightness, width, height} — luminosité 0-255 échantillonnée sur la frame ; <40 ou >235 indique un éclairage rendant la détection faciale peu fiable"}
                                 }
                             }}
                         }
@@ -2206,18 +2385,25 @@ OPENAPI_SPEC = {
 
         "/api/ai/generate-exam-suggestions": {"post": {
             "tags": ["Intelligence Artificielle"],
-            "summary": "Générer des suggestions d'examens depuis un cours",
+            "summary": "Générer des suggestions d'examens depuis un ou plusieurs cours",
             "description": (
-                "Upload d'un cours (PDF/DOCX/TXT). L'IA détecte la discipline, analyse le contenu "
-                "et génère 3 suggestions adaptées. Le domaine détecté est transmis pour la génération complète."
+                "Upload d'un ou plusieurs cours (PDF/DOCX/TXT) via le champ répété `course_files`. Chaque fichier est "
+                "extrait séparément puis concaténé avec un séparateur `--- Fichier: <nom> ---` avant analyse — utile "
+                "pour un support réparti en plusieurs documents (poly + TD + annales). Taille cumulée max 50 Mo. "
+                "L'IA détecte la discipline, analyse le contenu et génère 3 suggestions adaptées. Le domaine détecté "
+                "est transmis pour la génération complète. "
+                "`difficulty` et `duration` sont des contraintes de l'enseignant, jamais laissées à la discrétion de "
+                "l'IA — les 3 suggestions renvoyées ont TOUJOURS exactement ces valeurs (écrasées côté serveur même "
+                "si le modèle en propose d'autres)."
             ),
             "requestBody": {"required": True, "content": {"multipart/form-data": {"schema": {
-                "type": "object", "required": ["course_file"],
+                "type": "object", "required": ["course_files"],
                 "properties": {
-                    "course_file":   {"type": "string", "format": "binary"},
+                    "course_files":  {"type": "array", "items": {"type": "string", "format": "binary"}, "description": "Un ou plusieurs fichiers de cours PDF/DOCX/TXT (champ répété), 50 Mo cumulés max"},
                     "difficulty":    {"type": "string", "enum": ["Facile","Moyen","Difficile"], "default": "Moyen"},
                     "student_level": {"type": "string", "example": "Licence 3"},
-                    "exam_type":     {"type": "string", "example": "QCM"}
+                    "exam_type":     {"type": "string", "example": "QCM"},
+                    "duration":      {"type": "integer", "default": 90, "minimum": 15, "maximum": 480, "description": "Durée d'examen souhaitée (minutes), fixée par l'enseignant — pas générée par l'IA"}
                 }
             }}}},
             "responses": {"200": {"description": "Suggestions générées", "content": {"application/json": {"schema": {
@@ -2250,10 +2436,16 @@ OPENAPI_SPEC = {
         "/api/subjects/generate-full-exam": {"post": {
             "tags": ["Intelligence Artificielle"],
             "summary": "Générer un sujet complet depuis une suggestion",
-            "description": "Prend un objet suggestion (issu de generate-exam-suggestions) et génère un sujet complet avec questions numérotées et barème.",
+            "description": (
+                "Prend un objet suggestion (issu de generate-exam-suggestions) et génère un sujet complet avec questions numérotées et barème. "
+                "`suggestion.question_types` peut inclure \"Questions dépendantes (sous-questions liées)\" (marqueur [SUBOPEN]) — exercices en "
+                "plusieurs parties a/b/c où chaque sous-question s'appuie explicitement sur le résultat de la précédente ; le barème généré "
+                "applique systématiquement la règle de l'erreur reportée. `suggestion.grading_criteria`, s'il est fourni (éventuellement "
+                "adapté par l'enseignant avant génération), guide la répartition des points du barème détaillé."
+            ),
             "requestBody": {"required": True, "content": {"application/json": {"schema": {
                 "type": "object", "required": ["suggestion"],
-                "properties": {"suggestion": {"type": "object", "description": "Objet suggestion retourné par generate-exam-suggestions"}}
+                "properties": {"suggestion": {"type": "object", "description": "Objet suggestion retourné par generate-exam-suggestions, avec grading_criteria optionnellement adapté par l'enseignant"}}
             }}}},
             "responses": {"200": {"description": "Sujet généré", "content": {"application/json": {"schema": {
                 "type": "object",
@@ -2268,16 +2460,23 @@ OPENAPI_SPEC = {
         "/api/subjects/create-from-suggestion": {"post": {
             "tags": ["Intelligence Artificielle"],
             "summary": "Sauvegarder un sujet généré par IA en base",
+            "description": "`ec_id` est obligatoire (Retour DFIP #9) : un sujet sans EC rattaché empêcherait l'affectation automatique des groupes de surveillants à tout examen qui l'utiliserait, sans jamais le signaler. Un professeur ne peut lier le sujet qu'à un EC dont il est responsable (403 sinon).",
             "requestBody": {"required": True, "content": {"application/json": {"schema": {
-                "type": "object", "required": ["title","content"],
+                "type": "object", "required": ["title","content","ec_id"],
                 "properties": {
-                    "title":   {"type": "string"},
-                    "content": {"type": "string"},
-                    "rubric":  {"type": "string"},
-                    "ec_id":   {"type": "integer"}
+                    "title":           {"type": "string"},
+                    "content":         {"type": "string"},
+                    "rubric_override": {"type": "string"},
+                    "ec_id":           {"type": "integer", "description": "Obligatoire — EC auquel rattacher le sujet"},
+                    "metadata":        {"type": "object"},
+                    "media_link_key":  {"type": "string", "description": "Associe les médias uploadés pendant la composition (avant que le sujet n'existe) via leur link_key"}
                 }
             }}}},
-            "responses": {"201": {"description": "Sujet sauvegardé", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Subject"}}}}}
+            "responses": {
+                "200": {"description": "Sujet sauvegardé", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Subject"}}}},
+                "400": {"description": "title/content manquants, ou ec_id manquant"},
+                "403": {"description": "Rôle non autorisé, ou professeur non responsable de l'EC indiqué"}
+            }
         }},
         "/api/subjects/generate-more-questions": {"post": {
             "tags": ["Intelligence Artificielle"],
@@ -2364,11 +2563,11 @@ OPENAPI_SPEC = {
                 }
             }
         },
-        "/api/reclamations/{reclamation_id}": {"put": {
+        "/api/reclamations/{rid}": {"put": {
             "tags": ["Réclamations"],
             "summary": "Répondre manuellement à une réclamation (prof/admin)",
             "description": "Le professeur peut accepter (avec ou sans modification de note) ou rejeter la réclamation.",
-            "parameters": [{"name": "reclamation_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+            "parameters": [{"name": "rid", "in": "path", "required": True, "schema": {"type": "integer"}}],
             "requestBody": {"required": True, "content": {"application/json": {"schema": {
                 "type": "object", "required": ["status"],
                 "properties": {
@@ -2379,11 +2578,11 @@ OPENAPI_SPEC = {
             }}}},
             "responses": {"200": {"description": "Réclamation traitée"}}
         }},
-        "/api/reclamations/{reclamation_id}/process_ia": {"post": {
+        "/api/reclamations/{rid}/process_ia": {"post": {
             "tags": ["Réclamations"],
             "summary": "Traiter une réclamation par IA",
             "description": "L'IA re-corrige la copie en tenant compte de la contestation et propose une note révisée. Le prof peut ensuite accepter ou rejeter.",
-            "parameters": [{"name": "reclamation_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+            "parameters": [{"name": "rid", "in": "path", "required": True, "schema": {"type": "integer"}}],
             "responses": {"200": {"description": "Proposition IA", "content": {"application/json": {"schema": {
                 "type": "object",
                 "properties": {
@@ -2393,18 +2592,18 @@ OPENAPI_SPEC = {
                 }
             }}}}}
         }},
-        "/api/reclamations/{reclamation_id}/apply_proposal": {"post": {
+        "/api/reclamations/{rid}/apply_proposal": {"post": {
             "tags": ["Réclamations"],
             "summary": "Accepter et appliquer la proposition IA (prof/admin)",
             "description": "Applique la note proposée par l'IA à la copie et clôt la réclamation avec statut 'resolved'.",
-            "parameters": [{"name": "reclamation_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+            "parameters": [{"name": "rid", "in": "path", "required": True, "schema": {"type": "integer"}}],
             "responses": {"200": {"description": "Proposition IA appliquée"}, "400": {"description": "Aucune proposition disponible"}}
         }},
-        "/api/reclamations/{reclamation_id}/reject_proposal": {"post": {
+        "/api/reclamations/{rid}/reject_proposal": {"post": {
             "tags": ["Réclamations"],
             "summary": "Rejeter la proposition IA (prof/admin)",
             "description": "Rejette la proposition IA sans modifier la note. La réclamation est clôturée avec statut 'rejected'.",
-            "parameters": [{"name": "reclamation_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+            "parameters": [{"name": "rid", "in": "path", "required": True, "schema": {"type": "integer"}}],
             "requestBody": {"content": {"application/json": {"schema": {
                 "type": "object",
                 "properties": {"response": {"type": "string", "default": "Proposition IA rejetée par le professeur"}}
@@ -2445,9 +2644,9 @@ OPENAPI_SPEC = {
                 "type": "array", "items": {"$ref": "#/components/schemas/GradeTranscript"}
             }}}}}
         }},
-        "/api/transcripts/{transcript_id}/pdf": {"get": {
+        "/api/transcripts/{tid}/pdf": {"get": {
             "tags": ["Relevés de notes"], "summary": "Télécharger un relevé en PDF",
-            "parameters": [{"name": "transcript_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+            "parameters": [{"name": "tid", "in": "path", "required": True, "schema": {"type": "integer"}}],
             "responses": {
                 "200": {"description": "PDF", "content": {"application/pdf": {"schema": {"type": "string", "format": "binary"}}}},
                 "404": {"$ref": "#/components/responses/NotFound"}
@@ -2460,12 +2659,14 @@ OPENAPI_SPEC = {
 
         "/api/professor/dashboard": {"get": {
             "tags": ["Tableaux de bord"], "summary": "Tableau de bord professeur",
-            "description": "Retourne le nombre de sujets créés et de copies corrigées par le professeur connecté.",
+            "description": "Retourne le nombre de sujets créés, de copies corrigées, et de surveillants affectés (via les Groupes Surveillants rattachés aux ECs du professeur) par le professeur connecté.",
             "responses": {"200": {"description": "Stats prof", "content": {"application/json": {"schema": {
                 "type": "object",
                 "properties": {
                     "my_subjects":        {"type": "integer"},
-                    "papers_corrected":   {"type": "integer"}
+                    "papers_corrected":   {"type": "integer"},
+                    "total_surveillants": {"type": "integer", "description": "Surveillants distincts affectés via les Groupes Surveillants rattachés aux ECs du professeur"},
+                    "active_surveillants": {"type": "integer", "description": "Parmi eux, ceux actuellement en train de surveiller un examen ('engaged')"}
                 }
             }}}}}
         }},
@@ -2507,17 +2708,21 @@ OPENAPI_SPEC = {
         }},
         "/api/student/online_results": {"get": {
             "tags": ["Tableaux de bord"], "summary": "Résultats des examens en ligne de l'étudiant connecté",
+            "description": "Point 19/Retour #29 — `score`/`feedback`/`corrected_at` restent `null` tant que l'enseignant n'a pas publié les résultats de l'examen (`PUT /api/online_exams/{exam_id}/publish-results`) ; `pending_publication` vaut alors `true`.",
             "responses": {"200": {"description": "Résultats", "content": {"application/json": {"schema": {
                 "type": "array", "items": {
                     "type": "object",
                     "properties": {
                         "attempt_id":   {"type": "integer"},
                         "exam_title":   {"type": "string"},
-                        "score":        {"type": "number"},
-                        "corrected_at": {"type": "string", "format": "date-time"},
+                        "score":        {"type": "number", "nullable": True, "description": "null tant que non publié"},
+                        "feedback":     {"type": "string", "nullable": True, "description": "null tant que non publié"},
+                        "corrected_at": {"type": "string", "format": "date-time", "nullable": True},
                         "auto_correct": {"type": "boolean"},
                         "has_reclamation": {"type": "boolean"},
-                        "reclamation_status": {"type": "string"}
+                        "reclamation_status": {"type": "string"},
+                        "results_published": {"type": "boolean"},
+                        "pending_publication": {"type": "boolean", "description": "true si corrigé mais pas encore publié"}
                     }
                 }
             }}}}}
@@ -2718,7 +2923,9 @@ OPENAPI_SPEC = {
                     "title":            {"type": "string"},
                     "start_time":       {"type": "string", "format": "date-time"},
                     "end_time":         {"type": "string", "format": "date-time", "description": "Prioritaire sur duration_minutes si fourni."},
-                    "duration_minutes": {"type": "integer", "description": "Ignoré si end_time est fourni — recalculé automatiquement."}
+                    "duration_minutes": {"type": "integer", "description": "Ignoré si end_time est fourni — recalculé automatiquement."},
+                    "enable_file_download": {"type": "boolean", "description": "Autoriser le téléchargement des fichiers du sujet"},
+                    "enable_calculator":   {"type": "boolean", "description": "Calculatrice scientifique intégrée à la page de composition"}
                 }
             }}}},
             "responses": {"200": {"description": "Examen mis à jour", "content": {"application/json": {"schema": {
@@ -2820,6 +3027,17 @@ OPENAPI_SPEC = {
                 "404": {"$ref": "#/components/responses/NotFound"}
             }
         }},
+        "/api/online_exams/{exam_id}/security_report/pdf": {"get": {
+            "tags": ["Examens en ligne"],
+            "summary": "Rapport de sécurité PDF agrégé d'un examen — variante (prof/admin)",
+            "description": "Implémentation historique distincte de /api/online_exams/{exam_id}/security-report/pdf (tiret) : même objet (rapport PDF agrégé des incidents de surveillance d'un examen), logique de génération dupliquée indépendamment plutôt que factorisée. Toujours utilisée en production par components/shared/SecurityReportPanel.tsx (pages détail examen et sécurité, prof/admin) — ce n'est pas du code mort malgré le doublon.",
+            "parameters": [{"name": "exam_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+            "responses": {
+                "200": {"description": "PDF rapport de sécurité", "content": {"application/pdf": {"schema": {"type": "string", "format": "binary"}}}},
+                "403": {"$ref": "#/components/responses/Forbidden"},
+                "404": {"$ref": "#/components/responses/NotFound"}
+            }
+        }},
         "/api/online_exams/{exam_id}/plagiarism-check": {"get": {
             "tags": ["Examens en ligne"], "summary": "Vérification de plagiat entre les copies",
             "description": "Analyse les similarités textuelles entre toutes les réponses soumises. Retourne les paires suspectes.",
@@ -2853,18 +3071,24 @@ OPENAPI_SPEC = {
 
         "/api/exam_attempts/{attempt_id}/result": {"get": {
             "tags": ["Examens en ligne"], "summary": "Résultat d'une tentative (étudiant après soumission)",
+            "description": "Point 19/Retour #29 — `score`/`feedback`/`corrected_at` restent `null` tant que l'enseignant n'a pas publié les résultats de l'examen (`PUT /api/online_exams/{exam_id}/publish-results`) ; `pending_publication` vaut alors `true`.",
             "parameters": [{"name": "attempt_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
             "responses": {"200": {"description": "Score et feedback", "content": {"application/json": {"schema": {
                 "type": "object",
                 "properties": {
-                    "score":        {"type": "number"},
-                    "feedback":     {"type": "string"},
-                    "submitted_at": {"type": "string", "format": "date-time"}
+                    "score":        {"type": "number", "nullable": True, "description": "null tant que non publié"},
+                    "feedback":     {"type": "string", "nullable": True, "description": "null tant que non publié"},
+                    "corrected_at": {"type": "string", "format": "date-time", "nullable": True},
+                    "submitted_at": {"type": "string", "format": "date-time"},
+                    "status":       {"type": "string"},
+                    "results_published": {"type": "boolean"},
+                    "pending_publication": {"type": "boolean", "description": "true si corrigé mais pas encore publié"}
                 }
             }}}}}
         }},
         "/api/exam_attempts/{attempt_id}/manual-grade": {"put": {
-            "tags": ["Examens en ligne"], "summary": "Note manuelle d'une tentative (prof/admin)",
+            "tags": ["Examens en ligne"], "summary": "Note manuelle GLOBALE d'une tentative (prof/admin) — écrase la correction IA",
+            "description": "Remplace intégralement la note et le feedback, que la copie ait été corrigée par l'IA ou non. Vide `question_scores` (voir /question-grades) : une note globale rend le détail par question obsolète, il est donc effacé plutôt que laissé silencieusement incohérent.",
             "parameters": [{"name": "attempt_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
             "requestBody": {"required": True, "content": {"application/json": {"schema": {
                 "type": "object", "required": ["score"],
@@ -2874,6 +3098,33 @@ OPENAPI_SPEC = {
                 }
             }}}},
             "responses": {"200": {"description": "Note enregistrée"}}
+        }},
+        "/api/exam_attempts/{attempt_id}/question-grades": {"put": {
+            "tags": ["Examens en ligne"], "summary": "Correction manuelle QUESTION PAR QUESTION (prof/admin)",
+            "description": (
+                "Ajuste le score/feedback d'une ou plusieurs questions individuelles de la correction IA (déterministe "
+                "QCM/VF/appariement ou générée pour les questions ouvertes) — la note globale est recalculée automatiquement "
+                "comme la somme des scores par question, ramenée sur 20. Nécessite qu'un détail par question existe déjà "
+                "(`ExamAttempt.question_scores` non vide, alimenté automatiquement à la correction IA — voir /correct) ; sinon "
+                "utilisez /manual-grade pour une note globale. CEI aide à corriger plus vite grâce à l'IA, mais l'enseignant "
+                "garde toujours la main, y compris au niveau de chaque question."
+            ),
+            "parameters": [{"name": "attempt_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+            "requestBody": {"required": True, "content": {"application/json": {"schema": {
+                "type": "object", "required": ["scores"],
+                "properties": {"scores": {"type": "array", "items": {"type": "object", "properties": {
+                    "num": {"type": "string", "example": "5"}, "score": {"type": "number"}, "feedback": {"type": "string"}
+                }}}}
+            }}}},
+            "responses": {
+                "200": {"description": "Note recalculée", "content": {"application/json": {"schema": {
+                    "type": "object", "properties": {
+                        "success": {"type": "boolean"}, "score": {"type": "number", "description": "Nouvelle note globale /20"},
+                        "question_scores": {"type": "array", "items": {"type": "object"}}, "feedback": {"type": "string"}
+                    }
+                }}}},
+                "400": {"description": "Aucun détail par question disponible pour cette copie"}
+            }
         }},
         "/api/exam_attempts/{attempt_id}/unban": {"post": {
             "tags": ["Examens en ligne"], "summary": "Lever l'exclusion d'un étudiant (prof/admin)",
@@ -2916,9 +3167,17 @@ OPENAPI_SPEC = {
         }},
         "/api/exam_attempts/{attempt_id}/review": {"get": {
             "tags": ["Examens en ligne"], "summary": "Révision détaillée d'une tentative (prof/admin)",
-            "description": "Retourne la copie complète avec les questions, réponses, score par question et incidents.",
+            "description": "Retourne la copie complète (réponses, feedback, incidents, notes de surveillance) ainsi que `corrector_name` (null si corrigé par l'IA, sinon nom de l'enseignant) et `question_scores` (détail par question — null si la copie n'a pas encore ce niveau de détail, voir /question-grades pour l'éditer).",
             "parameters": [{"name": "attempt_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
-            "responses": {"200": {"description": "Révision complète"}}
+            "responses": {"200": {"description": "Révision complète", "content": {"application/json": {"schema": {
+                "type": "object", "properties": {
+                    "corrector_name": {"type": "string", "nullable": True, "description": "null = correction IA, sinon nom de l'enseignant ayant corrigé/révisé"},
+                    "question_scores": {"type": "array", "nullable": True, "items": {"type": "object", "properties": {
+                        "num": {"type": "string"}, "type": {"type": "string", "enum": ["qcm", "qcm_multi", "vf", "appariement", "open"]},
+                        "max": {"type": "number"}, "score": {"type": "number"}, "correct": {"type": "boolean"}, "given": {"type": "string"}, "feedback": {"type": "string"}
+                    }}}
+                }
+            }}}}}
         }},
         "/api/exam_attempts/{attempt_id}/report/pdf": {"get": {
             "tags": ["Examens en ligne"], "summary": "Rapport PDF individuel d'une tentative",
@@ -2938,15 +3197,6 @@ OPENAPI_SPEC = {
             "parameters": [{"name": "attempt_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
             "responses": {"200": {"description": "Photo base64"}}
         }},
-        "/api/exam_attempts/{attempt_id}/signature/{sig_type}": {"get": {
-            "tags": ["Proctoring"], "summary": "Signature électronique de l'étudiant",
-            "parameters": [
-                {"name": "attempt_id", "in": "path", "required": True, "schema": {"type": "integer"}},
-                {"name": "sig_type", "in": "path", "required": True, "schema": {"type": "string", "enum": ["start","submit"]}, "description": "start = signature au démarrage ; submit = signature à la soumission"}
-            ],
-            "responses": {"200": {"description": "Image de la signature en base64"}}
-        }},
-
         # ══════════════════════════════════════════════════════════════════════
         # SÉCURITÉ / BIOMÉTRIE
         # ══════════════════════════════════════════════════════════════════════
@@ -3185,14 +3435,14 @@ OPENAPI_SPEC = {
                 "200": {"description": "Archive", "content": {"application/zip": {"schema": {"type": "string", "format": "binary"}}}}
             }
         }},
-        "/api/transcripts/{transcript_id}": {"delete": {
+        "/api/transcripts/{tid}": {"delete": {
             "tags": ["Relevés de notes"], "summary": "Supprimer un relevé de notes (admin)",
-            "parameters": [{"name": "transcript_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+            "parameters": [{"name": "tid", "in": "path", "required": True, "schema": {"type": "integer"}}],
             "responses": {"200": {"description": "Relevé supprimé"}, "404": {"$ref": "#/components/responses/NotFound"}}
         }},
-        "/api/transcripts/{transcript_id}/publish": {"put": {
+        "/api/transcripts/{tid}/publish": {"put": {
             "tags": ["Relevés de notes"], "summary": "Publier un relevé (le rendre visible à l'étudiant)",
-            "parameters": [{"name": "transcript_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+            "parameters": [{"name": "tid", "in": "path", "required": True, "schema": {"type": "integer"}}],
             "responses": {"200": {"description": "Relevé publié"}}
         }},
 
@@ -3245,11 +3495,13 @@ _SCHEMA_EXAMPLES = {
         "corrected_at": "2026-10-20T14:22:00Z", "email_sent": True
     },
     "OnlineExam": {
-        "id": 5, "title": "Examen Final Réseaux L3", "subject_id": 12,
-        "duration_minutes": 90, "access_code": "RESEAU2026", "status": "active",
-        "max_attempts": 1,
-        "starts_at": "2026-11-10T09:00:00Z", "ends_at": "2026-11-10T11:30:00Z",
-        "created_at": "2026-11-01T00:00:00Z"
+        "id": 5, "title": "Examen Final Réseaux L3", "subject_id": 12, "subject_title": "Réseaux et Télécommunications",
+        "duration_minutes": 150, "status": "active",
+        "start_time": "2026-11-10T09:00:00Z", "end_time": "2026-11-10T11:30:00Z",
+        "max_tab_switches": 2, "enable_copy_paste": False, "enable_right_click": False,
+        "enable_file_download": False, "results_published": False,
+        "creator_name": "Pr. Fatou Ndiaye", "created_at": "2026-11-01T00:00:00Z",
+        "is_active": True, "attempts_count": 24
     },
     "ExamAttempt": {
         "id": 88, "exam_id": 5, "student_id": 7, "student_name": "Amadou Diallo",
@@ -3840,7 +4092,7 @@ _SWAGGER_HTML = """<!DOCTYPE html>
     <div class="cei-header-meta">
       <span class="cei-badge cei-badge-version">v2.1</span>
       <span class="cei-badge cei-badge-oas">OpenAPI 3.0</span>
-      <span class="cei-badge cei-badge-count">184 endpoints</span>
+      <span class="cei-badge cei-badge-count">210 endpoints</span>
     </div>
     <nav class="cei-header-nav">
       <a class="cei-nav-link active" href="/api/docs">Swagger UI</a>
@@ -3963,7 +4215,7 @@ _REDOC_HTML = """<!DOCTYPE html>
     <div class="cei-meta">
       <span class="cei-badge b-v">v2.1</span>
       <span class="cei-badge b-o">OpenAPI 3.0</span>
-      <span class="cei-badge b-e">184 endpoints</span>
+      <span class="cei-badge b-e">210 endpoints</span>
     </div>
     <nav class="cei-nav">
       <a class="n-link" href="/api/docs">Swagger UI</a>

@@ -52,13 +52,20 @@ def notify_user(
     message: str,
     priority: str = 'default',
     tags: list[str] | None = None,
+    extra: dict | None = None,
 ) -> None:
     """
     Notifie un utilisateur précis (étudiant, professeur).
     Canal Redis : cei:notif:user:{user_id}
     Topic ntfy  : student-{user_id}
+
+    `extra` : champs additionnels fusionnés dans le payload (ex: exam_id/
+    attempt_id pour un lien profond côté frontend) — jamais utilisé pour du
+    contenu affiché tel quel, seulement pour du routage/deep-linking.
     """
     payload = {'type': event_type, 'title': title, 'message': message}
+    if extra:
+        payload.update(extra)
     Thread(target=_redis_publish, args=(f'cei:notif:user:{user_id}', payload), daemon=True).start()
     _ntfy_push(f'student-{user_id}', title, message, priority, tags)
 

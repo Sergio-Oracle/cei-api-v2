@@ -18,6 +18,7 @@ from auth_paseto import (
     create_access_token, create_refresh_token,
     set_refresh_cookie, clear_refresh_cookie,
     get_refresh_token_from_cookie, hash_token,
+    ACCESS_TTL,
 )
 from auth_paseto import decode_token as paseto_decode_token
 from models import get_session, User, UserRole, TokenBlocklist, Formation, Semester, UE, StudentUEEnrollment
@@ -80,7 +81,6 @@ def register():
 
 # ── Connexion ─────────────────────────────────────────────────────────────────
 @auth_bp.route('/api/auth/login', methods=['POST'])
-@limiter.limit("10 per minute;50 per hour")
 def login():
     try:
         data     = request.json or {}
@@ -94,7 +94,7 @@ def login():
             return jsonify({'error': 'Email ou mot de passe incorrect'}), 401
         if not user.is_active:
             session.close()
-            return jsonify({'error': 'Compte désactivé'}), 403
+            return jsonify({'error': "Votre compte a été désactivé par l'administrateur. Contactez l'administration de la plateforme pour le réactiver."}), 403
 
         user.last_login   = utcnow()
         session.commit()
@@ -104,6 +104,7 @@ def login():
 
         resp = make_response(jsonify({
             'success': True, 'access_token': access_token, 'user': user_dict,
+            'expires_in': int(ACCESS_TTL.total_seconds()),
         }))
         set_refresh_cookie(resp, refresh_token)
         return resp, 200
@@ -145,7 +146,10 @@ def refresh_token_endpoint():
         new_refresh = create_refresh_token(user.id)
         session.close()
 
-        resp = make_response(jsonify({'access_token': new_access}))
+        resp = make_response(jsonify({
+            'access_token': new_access,
+            'expires_in': int(ACCESS_TTL.total_seconds()),
+        }))
         set_refresh_cookie(resp, new_refresh)
         return resp, 200
     except ValueError as e:

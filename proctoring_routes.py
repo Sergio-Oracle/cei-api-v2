@@ -21,7 +21,8 @@ from models import (
     get_session, ExamAttempt, OnlineExam, ExamActivityLog, User,
     AttemptStatus, UserRole, ExamStatus, CameraLog,
     ExamProctor, ProctorAssignment, Subject, EC, UE, StudentUEEnrollment,
-    ECAssignment, ProctorGroup, ProctorGroupEC, ProctorGroupMember
+    ECAssignment, ProctorGroup, ProctorGroupEC, ProctorGroupMember,
+    ExamAccessCode, ProctorGroupSupervisor,
 )
 from cache import cache_get, cache_set
 
@@ -235,11 +236,46 @@ def log_proctoring_event(attempt_id):
         # Augmenter le score de risque selon le type d'événement
         proctoring_risk_map = {
             'no_face_detected': 10,
+            # Retour DFIP — luminosité insuffisante/excessive rend la détection
+            # peu fiable : signal informatif seulement, ne doit jamais faire
+            # monter le score de risque comme une vraie absence.
+            'no_face_low_light': 0,
             'multiple_faces': 20,
             'face_covered': 15,
             'camera_blocked': 25,
             'audio_suspicious': 10,
             'session_end': 0,
+            # Scan environnement 360° (Phase 1)
+            'env_scan_completed': 0,
+            'env_scan_person_detected': 30,
+            'env_scan_unavailable': 0,
+            # Signaux MediaPipe temps réel (Phases 3-4-5)
+            'gaze_away': 5,
+            'head_turned': 5,
+            'talking_detected': 8,
+            # Modèle léger (efficientdet_lite0), sujet à confusion main/objet
+            # (ex. main posée près de la tête classée "téléphone") — ramené de
+            # 25 (le plus haut du barème) à 12 : reste un signal significatif,
+            # sans qu'un faux positif isolé ne pèse plus que tout le reste.
+            'suspect_object_detected': 12,
+            # Vivacité (Phase 7) — signal informatif, ne bloque jamais l'examen
+            'liveness_check_failed': 0,
+            # Audio (Phase 6) et multi-écran (Phase 8)
+            'sustained_audio_detected': 10,
+            'multi_screen_detected': 20,
+            # Retour DFIP #10 — fermeture d'onglet/navigateur pendant l'examen,
+            # envoyée via un canal résistant à la fermeture brutale de page
+            # (fetch keepalive) ; sévérité alignée sur tab_switch/window_blur.
+            'tab_closed': 10,
+            # Ces trois événements retombaient auparavant sur le poids par
+            # défaut (5), trop faible : ce sont les principaux moyens de
+            # quitter le contexte surveillé de l'examen (consulter une autre
+            # fenêtre/application) — alignés explicitement ici, sortie du
+            # plein écran pondérée un peu plus haut car plus délibérée
+            # qu'une simple perte de focus (notification OS, Alt+Tab reflexe).
+            'tab_switch': 10,
+            'window_blur': 10,
+            'fullscreen_exit': 15,
         }
         risk_increment = proctoring_risk_map.get(event_type, 5)
 
@@ -314,6 +350,7 @@ def save_camera_snapshot(attempt_id):
             face_detected=data.get('face_detected'),
             faces_count=data.get('faces_count'),
             confidence_score=data.get('confidence_score'),
+            frame_analysis=data.get('frame_analysis'),
         )
         session.add(snap)
         session.commit()
@@ -640,6 +677,7 @@ def get_active_proctoring(exam_id):
                 'no_face_count': a.no_face_count or 0,
                 'started_at': a.started_at.isoformat() if a.started_at else None,
                 'submitted_at': a.submitted_at.isoformat() if a.submitted_at else None,
+                'last_seen_at': a.last_seen_at.isoformat() if a.last_seen_at else None,
                 'score': a.score,
                 'banned': a.status == AttemptStatus.BANNED,
                 'ban_reason': a.ban_reason if hasattr(a, 'ban_reason') else None,
@@ -652,9 +690,6 @@ def get_active_proctoring(exam_id):
                 'proctor_id': pid,
                 'proctor_name': proctor_names.get(pid, 'Non affecté') if pid else 'Non affecté',
                 'proctor_identity': f'proctor-{pid}' if pid else None,
-                'has_pre_sig': bool(a.pre_exam_signature_data),
-                'pre_sig_meta': a.pre_exam_signature_meta,
-                'has_post_sig': bool(a.signature_data),
             })
 
         # Filtrer la vue du surveillant (ne montrer que son groupe)
@@ -701,31 +736,6 @@ def get_active_proctoring(exam_id):
             'my_role': role,
             'my_identity': my_identity,
         })
-    finally:
-        session.close()
-
-
-# ============================================================================
-# API : SIGNATURE IMAGE (enseignant/admin uniquement)
-# ============================================================================
-
-@proctoring_bp.route('/api/exam_attempts/<int:attempt_id>/signature/<sig_type>', methods=['GET'])
-@paseto_required
-def get_attempt_signature(attempt_id, sig_type):
-    """Retourne l'image de signature pré ou post examen (prof/admin)."""
-    role = get_current_user_role()
-    if role not in ['professor', 'admin']:
-        return jsonify({'error': 'Accès non autorisé'}), 403
-    if sig_type not in ('pre', 'post'):
-        return jsonify({'error': 'Type de signature invalide'}), 400
-    session = get_session()
-    try:
-        attempt = session.query(ExamAttempt).filter_by(id=attempt_id).first()
-        if not attempt:
-            return jsonify({'error': 'Tentative non trouvée'}), 404
-        if sig_type == 'pre':
-            return jsonify({'data': attempt.pre_exam_signature_data, 'meta': attempt.pre_exam_signature_meta})
-        return jsonify({'data': attempt.signature_data, 'meta': None})
     finally:
         session.close()
 
@@ -842,7 +852,7 @@ def get_student_messages(exam_id):
             ExamAttempt, ExamActivityLog.attempt_id == ExamAttempt.id
         ).filter(
             ExamAttempt.exam_id == exam_id,
-            ExamActivityLog.event_type == 'student_message'
+            ExamActivityLog.event_type.in_(['student_message', 'student_call_request'])
         )
 
         # Surveillants ne voient que les messages de leur groupe
@@ -882,11 +892,183 @@ def get_student_messages(exam_id):
                     'student_name': d.get('student_name', '?'),
                     'message': d.get('message', ''),
                     'timestamp': log.timestamp.isoformat() if log.timestamp else None,
-                    'log_id': log.id
+                    'log_id': log.id,
+                    'type': 'call_request' if log.event_type == 'student_call_request' else 'message',
                 })
             except Exception:
                 pass
         return jsonify({'success': True, 'messages': messages})
+    finally:
+        session.close()
+
+
+# ============================================================================
+# API : CODE DE REPRISE APRÈS DÉCONNEXION (appel + code à usage unique)
+# ============================================================================
+
+def _get_covering_supervisor_ids(exam, session):
+    """Superviseur(s) responsable(s) du/des groupe(s) de surveillants rattaché(s)
+    à l'EC de cet examen (même logique que get_vigilance_level). Utilisé comme
+    palier intermédiaire — le superviseur supervise déjà les surveillants,
+    c'est donc lui le relais naturel en leur absence, pas le professeur."""
+    if not exam.subject or not exam.subject.ec_id:
+        return set()
+    groups = (
+        session.query(ProctorGroup)
+        .join(ProctorGroupEC, ProctorGroupEC.group_id == ProctorGroup.id)
+        .filter(ProctorGroupEC.ec_id == exam.subject.ec_id)
+        .all()
+    )
+    return {s.supervisor_id for g in groups for s in g.supervisors}
+
+
+@proctoring_bp.route('/api/exam_attempts/<int:attempt_id>/call_request', methods=['POST'])
+@paseto_required
+def request_proctor_call(attempt_id):
+    """Étudiant (hors page d'examen, depuis son dashboard) demande un appel
+    vocal/vidéo à son surveillant ou à défaut son professeur, en vue d'obtenir
+    un code de reprise après déconnexion. Notifie individuellement chaque
+    destinataire via le bus de notifications déjà utilisé pour le badge
+    temps réel (long-polling /api/notifications/poll)."""
+    user_id = get_current_user_id()
+    session = get_session()
+    try:
+        attempt = session.query(ExamAttempt).filter_by(id=attempt_id, student_id=user_id).first()
+        if not attempt:
+            return jsonify({'error': 'Tentative introuvable'}), 404
+        if attempt.status != AttemptStatus.IN_PROGRESS:
+            return jsonify({'error': 'Cet examen n\'est plus en cours'}), 400
+
+        exam = attempt.exam
+        student = attempt.student
+        student_name = student.full_name if student else f'Étudiant #{user_id}'
+
+        log = ExamActivityLog(
+            attempt_id=attempt_id,
+            event_type='student_call_request',
+            event_data=json.dumps({
+                'message': f'{student_name} demande un appel — reprise après déconnexion',
+                'student_name': student_name,
+                'timestamp': datetime.utcnow().isoformat(),
+            })
+        )
+        session.add(log)
+        session.commit()
+
+        # Destinataires, par ordre de priorité : surveillant(s) affecté(s) à cet
+        # étudiant ; à défaut, le(s) superviseur(s) du groupe couvrant cet EC
+        # (il supervise déjà les surveillants, c'est le relais naturel en leur
+        # absence) ; à défaut seulement, le professeur créateur de l'examen.
+        assignments = session.query(ProctorAssignment).filter_by(
+            exam_id=exam.id
+        ).filter(
+            (ProctorAssignment.attempt_id == attempt_id) |
+            (ProctorAssignment.student_id == user_id)
+        ).all()
+        recipient_ids = {pa.proctor_id for pa in assignments if pa.proctor_id}
+        if not recipient_ids:
+            recipient_ids = _get_covering_supervisor_ids(exam, session)
+        if not recipient_ids and exam.created_by_id:
+            recipient_ids.add(exam.created_by_id)
+
+        try:
+            from notif_bus import notify_user
+            for rid in recipient_ids:
+                notify_user(
+                    rid, 'call_request',
+                    'Appel entrant — reprise après déconnexion',
+                    f'{student_name} demande un appel pour reprendre « {exam.title} »',
+                    priority='urgent', tags=['phone'],
+                    extra={'exam_id': exam.id, 'attempt_id': attempt_id},
+                )
+        except Exception:
+            pass
+
+        return jsonify({'success': True, 'notified': len(recipient_ids)})
+    except Exception as e:
+        try: session.rollback()
+        except Exception: pass
+        return jsonify({'error': str(e)}), 500
+    finally:
+        session.close()
+
+
+@proctoring_bp.route('/api/exam_attempts/<int:attempt_id>/access_code', methods=['POST'])
+@paseto_required
+def generate_access_code(attempt_id):
+    """Génère un code de reprise à usage unique pour cette tentative, après
+    vérification d'identité par appel. Un seul rôle habilité par étudiant, par
+    ordre de priorité — surveillant assigné, sinon superviseur du groupe
+    couvrant cet EC (il supervise déjà les surveillants, relais naturel en
+    leur absence), sinon le professeur en tout dernier repli — jamais deux à
+    la fois, pour éviter qu'une génération invalide sans le savoir le code
+    qu'un autre interlocuteur vient de communiquer. L'admin peut toujours
+    agir (supervision globale)."""
+    user_id = get_current_user_id()
+    role = get_current_user_role()
+    if role not in ('surveillant', 'superviseur', 'professor', 'admin'):
+        return jsonify({'error': 'Accès réservé aux surveillants, superviseurs et enseignants'}), 403
+
+    session = get_session()
+    try:
+        attempt = session.query(ExamAttempt).filter_by(id=attempt_id).first()
+        if not attempt:
+            return jsonify({'error': 'Tentative introuvable'}), 404
+        exam = attempt.exam
+
+        any_surveillant_assigned = session.query(ProctorAssignment).filter_by(
+            exam_id=exam.id
+        ).filter(
+            (ProctorAssignment.attempt_id == attempt_id) |
+            (ProctorAssignment.student_id == attempt.student_id)
+        ).first() is not None
+        covering_supervisor_ids = _get_covering_supervisor_ids(exam, session) if not any_surveillant_assigned else set()
+
+        if role == 'surveillant':
+            assigned = session.query(ProctorAssignment).filter_by(
+                proctor_id=user_id, exam_id=exam.id
+            ).filter(
+                (ProctorAssignment.attempt_id == attempt_id) |
+                (ProctorAssignment.student_id == attempt.student_id)
+            ).first()
+            if not assigned:
+                return jsonify({'error': 'Cet étudiant ne vous est pas affecté'}), 403
+        elif role == 'superviseur':
+            if any_surveillant_assigned:
+                return jsonify({'error': "Un surveillant est assigné à cet étudiant — seul lui peut générer le code."}), 403
+            if user_id not in covering_supervisor_ids:
+                return jsonify({'error': "Vous ne supervisez pas le groupe couvrant cet étudiant."}), 403
+        elif role == 'professor':
+            if exam.created_by_id != user_id:
+                return jsonify({'error': 'Vous ne pouvez agir que sur vos propres examens'}), 403
+            if any_surveillant_assigned:
+                return jsonify({'error': "Un surveillant est assigné à cet étudiant — seul lui peut générer le code."}), 403
+            if covering_supervisor_ids:
+                return jsonify({'error': "Un superviseur est responsable de cet étudiant en l'absence de surveillant — seul lui peut générer le code."}), 403
+
+        # Invalider les codes précédents encore valides pour cette tentative
+        now = datetime.utcnow()
+        session.query(ExamAccessCode).filter(
+            ExamAccessCode.attempt_id == attempt_id,
+            ExamAccessCode.used_at.is_(None),
+        ).update({'expires_at': now}, synchronize_session=False)
+
+        import random
+        code = f'{random.randint(0, 999999):06d}'
+        access_code = ExamAccessCode(
+            attempt_id=attempt_id,
+            code=code,
+            generated_by_id=user_id,
+            expires_at=now + timedelta(minutes=10),
+        )
+        session.add(access_code)
+        session.commit()
+        result = access_code.to_dict()
+        return jsonify({'success': True, **result})
+    except Exception as e:
+        try: session.rollback()
+        except Exception: pass
+        return jsonify({'error': str(e)}), 500
     finally:
         session.close()
 
@@ -1034,6 +1216,113 @@ def remove_exam_proctor(exam_id, proctor_id):
 HEARTBEAT_TTL = 90          # secondes sans heartbeat avant de considérer "déconnecté"
 REDISTRIBUTE_COOLDOWN = 600  # évite de redéclencher en boucle pour le même surveillant
 
+# ── Niveaux de vigilance superviseur (A/B/C) ────────────────────────────────
+# Ces clés sont volontairement SÉPARÉES de cei:proctor_live:* : ce dernier ne
+# doit rester qu'un signal de connectivité brute (tab ouvert/joignable), car
+# la redistribution automatique des étudiants en dépend — on ne veut jamais
+# arracher les étudiants d'un surveillant juste parce qu'il a lâché sa souris
+# 2 minutes. Les clés ci-dessous n'alimentent QUE l'affichage superviseur.
+ENGAGED_TTL = 90   # Tier A : interaction souris/clavier + onglet visible au premier plan
+VIEWED_TTL  = 300  # Tier B : a effectivement ouvert un flux étudiant récemment
+FACE_TTL    = 300  # Tier C : dernière vérification de présence caméra positive
+
+_VIGILANCE_ORDER = {'A': 0, 'B': 1, 'C': 2}
+
+
+def get_vigilance_level(exam_id, proctor_id, session):
+    """Niveau de vigilance (A/B/C) applicable à ce surveillant pour cet examen,
+    déterminé par le(s) groupe(s) de surveillants auquel il appartient et qui
+    sont rattachés à l'EC de cet examen. 'A' par défaut si aucun groupe ne
+    correspond (surveillant ajouté manuellement, sans groupe)."""
+    exam = session.query(OnlineExam).filter_by(id=exam_id).first()
+    if not exam or not exam.subject or not exam.subject.ec_id:
+        return 'A'
+    groups = (
+        session.query(ProctorGroup)
+        .join(ProctorGroupEC, ProctorGroupEC.group_id == ProctorGroup.id)
+        .join(ProctorGroupMember, ProctorGroupMember.group_id == ProctorGroup.id)
+        .filter(ProctorGroupEC.ec_id == exam.subject.ec_id, ProctorGroupMember.proctor_id == proctor_id)
+        .all()
+    )
+    if not groups:
+        return 'A'
+    return max((g.vigilance_level or 'A' for g in groups), key=lambda l: _VIGILANCE_ORDER.get(l, 0))
+
+
+def get_proctor_engagement_status(exam_id, proctor_id, level):
+    """Statut d'engagement pour un (examen, surveillant) donné, en fonction du
+    niveau de vigilance exigé : 'engaged' si tous les signaux requis par le
+    palier sont frais, sinon 'idle' (présent mais signal(s) manquant(s))."""
+    engaged = bool(cache_get(f'cei:proctor_engaged:{exam_id}:{proctor_id}'))
+    if level == 'A':
+        return 'engaged' if engaged else 'idle'
+    viewed = bool(cache_get(f'cei:proctor_viewed:{exam_id}:{proctor_id}'))
+    if level == 'B':
+        return 'engaged' if (engaged and viewed) else 'idle'
+    face = bool(cache_get(f'cei:proctor_face:{exam_id}:{proctor_id}'))
+    return 'engaged' if (engaged and viewed and face) else 'idle'
+
+
+def get_proctor_signals(exam_id, proctor_id, level):
+    """Détail des signaux bruts (interaction, consultation, caméra) pour un
+    (examen, surveillant) — utilisé par le dashboard superviseur pour
+    expliquer PRÉCISÉMENT pourquoi un surveillant reste "inactif" plutôt que
+    de laisser un badge binaire opaque (ex: caméra jamais autorisée pour le
+    palier C, alors que le surveillant est réellement en train de travailler)."""
+    signals = {'engaged': bool(cache_get(f'cei:proctor_engaged:{exam_id}:{proctor_id}'))}
+    if level in ('B', 'C'):
+        signals['viewed'] = bool(cache_get(f'cei:proctor_viewed:{exam_id}:{proctor_id}'))
+    if level == 'C':
+        signals['face'] = bool(cache_get(f'cei:proctor_face:{exam_id}:{proctor_id}'))
+    return signals
+
+
+def get_proctor_status(proctor_id, session):
+    """Statut global d'un surveillant, tous examens surveillés en ce moment
+    confondus : ('engaged'|'idle'|'disconnected', exam_id le plus favorable ou
+    None). Utilisé par le dashboard superviseur."""
+    from cache import _get_client
+    client = _get_client()
+    if client is None:
+        return 'disconnected', None
+    rank = {'disconnected': 0, 'idle': 1, 'engaged': 2}
+    best_status, best_exam = 'disconnected', None
+    try:
+        for key in client.scan_iter(f'cei:proctor_live:*:{proctor_id}'):
+            k = key.decode() if isinstance(key, bytes) else key
+            parts = k.split(':')
+            if len(parts) != 4:
+                continue
+            exam_id = int(parts[2])
+            level = get_vigilance_level(exam_id, proctor_id, session)
+            status = get_proctor_engagement_status(exam_id, proctor_id, level)
+            if rank[status] > rank[best_status]:
+                best_status, best_exam = status, exam_id
+    except Exception:
+        return 'disconnected', None
+    return best_status, best_exam
+
+
+def get_active_proctor_ids():
+    """Retourne l'ensemble des id de surveillants actuellement actifs (heartbeat
+    valide sur au moins un examen), tous examens confondus — utilisé par le
+    dashboard admin ('nb surveillants actifs') et la vue superviseur. Clé :
+    cei:proctor_live:{exam_id}:{proctor_id} (voir proctor_heartbeat ci-dessous)."""
+    from cache import _get_client
+    client = _get_client()
+    if client is None:
+        return set()
+    try:
+        ids = set()
+        for key in client.scan_iter('cei:proctor_live:*'):
+            k = key.decode() if isinstance(key, bytes) else key
+            parts = k.split(':')
+            if len(parts) == 4:
+                ids.add(int(parts[3]))
+        return ids
+    except Exception:
+        return set()
+
 
 def _redistribute_attempts_excluding(exam_id, session, exclude_proctor_ids):
     """Réaffecte les tentatives en cours aux surveillants encore actifs sur cet
@@ -1081,17 +1370,32 @@ def _check_disconnected_proctors(exam_id, session):
 def proctor_heartbeat(exam_id):
     """Appelé périodiquement (ex. toutes les 30s) par la page de monitoring
     d'un surveillant tant qu'elle reste ouverte. Sert aussi de déclencheur
-    pour détecter si D'AUTRES surveillants de ce même examen ont disparu."""
+    pour détecter si D'AUTRES surveillants de ce même examen ont disparu.
+
+    Le corps JSON peut porter les signaux de vigilance (Tier A/B/C) :
+    {interacting, viewed_student, face_present} — chacun n'est appliqué que
+    s'il est vrai, jamais retiré explicitement : à défaut de signal positif,
+    la clé correspondante expire naturellement (TTL) et retombe à "idle"."""
     try:
         proctor_id = get_current_user_id()
         cache_set(f'cei:proctor_live:{exam_id}:{proctor_id}', '1', ttl=HEARTBEAT_TTL)
         cache_set(f'cei:proctor_seen:{exam_id}:{proctor_id}', '1', ttl=86400)
+
+        data = request.get_json(silent=True) or {}
+        if data.get('interacting'):
+            cache_set(f'cei:proctor_engaged:{exam_id}:{proctor_id}', '1', ttl=ENGAGED_TTL)
+        if data.get('viewed_student'):
+            cache_set(f'cei:proctor_viewed:{exam_id}:{proctor_id}', '1', ttl=VIEWED_TTL)
+        if data.get('face_present'):
+            cache_set(f'cei:proctor_face:{exam_id}:{proctor_id}', '1', ttl=FACE_TTL)
+
         session = get_session()
         try:
+            level = get_vigilance_level(exam_id, proctor_id, session)
             _check_disconnected_proctors(exam_id, session)
         finally:
             session.close()
-        return jsonify({'success': True})
+        return jsonify({'success': True, 'vigilance_level': level})
     except Exception as e:
         try: session.rollback(); session.close()
         except Exception: pass
@@ -1994,6 +2298,7 @@ def get_exam_recordings(exam_id):
                     'image_data':   img if img_type == 'base64' else None,
                     'face_detected': snap.face_detected,
                     'faces_count':  snap.faces_count,
+                    'frame_analysis': snap.frame_analysis,
                 })
 
             result.append({
@@ -2143,7 +2448,7 @@ def get_private_session_token(attempt_id):
 
         if role == 'student' and attempt.student_id != user_id:
             return jsonify({'error': 'Accès refusé'}), 403
-        if role not in ['student', 'professor', 'admin', 'surveillant']:
+        if role not in ['student', 'professor', 'admin', 'surveillant', 'superviseur']:
             return jsonify({'error': 'Accès refusé'}), 403
 
         room_name = f'private-{attempt_id}'
@@ -2162,6 +2467,96 @@ def get_private_session_token(attempt_id):
             'room': room_name,
             'identity': identity
         })
+    finally:
+        session.close()
+
+
+# ============================================================================
+# API : APPEL PRIVÉ SUPERVISEUR ↔ SURVEILLANT
+# ============================================================================
+# Un superviseur qui constate qu'un surveillant ne remplit pas son rôle
+# (palier de vigilance A/B/C non atteint, alertes ignorées...) doit pouvoir
+# lui parler directement plutôt que de simplement le sanctionner sans échange
+# — même mécanisme LiveKit privé que surveillant ↔ étudiant, room dédiée par
+# surveillant (pas liée à un attempt précis, un superviseur peut appeler en
+# dehors de toute surveillance d'examen en cours).
+
+def _supervises_proctor(supervisor_id, proctor_id, session):
+    """Le superviseur supervise-t-il un groupe dont ce surveillant est membre ?"""
+    return session.query(ProctorGroupSupervisor).join(
+        ProctorGroupMember, ProctorGroupMember.group_id == ProctorGroupSupervisor.group_id
+    ).filter(
+        ProctorGroupSupervisor.supervisor_id == supervisor_id,
+        ProctorGroupMember.proctor_id == proctor_id,
+    ).first() is not None
+
+
+@proctoring_bp.route('/api/superviseur/proctor_call/<int:proctor_id>/token', methods=['GET'])
+@paseto_required
+def get_supervisor_call_token(proctor_id):
+    """Token LiveKit pour la room d'appel privée superviseur ↔ surveillant.
+    Autorisé pour le superviseur qui supervise réellement ce surveillant, et
+    pour le surveillant lui-même (pour répondre)."""
+    user_id = get_current_user_id()
+    role = get_current_user_role()
+    if role not in ('superviseur', 'surveillant', 'admin'):
+        return jsonify({'error': 'Accès refusé'}), 403
+
+    config = get_livekit_config()
+    if not all([config['url'], config['api_key'], config['api_secret']]):
+        return jsonify({'error': 'LiveKit non configuré'}), 503
+
+    session = get_session()
+    try:
+        if role == 'superviseur' and not _supervises_proctor(user_id, proctor_id, session):
+            return jsonify({'error': "Vous ne supervisez pas ce surveillant"}), 403
+        if role == 'surveillant' and user_id != proctor_id:
+            return jsonify({'error': 'Accès refusé'}), 403
+
+        room_name = f'supcall-{proctor_id}'
+        identity  = f'{role}-{user_id}'
+        token = generate_livekit_token(
+            config['api_key'], config['api_secret'],
+            identity, room_name,
+            can_publish=True, can_subscribe=True,
+            ttl=1800
+        )
+        return jsonify({'token': token, 'ws_url': config['url'], 'room': room_name, 'identity': identity})
+    finally:
+        session.close()
+
+
+@proctoring_bp.route('/api/superviseur/proctor_call/<int:proctor_id>/request', methods=['POST'])
+@paseto_required
+def request_supervisor_call(proctor_id):
+    """Superviseur demande un appel à un surveillant qu'il supervise — notifie
+    le surveillant en temps réel où qu'il se trouve dans l'application (pas
+    seulement sur sa page de surveillance), même mécanisme que la demande
+    d'appel étudiant → surveillant."""
+    user_id = get_current_user_id()
+    role = get_current_user_role()
+    if role != 'superviseur':
+        return jsonify({'error': 'Accès réservé aux superviseurs'}), 403
+
+    session = get_session()
+    try:
+        if not _supervises_proctor(user_id, proctor_id, session):
+            return jsonify({'error': "Vous ne supervisez pas ce surveillant"}), 403
+        supervisor = session.query(User).filter_by(id=user_id).first()
+        supervisor_name = supervisor.full_name if supervisor else 'Votre superviseur'
+
+        try:
+            from notif_bus import notify_user
+            notify_user(
+                proctor_id, 'supervisor_call_request',
+                'Appel entrant — votre superviseur',
+                f'{supervisor_name} souhaite vous parler',
+                priority='urgent', tags=['phone'],
+                extra={'supervisor_id': user_id, 'supervisor_name': supervisor_name},
+            )
+        except Exception:
+            pass
+        return jsonify({'success': True})
     finally:
         session.close()
 

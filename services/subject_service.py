@@ -212,7 +212,7 @@ class SubjectService:
     @staticmethod
     def upload(
         title: str,
-        file: FileStorage,
+        files: list[FileStorage],
         creator_id: int,
         role: UserRole,
         ec_id: Optional[int],
@@ -233,10 +233,12 @@ class SubjectService:
             total_points = 20
 
         # File validation
-        if not file or file.filename == '':
+        files = [f for f in (files or []) if f and f.filename]
+        if not files:
             raise ValueError('Aucun fichier fourni')
-        if not allowed_file(file.filename):
-            raise ValueError('Type de fichier non autorisé. Utilisez PDF, DOCX ou TXT')
+        for f in files:
+            if not allowed_file(f.filename):
+                raise ValueError(f"Type de fichier non autorisé ({f.filename}). Utilisez PDF, DOCX ou TXT")
 
         # EC access check for professors
         if ec_id and role == UserRole.PROFESSOR:
@@ -252,16 +254,33 @@ class SubjectService:
             finally:
                 session.close()
 
-        # Save file
-        filename = f"subject_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{secure_filename(file.filename)}"
-        filepath = os.path.join(_UPLOAD_FOLDER, filename)
-        file.save(filepath)
+        # Save + extract text for each file, concatenated with clear separators
+        # so l'IA distingue les sources sans qu'un professeur ait besoin de
+        # fusionner ses documents à la main avant de les déposer.
+        saved_paths = []
+        content_parts = []
+        first_filename = None
+        try:
+            for f in files:
+                filename = f"subject_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{secure_filename(f.filename)}"
+                filepath = os.path.join(_UPLOAD_FOLDER, filename)
+                f.save(filepath)
+                saved_paths.append(filepath)
+                if first_filename is None:
+                    first_filename = filename
 
-        # Extract text
-        content = extract_text_from_file(filepath)
-        if not content:
-            os.remove(filepath)
-            raise ValueError("Impossible d'extraire le texte du fichier")
+                part = extract_text_from_file(filepath)
+                if not part:
+                    raise ValueError(f"Impossible d'extraire le texte du fichier « {f.filename} »")
+                content_parts.append(f"--- Fichier: {f.filename} ---\n{part}")
+        except Exception:
+            for p in saved_paths:
+                if os.path.exists(p):
+                    os.remove(p)
+            raise
+
+        filename = first_filename
+        content = '\n\n'.join(content_parts)
 
         # Annotate question markers (pure Python — no AI needed)
         qt = question_types.lower()

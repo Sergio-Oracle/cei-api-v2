@@ -161,14 +161,14 @@ def upload_subject():
             msgs = '; '.join(e['msg'] for e in ve.errors())
             return jsonify({'error': msgs}), 422
 
-        file    = request.files.get('file')
+        files   = request.files.getlist('files')
         user_id = get_current_user_id()
         user    = _get_user(user_id)
 
         # 2. Delegate to service
         result = SubjectService.upload(
             title=data.title,
-            file=file,
+            files=files,
             creator_id=user_id,
             role=user.role,
             ec_id=data.ec_id,

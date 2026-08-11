@@ -50,3 +50,4 @@ pandas
 openpyxl
 chardet
 pdfplumber>=0.11
+PySocks

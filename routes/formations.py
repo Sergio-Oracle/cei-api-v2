@@ -18,7 +18,8 @@ from models import (
     get_session,
     User, UserRole,
     Pole, Niveau, Formation, Semester, UE, EC, ECAssignment, StudentUEEnrollment,
-    ProctorGroup, ProctorGroupMember, ProctorGroupEC,
+    ProctorGroup, ProctorGroupMember, ProctorGroupEC, ProctorGroupSupervisor,
+    Subject, QuestionBank, GradeTranscript,
 )
 
 _CACHE_TTL = 300  # 5 minutes — structure académique change rarement
@@ -594,6 +595,27 @@ def delete_formation(fid):
         if not ok: return jsonify({'error': 'Accès non autorisé'}), 403
         f = session.query(Formation).filter_by(id=fid).first()
         if not f: session.close(); return jsonify({'error': 'Formation non trouvée'}), 404
+
+        # La suppression cascade en ORM (Formation -> Semester -> UE -> EC)
+        # ne touche pas aux tables qui référencent un EC sans passer par ces
+        # relations (subjects, question_bank, proctor_group_ecs) ni aux
+        # relevés de notes/étudiants rattachés au semestre/formation : il
+        # faut les traiter explicitement avant, sinon Postgres bloque avec
+        # une ForeignKeyViolation (même cause que la suppression d'EC).
+        semester_ids = [sid for (sid,) in session.query(Semester.id).filter_by(formation_id=fid).all()]
+        ec_ids = []
+        if semester_ids:
+            ec_ids = [eid for (eid,) in session.query(EC.id)
+                      .join(UE, EC.ue_id == UE.id)
+                      .filter(UE.semester_id.in_(semester_ids)).all()]
+        if ec_ids:
+            session.query(Subject).filter(Subject.ec_id.in_(ec_ids)).update({'ec_id': None}, synchronize_session=False)
+            session.query(QuestionBank).filter(QuestionBank.ec_id.in_(ec_ids)).update({'ec_id': None}, synchronize_session=False)
+            session.query(ProctorGroupEC).filter(ProctorGroupEC.ec_id.in_(ec_ids)).delete(synchronize_session=False)
+        if semester_ids:
+            session.query(GradeTranscript).filter(GradeTranscript.semester_id.in_(semester_ids)).delete(synchronize_session=False)
+        session.query(User).filter_by(formation_id=fid).update({'formation_id': None}, synchronize_session=False)
+
         session.delete(f); session.commit(); session.close()
         _invalidate_academic_cache()
         return jsonify({'success': True, 'message': 'Formation supprimée'})
@@ -805,6 +827,12 @@ def delete_ec(eid):
         if not ok: return jsonify({'error': 'Accès non autorisé'}), 403
         ec = session.query(EC).filter_by(id=eid).first()
         if not ec: session.close(); return jsonify({'error': 'EC non trouvé'}), 404
+        # Détache les sujets et questions de banque plutôt que de les détruire :
+        # ce sont du contenu réel (historique d'examens, questions rédigées),
+        # pas de simples liens. Seules les tables de jonction pures sont purgées.
+        session.query(Subject).filter_by(ec_id=eid).update({'ec_id': None})
+        session.query(QuestionBank).filter_by(ec_id=eid).update({'ec_id': None})
+        session.query(ProctorGroupEC).filter_by(ec_id=eid).delete()
         session.delete(ec); session.commit(); session.close()
         _invalidate_academic_cache()
         return jsonify({'success': True, 'message': 'EC supprimé'})
@@ -1379,6 +1407,19 @@ def update_proctor_group(gid):
         data = request.json or {}
         if 'name' in data and data['name'].strip():
             group.name = data['name'].strip()
+        if 'vigilance_level' in data:
+            # Niveau de vigilance A/B/C exigé des membres de ce groupe pour
+            # être comptés comme "actifs et engagés" côté superviseur.
+            # Ouvert au professeur (déjà vérifié ci-dessus via
+            # _can_manage_proctor_group : uniquement ses propres groupes) —
+            # c'est lui qui crée l'examen et sait quel niveau de vigilance sa
+            # surveillance exige ; le rattachement du SUPERVISEUR lui-même
+            # reste en revanche réservé à l'admin (hiérarchie organisationnelle,
+            # pas un réglage de sécurité d'examen).
+            level = data['vigilance_level']
+            if level not in ('A', 'B', 'C'):
+                session.close(); return jsonify({'error': "Niveau de vigilance invalide (A, B ou C attendu)"}), 400
+            group.vigilance_level = level
         session.commit()
         result = group.to_dict()
         session.close()
@@ -1485,6 +1526,63 @@ def remove_proctor_group_member(gid, mid):
             sync_ec_proctors(session, ec_id)
         session.close()
         return jsonify({'success': True, 'message': 'Membre retiré'})
+    except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
+        return jsonify({'error': str(e)}), 500
+
+
+@formations_bp.route('/api/admin/proctor_groups/<int:gid>/supervisors', methods=['POST'])
+@paseto_required
+def add_proctor_group_supervisor(gid):
+    try:
+        session = get_session()
+        ok, user = _is_admin_or_professor(session)
+        if not ok: return jsonify({'error': 'Accès non autorisé'}), 403
+        group = session.query(ProctorGroup).filter_by(id=gid).first()
+        if not group: session.close(); return jsonify({'error': 'Groupe non trouvé'}), 404
+        if not _can_manage_proctor_group(user, group):
+            session.close(); return jsonify({'error': "Vous ne gérez pas ce groupe"}), 403
+        data = request.json or {}
+        supervisor_ids = data.get('supervisor_ids') or ([data['supervisor_id']] if data.get('supervisor_id') else [])
+        if not supervisor_ids:
+            session.close(); return jsonify({'error': 'Superviseur(s) requis'}), 400
+        added, already = 0, 0
+        for sid in supervisor_ids:
+            supervisor = session.query(User).filter_by(id=sid, role=UserRole.SUPERVISEUR).first()
+            if not supervisor:
+                continue
+            if session.query(ProctorGroupSupervisor).filter_by(group_id=gid, supervisor_id=sid).first():
+                already += 1
+                continue
+            session.add(ProctorGroupSupervisor(group_id=gid, supervisor_id=sid))
+            added += 1
+        session.commit()
+        result = group.to_dict()
+        session.close()
+        return jsonify({'success': True, 'added': added, 'already': already, 'group': result}), 201
+    except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
+        return jsonify({'error': str(e)}), 500
+
+
+@formations_bp.route('/api/admin/proctor_groups/<int:gid>/supervisors/<int:sid>', methods=['DELETE'])
+@paseto_required
+def remove_proctor_group_supervisor(gid, sid):
+    try:
+        session = get_session()
+        ok, user = _is_admin_or_professor(session)
+        if not ok: return jsonify({'error': 'Accès non autorisé'}), 403
+        group = session.query(ProctorGroup).filter_by(id=gid).first()
+        if not group: session.close(); return jsonify({'error': 'Groupe non trouvé'}), 404
+        if not _can_manage_proctor_group(user, group):
+            session.close(); return jsonify({'error': "Vous ne gérez pas ce groupe"}), 403
+        s = session.query(ProctorGroupSupervisor).filter_by(id=sid, group_id=gid).first()
+        if not s: session.close(); return jsonify({'error': 'Superviseur non trouvé'}), 404
+        session.delete(s); session.commit()
+        session.close()
+        return jsonify({'success': True, 'message': 'Superviseur retiré'})
     except Exception as e:
         try: session.rollback(); session.close()
         except Exception: pass

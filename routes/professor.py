@@ -14,6 +14,7 @@ from models      import (
     get_session, User, UserRole,
     Subject, StudentPaper, Reclamation,
     OnlineExam, ExamAttempt,
+    ECAssignment, ProctorGroupEC, ProctorGroupMember,
 )
 
 professor_bp = Blueprint('professor', __name__)
@@ -41,10 +42,32 @@ def professor_dashboard():
             ExamAttempt.score.isnot(None),
         ).count()
 
+        # Retour DFIP — nombre de surveillants affectés aux ECs du professeur
+        # (via les Groupes Surveillants rattachés), pour qu'il sache combien de
+        # personnes surveilleront ses examens sans devoir ouvrir chaque groupe.
+        ec_ids = [r[0] for r in session.query(ECAssignment.ec_id).filter_by(professor_id=user_id).all()]
+        total_surveillants = 0
+        active_surveillants = 0
+        if ec_ids:
+            group_ids = [r[0] for r in session.query(ProctorGroupEC.group_id).filter(ProctorGroupEC.ec_id.in_(ec_ids)).distinct().all()]
+            if group_ids:
+                proctor_ids = [r[0] for r in session.query(ProctorGroupMember.proctor_id).filter(
+                    ProctorGroupMember.group_id.in_(group_ids)
+                ).distinct().all()]
+                total_surveillants = len(proctor_ids)
+                if proctor_ids:
+                    from proctoring_routes import get_proctor_status
+                    for pid in proctor_ids:
+                        status, _ = get_proctor_status(pid, session)
+                        if status == 'engaged':
+                            active_surveillants += 1
+
         session.close()
         return jsonify({
             'my_subjects':     my_subjects,
             'papers_corrected':papers_corrected + online_corrected,
+            'total_surveillants': total_surveillants,
+            'active_surveillants': active_surveillants,
         })
     except Exception as e:
         try: session.rollback(); session.close()
@@ -81,10 +104,9 @@ def get_student_online_results():
             existing_rec = session.query(Reclamation).filter_by(
                 attempt_id=att.id, student_id=user_id
             ).first()
-            # Note visible dès que la copie est corrigée — pas de délibération
-            # à part (décision explicite : ne pas faire attendre l'étudiant
-            # qu'un professeur clique "Publier les notes").
-            published = True
+            # Retour #29/point 19 — notes masquées à l'étudiant tant que le
+            # professeur/admin n'a pas explicitement publié les résultats.
+            published = bool(exam.results_published) if exam else True
             results.append({
                 'attempt_id':        att.id,
                 'exam_id':           att.exam_id,
@@ -137,6 +159,14 @@ def get_student_papers():
         papers_list = []
         for p in papers:
             d   = p.to_dict()
+            # Retour #29 — note/grade masquées tant que le professeur n'a pas
+            # explicitement publié la copie (après vérification manuelle).
+            published = bool(p.is_published)
+            if not published:
+                d['score'] = None
+                d['grade'] = None
+                d['corrected_at'] = None
+            d['pending_publication'] = p.score is not None and not published
             rec = recs_by_paper.get(p.id)
             d['has_reclamation']   = rec is not None
             d['reclamation_status']= rec.status.value if rec else None

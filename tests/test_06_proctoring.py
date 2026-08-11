@@ -1,6 +1,6 @@
 """
 TESTS INTÉGRATION — Proctoring & Agent autonome
-Couvre: snapshots caméra, événements fraude, signatures, agent heartbeat, alertes
+Couvre: snapshots caméra, événements fraude, agent heartbeat, alertes
 """
 import pytest
 import base64
@@ -82,29 +82,6 @@ class TestEvenementsProctoring:
             json={"event_type": "HACK_ATTEMPT"},
             headers=admin_headers)
         assert r.status_code in (400, 422, 200, 403, 404)
-
-
-class TestSignatures:
-    SIG_TYPES = ["pre_exam", "post_exam"]
-
-    def test_recuperer_signature(self, client, admin_headers):
-        attempt_ids = get_attempt_ids(client, admin_headers, 1)
-        if not attempt_ids:
-            pytest.skip("Aucune tentative")
-        for sig_type in self.SIG_TYPES:
-            r = client.get(f"/api/exam_attempts/{attempt_ids[0]}/signature/{sig_type}",
-                           headers=admin_headers)
-            # 400 possible si la tentative n'a pas de signature enregistrée
-            assert r.status_code in (200, 400, 404), \
-                f"Signature {sig_type}: HTTP {r.status_code}"
-
-    def test_signature_type_invalide(self, client, admin_headers):
-        attempt_ids = get_attempt_ids(client, admin_headers, 1)
-        if not attempt_ids:
-            pytest.skip("Aucune tentative")
-        r = client.get(f"/api/exam_attempts/{attempt_ids[0]}/signature/INVALIDE",
-                       headers=admin_headers)
-        assert r.status_code in (400, 404)
 
 
 class TestReferencesFaciales:

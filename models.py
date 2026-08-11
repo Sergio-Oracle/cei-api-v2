@@ -26,12 +26,17 @@ class UserRole(enum.Enum):
     PROFESSOR = "professor"
     ADMIN = "admin"
     SURVEILLANT = "surveillant"
+    SUPERVISEUR = "superviseur"  # supervise l'activité d'un ou plusieurs groupes de surveillants
 
 class ReclamationStatus(enum.Enum):
     PENDING   = "pending"
     IN_REVIEW = "in_review"
     RESOLVED  = "resolved"
     REJECTED  = "rejected"
+
+class ExampleLabel(enum.Enum):
+    BEST    = "best"     # meilleure copie
+    IMPROVE = "improve"  # copie à améliorer
 
 # MODÈLES POUR LA MAQUETTE PÉDAGOGIQUE
 class Pole(Base):
@@ -435,6 +440,11 @@ class StudentPaper(Base):
     email_sent = Column(Boolean, default=False) # Email envoyé?
     created_at = Column(DateTime, default=datetime.utcnow)
 
+    # Note/grade masquées à l'étudiant tant que le professeur n'a pas
+    # explicitement publié la copie (après vérification manuelle), même
+    # symétrie que OnlineExam.results_published / GradeTranscript.is_published
+    is_published = Column(Boolean, default=False)
+
     subject = relationship('Subject', back_populates='papers')
     student = relationship('User', foreign_keys=[student_id], back_populates='student_papers')
     corrector = relationship('User', foreign_keys=[corrected_by_id], back_populates='corrected_papers')
@@ -459,6 +469,7 @@ class StudentPaper(Base):
             'corrected_at': self.corrected_at.isoformat() if self.corrected_at else None,
             'reclamation_window_end': self.reclamation_window_end.isoformat() if self.reclamation_window_end else None,  # Nouveau
             'email_sent': self.email_sent,
+            'is_published': self.is_published or False,
             'created_at': self.created_at.isoformat() if self.created_at else None
         }
 
@@ -528,6 +539,62 @@ class Reclamation(Base):
             'updated_at': self.updated_at.isoformat() if self.updated_at else None
         }
 
+
+class RestitutionExample(Base):
+    """Copie-exemple anonymisée sélectionnée par l'enseignant pour une séance
+    de restitution collective (Retour Recteur — note de sensibilisation) :
+    'meilleure copie' ou 'copie à améliorer', partagée au groupe une fois
+    publiée. Instantané indépendant de la copie/tentative d'origine (le
+    contenu anonymisé ne change pas si la copie source est modifiée après
+    coup), même logique de publication contrôlée que StudentPaper/OnlineExam."""
+    __tablename__ = 'restitution_examples'
+
+    id = Column(Integer, primary_key=True)
+    paper_id = Column(Integer, ForeignKey('student_papers.id'), nullable=True)
+    attempt_id = Column(Integer, ForeignKey('exam_attempts.id'), nullable=True)
+    subject_id = Column(Integer, ForeignKey('subjects.id'), nullable=True)
+
+    label = Column(SQLEnum(ExampleLabel), nullable=False)
+    anonymized_content = Column(Text, nullable=False)
+    anonymized_feedback = Column(Text)
+    score = Column(Float)
+    max_score = Column(Float, default=20)
+
+    is_published = Column(Boolean, default=False)
+    created_by_id = Column(Integer, ForeignKey('users.id'), nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    published_at = Column(DateTime)
+
+    paper     = relationship('StudentPaper', foreign_keys=[paper_id])
+    attempt   = relationship('ExamAttempt', foreign_keys=[attempt_id])
+    subject   = relationship('Subject', foreign_keys=[subject_id])
+    creator   = relationship('User', foreign_keys=[created_by_id])
+
+    def to_dict(self):
+        subj_title = None
+        if self.subject:
+            subj_title = self.subject.title
+        elif self.attempt and self.attempt.exam:
+            subj_title = self.attempt.exam.title
+        return {
+            'id': self.id,
+            'paper_id': self.paper_id,
+            'attempt_id': self.attempt_id,
+            'subject_id': self.subject_id,
+            'subject_title': subj_title,
+            'label': self.label.value,
+            'anonymized_content': self.anonymized_content,
+            'anonymized_feedback': self.anonymized_feedback,
+            'score': self.score,
+            'max_score': self.max_score,
+            'is_published': self.is_published,
+            'created_by_id': self.created_by_id,
+            'creator_name': self.creator.full_name if self.creator else None,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'published_at': self.published_at.isoformat() if self.published_at else None,
+        }
+
+
 class CorrectionHistory(Base):
     __tablename__ = 'correction_history'
 
@@ -584,8 +651,18 @@ class OnlineExam(Base):
     max_tab_switches = Column(Integer, default=2)    # Seuil: changements de fenêtre/onglet
     enable_copy_paste = Column(Boolean, default=False)
     enable_right_click = Column(Boolean, default=False)
+    # Bloque le bouton de téléchargement natif des lecteurs vidéo/audio
+    # (controlsList="nodownload") — distinct du blocage du clic droit : sur
+    # Chrome, un <video controls> affiche un bouton de téléchargement dans
+    # sa barre de contrôle native, accessible sans jamais ouvrir le menu
+    # contextuel que enable_right_click bloque déjà.
+    enable_file_download = Column(Boolean, default=False)
     randomize_questions = Column(Boolean, default=False)
     questions_per_page = Column(Integer, default=5)  # Pagination des questions (0 = tout sur une page)
+    # Minuteur par page pour les questions QCM/Vrai-Faux (secondes). NULL/0 = désactivé.
+    # Ne s'applique jamais aux questions ouvertes — voir logique de regroupement p1/p2
+    # côté frontend (exam/[id]/page.tsx).
+    time_per_question_seconds = Column(Integer, nullable=True)
 
     # Seuils de bannissement supplémentaires
     max_no_face_count = Column(Integer, default=10)  # Seuil: nb fois sans visage (-1=désactivé)
@@ -604,6 +681,13 @@ class OnlineExam(Base):
     # n'a pas explicitement publié les résultats (après délibération), même
     # symétrie que GradeTranscript.is_published pour les relevés de semestre
     results_published = Column(Boolean, default=False)
+
+    # Calculatrice scientifique intégrée à la page de composition — évite que
+    # l'étudiant sorte une calculatrice physique ou son téléphone (matériel
+    # non vérifiable, potentiellement assimilé à de la triche). Purement
+    # côté client (pas d'appel réseau), pertinent seulement pour certains
+    # examens (maths, sciences, finance...) donc opt-in par le professeur.
+    enable_calculator = Column(Boolean, default=False)
 
     status = Column(SQLEnum(ExamStatus), default=ExamStatus.DRAFT)
     created_by_id = Column(Integer, ForeignKey('users.id'), nullable=False)
@@ -627,14 +711,17 @@ class OnlineExam(Base):
             'max_tab_switches': self.max_tab_switches,
             'enable_copy_paste': self.enable_copy_paste,
             'enable_right_click': self.enable_right_click,
+            'enable_file_download': self.enable_file_download or False,
             'randomize_questions': self.randomize_questions,
             'questions_per_page': self.questions_per_page if self.questions_per_page is not None else 5,
+            'time_per_question_seconds': self.time_per_question_seconds,
             'max_no_face_count': self.max_no_face_count if self.max_no_face_count is not None else 10,
             'ban_on_devtools': self.ban_on_devtools if self.ban_on_devtools is not None else True,
             'auto_ban_enabled': self.auto_ban_enabled or False,
             'status': self.status.value,
             'auto_correct': self.auto_correct if self.auto_correct is not None else False,
             'results_published': self.results_published or False,
+            'enable_calculator': self.enable_calculator or False,
             'creator_name': self.creator.full_name if self.creator else None,
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'is_active': self.status == ExamStatus.ACTIVE,
@@ -664,15 +751,14 @@ class ExamAttempt(Base):
     risk_score = Column(Integer, default=0)  # Score de risque 0-100
     current_egress_id = Column(String(255))  # LiveKit Egress ID actif (null si pas d'enregistrement)
 
-    # Signature pré-examen (attestation d'honneur signée avant le timer)
-    pre_exam_signature_data = Column(Text)
-    # Métadonnées de la signature pré-examen (JSON: strokes, path_length, duration_ms, signed_at)
-    pre_exam_signature_meta = Column(Text)
-    # Signature post-examen (confirmation lors de la soumission manuelle)
-    signature_data = Column(Text)
-
     # Temps supplémentaire accordé individuellement par le prof/surveillant
     extra_minutes = Column(Integer, default=0)
+
+    # Dernier heartbeat reçu de l'étudiant (onglet actif + connecté) — sert à
+    # calculer un seuil "hors ligne" côté surveillance, distinct du comptage
+    # de fraude (une coupure réseau reste explicitement non pénalisée, voir
+    # log_exam_activity). NULL tant qu'aucun heartbeat n'a encore été reçu.
+    last_seen_at = Column(DateTime, nullable=True)
 
     # Réponses (JSON ou texte selon format)
     answers = Column(Text)  # JSON stockant les réponses
@@ -682,6 +768,15 @@ class ExamAttempt(Base):
     feedback = Column(Text)
     corrected_at = Column(DateTime)
     corrected_by_id = Column(Integer, ForeignKey('users.id'))
+
+    # Détail question par question de la correction (JSON — liste de
+    # {num, type, max, score, feedback, given?, correct?}) — alimenté à la
+    # fois par la notation déterministe (QCM/VF/appariement, exacte) et par le
+    # parsing du format strict imposé à l'IA pour les questions ouvertes (voir
+    # _run_auto_correction/correct_exam_attempt). Permet à l'enseignant de
+    # revenir sur la correction IA question par question plutôt que de tout
+    # réécrire globalement — le score total redevient alors la somme.
+    question_scores = Column(Text)
 
     # Note importée depuis un fichier Excel/CSV (étudiant n'ayant pas composé
     # sur la plateforme — épreuve papier ou autre système). Distingue ces
@@ -711,15 +806,56 @@ class ExamAttempt(Base):
             'banned_at': self.banned_at.isoformat() if self.banned_at else None,
             'ban_reason': self.ban_reason,
             'risk_score': self.risk_score or 0,
+            'last_seen_at': self.last_seen_at.isoformat() if self.last_seen_at else None,
             'answers': self.answers,
             'score': self.score,
             'feedback': self.feedback,
             'corrected_at': self.corrected_at.isoformat() if self.corrected_at else None,
             'corrector_name': self.corrector.full_name if self.corrector else None,
-            'signature_data': self.signature_data,
             'extra_minutes': self.extra_minutes or 0,
             'imported_grade': self.imported_grade or False,
         }
+
+class ExamAccessCode(Base):
+    """Code de reprise lié à une tentative d'examen — exigé pour rouvrir une
+    tentative IN_PROGRESS après qu'un étudiant a quitté la page d'examen
+    (fermeture d'onglet, coupure réseau, etc.). Empêche le partage d'accès
+    (il faut connaître le code, propre à cette tentative précise).
+
+    Depuis la réintroduction du self-service : généré automatiquement par le
+    système au premier besoin (generated_by_id NULL), affiché directement à
+    l'étudiant authentifié dans la réponse de /start — plus de vérification
+    d'identité préalable par appel. Réutilisable pendant toute la fenêtre de
+    l'examen (used_at n'est plus une preuve de consommation mais un simple
+    horodatage "dernière reprise"). Le surveillant/superviseur assigné reçoit
+    une notification (avec alerte sonore côté frontend) à chaque reprise, et
+    décide librement d'appeler l'étudiant ou non — voir notify_user() dans
+    start_exam_attempt(). La génération manuelle par un membre du staff
+    (generated_by_id renseigné) reste possible en secours, ex. via un appel."""
+    __tablename__ = 'exam_access_codes'
+
+    id = Column(Integer, primary_key=True)
+    attempt_id = Column(Integer, ForeignKey('exam_attempts.id'), nullable=False, index=True)
+    code = Column(String(10), nullable=False, index=True)
+    generated_by_id = Column(Integer, ForeignKey('users.id'), nullable=True)  # NULL = auto-généré par le système
+    created_at = Column(DateTime, default=datetime.utcnow)
+    expires_at = Column(DateTime, nullable=False)
+    used_at = Column(DateTime, nullable=True)  # Horodatage de la dernière reprise (informatif, plus un verrou d'usage unique)
+
+    attempt = relationship('ExamAttempt', foreign_keys=[attempt_id])
+    generated_by = relationship('User', foreign_keys=[generated_by_id])
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'attempt_id': self.attempt_id,
+            'code': self.code,
+            'generated_by_name': self.generated_by.full_name if self.generated_by else None,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'expires_at': self.expires_at.isoformat() if self.expires_at else None,
+            'used_at': self.used_at.isoformat() if self.used_at else None,
+        }
+
 
 class ExamActivityLog(Base):
     """Log d'activité pendant l'examen (surveillance)"""
@@ -843,9 +979,19 @@ class ProctorGroup(Base):
     created_by_id = Column(Integer, ForeignKey('users.id'), nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
 
+    # Niveau de vigilance exigé des surveillants de ce groupe pour être
+    # considérés "actifs et engagés" côté superviseur — pas juste "onglet
+    # ouvert" (voir get_vigilance_level/proctor_heartbeat dans proctoring_routes.py) :
+    #   A = interaction récente (souris/clavier) + onglet visible et au premier plan
+    #   B = A + a effectivement consulté un flux étudiant récemment
+    #   C = B + vérification périodique de présence par la caméra du surveillant
+    #       (juste un booléen visage détecté oui/non, aucune image transmise/stockée)
+    vigilance_level = Column(String(1), default='A')
+
     created_by = relationship('User', foreign_keys=[created_by_id])
     members = relationship('ProctorGroupMember', back_populates='group', cascade='all, delete-orphan')
     ecs = relationship('ProctorGroupEC', back_populates='group', cascade='all, delete-orphan')
+    supervisors = relationship('ProctorGroupSupervisor', back_populates='group', cascade='all, delete-orphan')
 
     def to_dict(self):
         return {
@@ -855,6 +1001,32 @@ class ProctorGroup(Base):
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'members': [m.to_dict() for m in self.members],
             'ec_ids': [ge.ec_id for ge in self.ecs],
+            'supervisors': [s.to_dict() for s in self.supervisors],
+            'vigilance_level': self.vigilance_level or 'A',
+        }
+
+
+class ProctorGroupSupervisor(Base):
+    """Rattachement d'un superviseur à un groupe de surveillants (plusieurs
+    superviseurs possibles par groupe, symétrique à ProctorGroupMember)."""
+    __tablename__ = 'proctor_group_supervisors'
+
+    id = Column(Integer, primary_key=True)
+    group_id = Column(Integer, ForeignKey('proctor_groups.id'), nullable=False)
+    supervisor_id = Column(Integer, ForeignKey('users.id'), nullable=False)
+    added_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (UniqueConstraint('group_id', 'supervisor_id', name='unique_group_supervisor'),)
+
+    group = relationship('ProctorGroup', back_populates='supervisors')
+    supervisor = relationship('User')
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'supervisor_id': self.supervisor_id,
+            'supervisor_name': self.supervisor.full_name if self.supervisor else None,
+            'supervisor_email': self.supervisor.email if self.supervisor else None,
         }
 
 
@@ -981,6 +1153,7 @@ class CameraLog(Base):
             'faces_count':  self.faces_count,
             'image_url':    image_url,
             'image_data':   image_data,
+            'frame_analysis': self.frame_analysis,
         }
 
 

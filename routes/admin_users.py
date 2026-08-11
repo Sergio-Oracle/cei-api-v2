@@ -82,6 +82,8 @@ def admin_dashboard():
             'pending_reclamations':   session.query(Reclamation).filter_by(status=ReclamationStatus.PENDING).count(),
             'total_corrected_papers': session.query(StudentPaper).filter(StudentPaper.corrected_at != None).count(),
         }
+        from proctoring_routes import get_active_proctor_ids
+        data['active_surveillants'] = len(get_active_proctor_ids())
         session.close()
         return jsonify(data)
     except Exception as e:
@@ -135,10 +137,12 @@ def get_proctor_users():
         role = get_current_user_role()
         if role not in ['professor', 'admin']:
             return jsonify({'error': 'Accès non autorisé'}), 403
+        role_param = request.args.get('role', 'surveillant')
+        target_role = UserRole.SUPERVISEUR if role_param == 'superviseur' else UserRole.SURVEILLANT
         session = get_session()
         users = (
             session.query(User)
-            .filter(User.role == UserRole.SURVEILLANT, User.is_active == True)
+            .filter(User.role == target_role, User.is_active == True)
             .order_by(User.full_name)
             .all()
         )
@@ -203,12 +207,13 @@ def create_user():
         existing = session.query(User).filter_by(email=data.get('email', '')).first()
         if existing:
             labels = {'professor': 'un enseignant', 'student': 'un étudiant',
-                      'admin': 'un administrateur', 'surveillant': 'un surveillant'}
+                      'admin': 'un administrateur', 'surveillant': 'un surveillant',
+                      'superviseur': 'un superviseur'}
             label = labels.get(existing.role.value, 'un utilisateur')
             return jsonify({'error': f"Cet email est déjà utilisé par {label} ({existing.full_name})."}), 400
 
         role_str = data.get('role', 'student').upper()
-        if role_str not in ['STUDENT', 'PROFESSOR', 'ADMIN', 'SURVEILLANT']:
+        if role_str not in ['STUDENT', 'PROFESSOR', 'ADMIN', 'SURVEILLANT', 'SUPERVISEUR']:
             return jsonify({'error': 'Rôle invalide'}), 400
 
         # Niveau texte libre — fallback seulement si aucune Formation n'est
@@ -280,7 +285,7 @@ def update_user(target_id):
             user.password_hash = bcrypt.generate_password_hash(data['password']).decode('utf-8')
         if 'role' in data:
             rs = data['role'].upper()
-            if rs in ['STUDENT', 'PROFESSOR', 'ADMIN', 'SURVEILLANT']:
+            if rs in ['STUDENT', 'PROFESSOR', 'ADMIN', 'SURVEILLANT', 'SUPERVISEUR']:
                 user.role = UserRole[rs]
         if 'is_active' in data:
             user.is_active = bool(data['is_active'])

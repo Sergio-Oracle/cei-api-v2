@@ -2525,11 +2525,18 @@ OPENAPI_SPEC = {
                 "`suggestion.difficulty` reste la tendance dominante de l'examen, mais les questions individuelles couvrent TOUJOURS un mélange "
                 "des trois niveaux (Facile/Moyen/Difficile) — chaque titre de question porte un second marqueur juste après son marqueur de "
                 "type, ex. `[QCM] [Difficile]`, visible dans `content` pour l'enseignant mais retiré automatiquement de l'affichage étudiant "
-                "côté frontend (comme les marqueurs [QCM]/[VF]/[OUVERT])."
+                "côté frontend (comme les marqueurs [QCM]/[VF]/[OUVERT]). "
+                "`suggestion.total_points` (défaut 20) et `suggestion.points_by_type` (Retour Atelier CEI 7/08 — barème choisi par "
+                "l'enseignant, plus jamais réparti également par l'IA) remplacent le total fixe à 20 points d'origine : si plusieurs types de "
+                "questions sont sélectionnés, `points_by_type` (ex. `{\"qcm\": 8, \"open\": 12}`) impose le nombre de points de CHAQUE partie ; "
+                "un type absent de `points_by_type` (ou toute la clé si omise) retombe sur une répartition égale entre les types sélectionnés."
             ),
             "requestBody": {"required": True, "content": {"application/json": {"schema": {
                 "type": "object", "required": ["suggestion"],
-                "properties": {"suggestion": {"type": "object", "description": "Objet suggestion retourné par generate-exam-suggestions, avec grading_criteria optionnellement adapté par l'enseignant"}}
+                "properties": {"suggestion": {"type": "object", "description": "Objet suggestion retourné par generate-exam-suggestions, avec grading_criteria/total_points/points_by_type optionnellement adaptés par l'enseignant", "properties": {
+                    "total_points":    {"type": "integer", "default": 20, "minimum": 1, "maximum": 200, "description": "Barème total de l'examen généré, choisi par l'enseignant"},
+                    "points_by_type":  {"type": "object", "description": "Points par type de question sélectionné (clés : qcm, qcm_multi, vf, appariement, code, open, subopen) — doit sommer à total_points si plusieurs types sont sélectionnés", "additionalProperties": {"type": "integer"}}
+                }}}
             }}}},
             "responses": {"200": {"description": "Sujet généré", "content": {"application/json": {"schema": {
                 "type": "object",
@@ -2565,12 +2572,13 @@ OPENAPI_SPEC = {
         "/api/subjects/generate-more-questions": {"post": {
             "tags": ["Intelligence Artificielle"],
             "summary": "Générer des questions supplémentaires à ajouter à un sujet (prof/admin)",
-            "description": "Ajoute N nouvelles questions d'un type donné à un sujet déjà généré (sans le remplacer), en évitant les thèmes déjà couverts. Redistribue automatiquement les points sur 20 au total (anciennes + nouvelles) et étend le barème d'une entrée par nouvelle question. `difficulty` reste le niveau dominant demandé ; si `count` > 1, les nouvelles questions varient légèrement de niveau (marqueur [Facile]/[Moyen]/[Difficile] après le marqueur de type) plutôt que d'être toutes identiques.",
+            "description": "Ajoute N nouvelles questions d'un type donné à un sujet déjà généré (sans le remplacer), en évitant les thèmes déjà couverts. Redistribue automatiquement les points sur le total du sujet (anciennes + nouvelles questions) et étend le barème d'une entrée par nouvelle question. `total_points` (optionnel) fixe explicitement ce total ; à défaut, il est détecté depuis la somme des points déjà présents dans `existing_content` (plus jamais imposé à 20). `difficulty` reste le niveau dominant demandé ; si `count` > 1, les nouvelles questions varient légèrement de niveau (marqueur [Facile]/[Moyen]/[Difficile] après le marqueur de type) plutôt que d'être toutes identiques.",
             "requestBody": {"required": True, "content": {"application/json": {"schema": {
                 "type": "object", "required": ["existing_content"],
                 "properties": {
                     "existing_content": {"type": "string", "description": "Contenu actuel du sujet"},
                     "existing_rubric":  {"type": "string", "description": "Barème actuel du sujet"},
+                    "total_points":     {"type": "integer", "description": "Total à respecter après ajout (défaut : détecté depuis existing_content, sinon 20)"},
                     "count":            {"type": "integer", "default": 3, "description": "Nombre de questions à ajouter, 1 à 10"},
                     "question_type":    {"type": "string", "example": "QCM", "description": "Type des nouvelles questions"},
                     "title":            {"type": "string"},

@@ -4478,6 +4478,17 @@ def generate_full_exam_from_suggestion():
     except (TypeError, ValueError):
         question_count = 20
 
+    # Retour Atelier CEI 7/08 — le barème n'est plus imposé à 20 points : c'est
+    # l'enseignant qui choisit le total (et, si plusieurs types de questions
+    # sont sélectionnés, la répartition par type) AVANT génération, au lieu de
+    # laisser l'IA décider seule. points_by_type est optionnel — en son
+    # absence, répartition égale entre les types comme avant.
+    try:
+        total_points = max(1, min(200, int(suggestion.get('total_points') or 20)))
+    except (TypeError, ValueError):
+        total_points = 20
+    raw_points_by_type = suggestion.get('points_by_type') or {}
+
     # Niveaux taxonomiques de Bloom (Retour #5) — ciblent la répartition cognitive
     # des questions générées ; le professeur les sélectionne dans le formulaire.
     _BLOOM_LABELS = {
@@ -4621,32 +4632,46 @@ C) [Sous-question c) — DOIT s'appuyer sur b) (et/ou a)), poursuivant la même 
 
     if not is_mixed and len(_selected) == 1:
         _title, _marker, _tpl, _rule, _rubric_rule = _TEMPLATES[_selected[0]]
-        questions_format = "\n\n".join(_tpl.format(n=i) for i in (1, 2)) + f"\n\n[Continuer ainsi jusqu'à {question_count} questions au total, selon durée et difficulté. Total des points = 20 pts]"
-        format_rules = f"- OBLIGATOIRE : {_rule}\n- EXACTEMENT {question_count} questions au total, numérotées Question 1 à Question {question_count} × points répartis pour totaliser 20 pts"
+        questions_format = "\n\n".join(_tpl.format(n=i) for i in (1, 2)) + f"\n\n[Continuer ainsi jusqu'à {question_count} questions au total, selon durée et difficulté. Total des points = {total_points} pts]"
+        format_rules = f"- OBLIGATOIRE : {_rule}\n- EXACTEMENT {question_count} questions au total, numérotées Question 1 à Question {question_count} × points répartis pour totaliser {total_points} pts"
         rubric_example = f"Question 1 — [Titre] (X pts)\n{_rubric_rule}"
         rubric_format_rules = f"- OBLIGATOIRE, pour CHAQUE question du barème : {_rubric_rule.strip()}"
         checklist_line = ""
     else:
-        pts_per_part = max(1, 20 // len(_selected))
+        # Répartition des points par type — celle choisie par l'enseignant si
+        # fournie (suggestion.points_by_type), sinon répartition égale entre
+        # les types sélectionnés (comportement historique, en repli).
+        _even_split = max(1, total_points // len(_selected))
+        _remainder = total_points - _even_split * len(_selected)
+        pts_by_type: dict = {}
+        for idx, k in enumerate(_selected):
+            try:
+                _v = int(raw_points_by_type.get(k))
+            except (TypeError, ValueError):
+                _v = None
+            pts_by_type[k] = _v if _v and _v > 0 else (_even_split + (1 if idx < _remainder else 0))
+
         q_per_part = max(1, question_count // len(_selected))
         sections = []
         n_start = 1
         for k in _selected:
             _title, _marker, _tpl, _rule, _rubric_rule = _TEMPLATES[k]
             sections.append(
-                f"Partie — {_title} ({pts_per_part} pts, ~{q_per_part} questions)\n\n" +
+                f"Partie — {_title} ({pts_by_type[k]} pts, ~{q_per_part} questions)\n\n" +
                 "\n\n".join(_tpl.format(n=i) for i in (n_start, n_start+1)) +
                 "\n\n[... continuer cette partie selon durée/difficulté ...]"
             )
             n_start += q_per_part
         _part_titles = [_TEMPLATES[k][0] for k in _selected]
-        questions_format = "\n\n".join(sections) + f"\n\n[Numérotation continue d'une partie à l'autre. EXACTEMENT {question_count} questions au total. Total de toutes les parties = 20 pts]"
+        _computed_total = sum(pts_by_type.values())
+        questions_format = "\n\n".join(sections) + f"\n\n[Numérotation continue d'une partie à l'autre. EXACTEMENT {question_count} questions au total. Total de toutes les parties = {_computed_total} pts]"
         format_rules = (
-            "\n".join(f"- Partie {_TEMPLATES[k][0]} : {_TEMPLATES[k][3]}" for k in _selected)
-            + f"\n- EXACTEMENT {question_count} questions au total (toutes parties confondues)\n- Total toutes parties confondues = 20 pts"
+            "\n".join(f"- Partie {_TEMPLATES[k][0]} : {_TEMPLATES[k][3]} — cette partie doit totaliser EXACTEMENT {pts_by_type[k]} points (choisi par l'enseignant, à respecter strictement)" for k in _selected)
+            + f"\n- EXACTEMENT {question_count} questions au total (toutes parties confondues)\n- Total toutes parties confondues = {_computed_total} pts"
             + f"\n- OBLIGATOIRE : les {len(_selected)} parties suivantes DOIVENT TOUTES apparaître dans le sujet final, chacune avec au moins {q_per_part} questions — "
               f"il est INTERDIT d'omettre une partie entière, même partiellement : {', '.join(_part_titles)}"
         )
+        total_points = _computed_total
         rubric_example = "\n\n".join(f"Question {i} — [Titre] (X pts)  ({_TEMPLATES[k][0]})\n{_TEMPLATES[k][4]}" for i, k in enumerate(_selected, start=1))
         rubric_format_rules = "\n".join(f"- Pour toute question de type {_TEMPLATES[k][0]} : {_TEMPLATES[k][4].strip()}" for k in _selected)
         # Rappel final, juste avant la fin du prompt — un modèle suit mieux une
@@ -4717,7 +4742,7 @@ GÉNÈRE le sujet en respectant EXACTEMENT ce format (NE DÉVIE JAMAIS de ce for
 ══════════════════════════════════════
 Type d'examen : {exam_type}
 Niveau : {student_level} | Difficulté : {difficulty}
-Durée : {duration} minutes | Note totale : 20 points
+Durée : {duration} minutes | Note totale : {total_points} points
 ══════════════════════════════════════
 
 INSTRUCTIONS AUX ÉTUDIANTS
@@ -4739,7 +4764,7 @@ BARÈME DE NOTATION
 [Un critère par question — respecte EXACTEMENT le format demandé ci-dessous selon le type de chaque question]
 
 ──────────────────────────
-TOTAL : 20 / 20 points
+TOTAL : {total_points} / {total_points} points
 ══════════════════════════════════════
 
 Règles ABSOLUES à respecter :
@@ -4934,25 +4959,24 @@ RÈGLES ABSOLUES :
                     else:
                         rubric = f"{rubric}\n\n{_addendum}"
 
-        # Filet de sécurité : malgré la consigne "Total des points = 20 pts",
+        # Filet de sécurité : malgré la consigne "Total des points = {total_points} pts",
         # l'IA additionne parfois mal ses propres sections (ex. constaté : 3
-        # sections annoncées à 6/6/6 pts alors que l'énoncé affiche "Note
-        # totale : 20 points" — somme réelle des questions = 18). Comme la
+        # sections annoncées à 6/6/6 pts alors que l'énoncé affiche un total
+        # différent — somme réelle des questions incohérente). Comme la
         # notation (correction déterministe ET recalcul manuel question par
         # question, voir update_question_grades) se base sur le total RÉEL
         # des points par question extraits de `content`, un barème qui ne
-        # totalise pas 20 fait gonfler artificiellement la note lors du
-        # recalcul (ex: 2/18 pts rescalé à 2.22/20 au lieu de 2/20). On
-        # rescale donc proportionnellement (en préservant la pondération
-        # relative voulue par l'IA, contrairement à generate_more_questions
-        # qui répartit à parts égales) pour que le barème soit toujours
-        # cohérent avec lui-même dès la génération.
+        # totalise pas le total choisi par l'enseignant fait dériver la note
+        # lors du recalcul. On rescale donc proportionnellement (en
+        # préservant la pondération relative voulue par l'IA, contrairement à
+        # generate_more_questions qui répartit à parts égales) pour que le
+        # barème soit toujours cohérent avec lui-même dès la génération.
         _q_points = {int(n): p for n, p in _question_points_map(content).items()}
         _total_pts = sum(_q_points.values())
-        if _q_points and abs(_total_pts - 20) > 0.01:
-            _scale = 20.0 / _total_pts
+        if _q_points and abs(_total_pts - total_points) > 0.01:
+            _scale = total_points / _total_pts
             _rescaled = {n: round(p * _scale * 2) / 2 for n, p in _q_points.items()}
-            _diff = round(20 - sum(_rescaled.values()), 2)
+            _diff = round(total_points - sum(_rescaled.values()), 2)
             # Absorber le reliquat par pas de 0.5 sur la question la PLUS
             # grande qui peut l'encaisser SANS descendre sous 0.5 pt — l'ancien
             # code ajoutait tout le reliquat d'un coup sur la plus grande
@@ -5145,10 +5169,10 @@ def _redistribute_rubric_criteria(rubric_before, rubric_after, points_map):
 def generate_more_questions():
     """Génère N questions supplémentaires d'un type donné à AJOUTER à un sujet
     déjà généré (sans le remplacer), en évitant de dupliquer les thèmes déjà
-    couverts. Redistribue les points sur 20 au total (anciennes + nouvelles
-    questions) et étend le barème avec une entrée par nouvelle question —
-    Retour : "le barème est toujours à 20/20 points, il devrait appliquer les
-    nouvelles questions"."""
+    couverts. Redistribue les points sur le total du sujet — `total_points`
+    si fourni, sinon le total RÉEL déjà en vigueur (détecté depuis le barème
+    existant, plus jamais imposé à 20) — et étend le barème avec une entrée
+    par nouvelle question."""
     user_id = get_current_user_id()
     session = get_session()
     user = session.query(User).filter_by(id=int(user_id)).first()
@@ -5231,10 +5255,22 @@ RÈGLES ABSOLUES :
                     duplicates.append({'similarity': round(sim * 100, 1)})
                     break
 
-        # ── Redistribution des points sur 20 au total (anciennes + nouvelles
+        # ── Redistribution des points sur le total du sujet (anciennes + nouvelles
         # questions) et extension du barème — sans ça, les nouvelles questions
         # n'ont ni point ni critère, et le total restait figé sur l'ancien
-        # découpage.
+        # découpage. Le total n'est plus imposé à 20 (Retour Atelier CEI 7/08) :
+        # utilise `total_points` si fourni par le frontend, sinon détecte le
+        # total RÉEL déjà en vigueur sur ce sujet (somme des points actuels par
+        # question) plutôt que d'écraser silencieusement un barème personnalisé.
+        try:
+            _existing_total = round(sum(_question_points_map(existing_content).values()))
+        except Exception:
+            _existing_total = 0
+        try:
+            subject_total_points = int(data.get('total_points') or 0) or (_existing_total if _existing_total > 0 else 20)
+        except (TypeError, ValueError):
+            subject_total_points = _existing_total if _existing_total > 0 else 20
+
         full_content = existing_content
         full_rubric  = existing_rubric
         existing_nums = sorted(set(int(n) for n in re.findall(r'Question\s+(\d{1,3})\s*[—\-–:.]', existing_content)))
@@ -5242,8 +5278,8 @@ RÈGLES ABSOLUES :
         all_nums = sorted(set(existing_nums) | set(new_nums))
         if all_nums:
             total = len(all_nums)
-            base_pts  = 20 // total
-            remainder = 20 - base_pts * total
+            base_pts  = subject_total_points // total
+            remainder = subject_total_points - base_pts * total
             points_map = {}
             for i, num in enumerate(all_nums):
                 points_map[num] = base_pts + (1 if i < remainder else 0)

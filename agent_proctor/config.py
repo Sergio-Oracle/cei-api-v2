@@ -4,8 +4,14 @@ from dotenv import load_dotenv
 
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '..', '.env'), override=True)
 
-# CEI Platform
-CEI_BASE_URL   = os.getenv("APP_URL", "http://127.0.0.1:5000")
+# CEI Platform — chaque serveur qui héberge une instance CEI doit surveiller
+# SA PROPRE instance, jamais celle d'un autre serveur (pas de surveillance
+# croisée). AGENT_APP_URL est une clé dédiée à l'agent, distincte de APP_URL
+# (utilisée ailleurs par l'app elle-même pour générer des liens publics dans
+# les emails — ne doit jamais pointer vers un localhost/URL interne). Si
+# AGENT_APP_URL est absent, l'agent retombe sur APP_URL (comportement
+# historique, correct quand APP_URL EST déjà l'URL publique de CETTE instance).
+CEI_BASE_URL   = os.getenv("AGENT_APP_URL") or os.getenv("APP_URL", "http://127.0.0.1:5000")
 AGENT_SECRET   = os.getenv("AGENT_SECRET_KEY", "changeme-agent-secret-key")
 
 # SMTP — mêmes credentials que la plateforme

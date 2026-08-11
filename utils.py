@@ -8,6 +8,7 @@ import logging
 import os
 import hashlib
 import smtplib
+import subprocess
 
 _log = logging.getLogger('cei.utils')
 from email.mime.text import MIMEText
@@ -71,14 +72,14 @@ def calculate_content_hash(content):
 # ============================================================================
 
 def extract_text_from_file(filepath):
-    """Extraire le texte d'un fichier PDF, DOCX ou TXT"""
+    """Extraire le texte d'un fichier PDF, DOC/DOCX ou TXT"""
     ext = filepath.lower().split('.')[-1]
 
     try:
         if ext == 'pdf':
             return extract_text_from_pdf(filepath)
-        elif ext in ['docx', 'doc']:
-            return extract_text_from_docx(filepath)
+        elif ext in ('docx', 'doc'):
+            return extract_text_from_word(filepath)
         elif ext == 'txt':
             with open(filepath, 'r', encoding='utf-8') as f:
                 return f.read()
@@ -86,6 +87,59 @@ def extract_text_from_file(filepath):
             return None
     except Exception as e:
         print(f"⚠️ Erreur extraction texte: {e}")
+        return None
+
+
+def extract_text_from_word(filepath):
+    """Route un fichier Word vers le bon extracteur selon la SIGNATURE réelle
+    du fichier (octets d'en-tête), pas seulement son extension déclarée — un
+    .doc renommé en .docx (ou l'inverse, cas fréquent quand un professeur
+    change juste l'extension à la main) échouerait sinon silencieusement.
+    ZIP (PK\\x03\\x04) = .docx moderne (OOXML) → python-docx.
+    OLE2 (D0 CF 11 E0 A1 B1 1A E1) = .doc legacy (binaire, pré-2007) → catdoc,
+    que python-docx ne sait pas du tout lire (il lève une ValueError)."""
+    try:
+        with open(filepath, 'rb') as f:
+            header = f.read(8)
+    except Exception as e:
+        print(f"⚠️ Erreur lecture fichier Word: {e}")
+        return None
+
+    if header.startswith(b'PK\x03\x04'):
+        return extract_text_from_docx(filepath)
+    if header.startswith(b'\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1'):
+        return extract_text_from_doc_legacy(filepath)
+    # Signature non reconnue (fichier corrompu/inhabituel) — retomber sur
+    # l'extension déclarée plutôt que d'abandonner immédiatement.
+    return extract_text_from_docx(filepath) if filepath.lower().endswith('.docx') else extract_text_from_doc_legacy(filepath)
+
+
+def extract_text_from_doc_legacy(filepath):
+    """Extraire le texte d'un .doc binaire legacy (pré-2007, format OLE2)
+    via catdoc (paquet système `catdoc`, installé sur les serveurs CEI) —
+    python-docx ne sait lire que le format OOXML moderne (.docx) et échoue
+    sur ce format. -d utf-8 force un encodage de sortie stable quel que soit
+    le locale du serveur ; -w désactive le retour à la ligne artificiel à 72
+    caractères pour rester cohérent avec l'extraction .docx (un paragraphe
+    = une ligne)."""
+    try:
+        result = subprocess.run(
+            ['catdoc', '-d', 'utf-8', '-w', filepath],
+            capture_output=True, timeout=30,
+        )
+        if result.returncode != 0:
+            print(f"⚠️ catdoc a échoué (code {result.returncode}): {result.stderr.decode('utf-8', errors='replace')[:300]}")
+            return None
+        text = result.stdout.decode('utf-8', errors='replace').strip()
+        return text or None
+    except FileNotFoundError:
+        print("⚠️ catdoc introuvable sur ce serveur (paquet système `catdoc` requis pour lire les .doc legacy)")
+        return None
+    except subprocess.TimeoutExpired:
+        print("⚠️ catdoc: délai dépassé (fichier .doc trop volumineux ou corrompu)")
+        return None
+    except Exception as e:
+        print(f"⚠️ Erreur extraction .doc legacy: {e}")
         return None
 
 def _is_garbled(text):

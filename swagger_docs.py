@@ -138,6 +138,9 @@ _SCHEMAS = {
             "auto_correct":        {"type": "boolean", "default": False},
             "results_published":   {"type": "boolean", "default": False},
             "enable_calculator":   {"type": "boolean", "default": False, "description": "Calculatrice scientifique intégrée à la page de composition"},
+            "auto_correct":        {"type": "boolean", "default": False, "description": "Correction IA automatique dès qu'un étudiant soumet sa copie"},
+            "scheduled_correction_at": {"type": "string", "format": "date-time", "nullable": True, "description": "Heure précise programmée pour corriger en bloc toutes les copies soumises non corrigées — voir /api/agent/run_scheduled_correction/{exam_id}"},
+            "correction_triggered_at": {"type": "string", "format": "date-time", "nullable": True, "description": "Renseigné automatiquement une fois la correction planifiée effectivement déclenchée — empêche tout second déclenchement"},
             "creator_name":        {"type": "string"},
             "created_at":          {"type": "string", "format": "date-time"},
             "is_active":           {"type": "boolean"},
@@ -1375,7 +1378,7 @@ OPENAPI_SPEC = {
         "/api/subjects/upload": {"post": {
             "tags": ["Sujets"],
             "summary": "Uploader un ou plusieurs fichiers pour créer un sujet",
-            "description": "Envoie un ou plusieurs PDF/DOCX/TXT via le champ répété `files`. Chaque fichier est extrait séparément puis concaténé avec un séparateur `--- Fichier: <nom> ---` avant d'être soumis à l'IA (utile pour un cours réparti en plusieurs documents : poly + TD + annales). L'IA génère automatiquement le barème. Support OCR pour les PDF CIDFont illisibles.",
+            "description": "Envoie un ou plusieurs PDF/DOCX/TXT via le champ répété `files`. Chaque fichier est extrait séparément puis concaténé avec un séparateur `--- Fichier: <nom> ---` avant d'être soumis à l'IA (utile pour un cours réparti en plusieurs documents : poly + TD + annales). L'IA génère automatiquement le barème. Support OCR pour les PDF CIDFont illisibles. Fichiers Word : le format réel (.doc binaire legacy pré-2007 vs .docx OOXML moderne) est détecté par signature d'octets, pas seulement par l'extension déclarée — un .doc legacy est extrait via `catdoc` (python-docx ne le lit pas).",
             "requestBody": {"required": True, "content": {"multipart/form-data": {"schema": {
                 "type": "object", "required": ["files"],
                 "properties": {
@@ -1564,7 +1567,9 @@ OPENAPI_SPEC = {
                         "ban_on_devtools":     {"type": "boolean", "default": True, "description": "Détecter l'ouverture des outils développeur"},
                         "auto_ban_enabled":    {"type": "boolean", "default": False, "description": "Si false (défaut), un seuil atteint (onglets/visage/devtools) envoie une alerte (agent autonome + notification) au lieu d'exclure automatiquement l'étudiant — décision manuelle requise."},
                         "enable_file_download": {"type": "boolean", "default": False, "description": "Autoriser le téléchargement des fichiers du sujet (images/vidéos/audios) — si false, bloque notamment le bouton de téléchargement natif des lecteurs vidéo/audio, indépendamment du clic droit"},
-                        "enable_calculator":   {"type": "boolean", "default": False, "description": "Active une calculatrice scientifique intégrée à la page de composition (aucun appel réseau) — évite le recours à une calculatrice physique ou un téléphone, non vérifiables par le surveillant"}
+                        "enable_calculator":   {"type": "boolean", "default": False, "description": "Active une calculatrice scientifique intégrée à la page de composition (aucun appel réseau) — évite le recours à une calculatrice physique ou un téléphone, non vérifiables par le surveillant"},
+                        "auto_correct":        {"type": "boolean", "default": False, "description": "Correction IA automatique dès qu'un étudiant soumet sa copie"},
+                        "scheduled_correction_at": {"type": "string", "format": "date-time", "nullable": True, "description": "Heure précise (optionnelle) à laquelle corriger EN BLOC toutes les copies soumises et pas encore corrigées de cet examen — indépendant de `auto_correct`. Déclenché par l'agent autonome (voir /api/agent/due_corrections), jamais deux fois pour le même examen."}
                     }
                 }}}},
                 "responses": {"201": {"description": "Examen créé", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/OnlineExam"}}}}}
@@ -2285,6 +2290,52 @@ OPENAPI_SPEC = {
                     }}}
                 },
                 "403": {"$ref": "#/components/responses/Forbidden"}
+            }
+        }},
+        "/api/agent/due_corrections": {"get": {
+            "tags": ["Agent autonome"],
+            "summary": "Liste les examens dont la correction planifiée est due",
+            "description": (
+                "Retourne les examens dont `scheduled_correction_at` est passé et dont "
+                "`correction_triggered_at` est encore NULL (jamais traités). Interrogé par l'agent "
+                "autonome toutes les 30s (voir agent_proctor/monitor.py) pour déclencher la correction en "
+                "bloc — voir /api/agent/run_scheduled_correction/{exam_id}. Requiert `X-Agent-Secret`. "
+                "**Inaccessible via JWT.**"
+            ),
+            "responses": {
+                "200": {"description": "Examens dus", "content": {"application/json": {"schema": {
+                    "type": "object",
+                    "properties": {"exams": {"type": "array", "items": {"type": "object", "properties": {
+                        "id": {"type": "integer"}, "title": {"type": "string"}
+                    }}}}
+                }}}},
+                "403": {"description": "Header X-Agent-Secret absent ou incorrect — inaccessible via JWT"}
+            }
+        }},
+        "/api/agent/run_scheduled_correction/{exam_id}": {"post": {
+            "tags": ["Agent autonome"],
+            "summary": "Déclenche la correction planifiée en bloc d'un examen",
+            "description": (
+                "Corrige par IA toutes les tentatives soumises et pas encore notées de l'examen. Marque "
+                "`correction_triggered_at` AVANT de corriger (pas après) pour qu'un appel en double "
+                "(redémarrage de l'agent, chevauchement de cycles) ne déclenche jamais deux fois la même "
+                "correction — un second appel renvoie `already_triggered: true` sans rien refaire. Une "
+                "tentative en échec (ex. réponses vides) n'interrompt pas la correction des autres. Notifie "
+                "le créateur de l'examen une fois terminé. Requiert `X-Agent-Secret`. **Inaccessible via JWT.**"
+            ),
+            "parameters": [{"name": "exam_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+            "responses": {
+                "200": {"description": "Correction en bloc terminée (ou déjà déclenchée)", "content": {"application/json": {"schema": {
+                    "type": "object",
+                    "properties": {
+                        "success":           {"type": "boolean"},
+                        "corrected":         {"type": "integer", "description": "Nombre de copies corrigées avec succès"},
+                        "failed":            {"type": "integer", "description": "Nombre de copies en échec (ex. aucune réponse)"},
+                        "already_triggered": {"type": "boolean", "description": "True si cet examen avait déjà été traité — aucune action effectuée"}
+                    }
+                }}}},
+                "403": {"description": "Header X-Agent-Secret absent ou incorrect — inaccessible via JWT"},
+                "404": {"$ref": "#/components/responses/NotFound"}
             }
         }},
 

@@ -212,7 +212,20 @@ def create_online_exam():
         except ValueError as ve:
             session.close()
             return jsonify({'error': f'Format de date invalide: {str(ve)}'}), 400
-       
+
+        # Correction planifiée à une heure précise (optionnelle) — même
+        # normalisation UTC que start_time/end_time.
+        scheduled_correction_at = None
+        raw_sched_corr = data.get('scheduled_correction_at')
+        if raw_sched_corr:
+            try:
+                if '+' not in raw_sched_corr and raw_sched_corr[-6:] != '+00:00':
+                    raw_sched_corr += '+00:00'
+                scheduled_correction_at = datetime.fromisoformat(raw_sched_corr).astimezone(timezone.utc).replace(tzinfo=None)
+            except ValueError:
+                session.close()
+                return jsonify({'error': 'Format de date de correction planifiée invalide'}), 400
+
         # Créer l'examen avec durée calculée
         exam = OnlineExam(
             subject_id=data['subject_id'],
@@ -232,6 +245,7 @@ def create_online_exam():
             ban_on_devtools=data.get('ban_on_devtools', True),
             auto_ban_enabled=data.get('auto_ban_enabled', False),
             auto_correct=data.get('auto_correct', False),
+            scheduled_correction_at=scheduled_correction_at,
             enable_calculator=data.get('enable_calculator', False),
             status=ExamStatus.SCHEDULED,
             created_by_id=user_id
@@ -484,6 +498,24 @@ def edit_online_exam(exam_id):
                 exam.time_per_question_seconds = max(0, min(3600, int(v))) if v else None
             except (TypeError, ValueError):
                 pass
+        if 'scheduled_correction_at' in data:
+            raw_sched_corr = data['scheduled_correction_at']
+            if not raw_sched_corr:
+                exam.scheduled_correction_at = None
+                exam.correction_triggered_at = None
+            else:
+                try:
+                    if '+' not in raw_sched_corr and raw_sched_corr[-6:] != '+00:00':
+                        raw_sched_corr += '+00:00'
+                    new_sched = datetime.fromisoformat(raw_sched_corr).astimezone(timezone.utc).replace(tzinfo=None)
+                    # Une nouvelle heure planifiée relance l'éligibilité même si
+                    # une correction avait déjà été déclenchée précédemment.
+                    if new_sched != exam.scheduled_correction_at:
+                        exam.correction_triggered_at = None
+                    exam.scheduled_correction_at = new_sched
+                except ValueError:
+                    session.close()
+                    return jsonify({'error': 'Format de date de correction planifiée invalide'}), 400
         session.commit()
         result = exam.to_dict()
         session.close()
@@ -2105,98 +2137,72 @@ def export_exam_results_csv(exam_id):
 # CORRECTION AUTOMATIQUE DES EXAMENS EN LIGNE AVEC IA
 # ============================================================================
 
-@exams_bp.route('/api/exam_attempts/<int:attempt_id>/correct', methods=['POST'])
-@paseto_required
-def correct_exam_attempt(attempt_id):
-    """Corriger automatiquement une tentative d'examen avec IA"""
+def _run_ai_correction(attempt, corrected_by_id=None) -> float:
+    """Corrige une tentative déjà soumise avec IA — logique de notation
+    partagée entre la correction manuelle (bouton professeur,
+    correct_exam_attempt) et la correction planifiée à heure précise
+    (agent autonome, voir run_scheduled_correction). Suppose attempt.exam/
+    exam.subject/attempt.student déjà chargés (joinedload). Met à jour
+    l'objet `attempt` mais NE COMMIT PAS — laissé à l'appelant (permet un
+    commit par lot lors d'une correction planifiée sur tout un examen).
+    Lève ValueError si rien n'est corrigeable (aucune réponse)."""
+    exam = attempt.exam
+    subject = exam.subject
+
+    # Extraire les réponses de l'étudiant (clés plates pq_N/pq_N_x réellement
+    # envoyées par le frontend — reconstruites avec le texte des questions/
+    # choix/paires pour que l'IA voie le contexte complet)
     try:
-        user_id = get_current_user_id()
-        session = get_session()
-        
-        user = session.query(User).filter_by(id=user_id).first()
-        if user.role not in [UserRole.PROFESSOR, UserRole.ADMIN]:
-            session.close()
-            return jsonify({'error': 'Accès non autorisé'}), 403
-        
-        # Récupérer la tentative
-        attempt = session.query(ExamAttempt).options(
-            joinedload(ExamAttempt.exam).joinedload(OnlineExam.subject),
-            joinedload(ExamAttempt.student)
-        ).filter_by(id=attempt_id).first()
-        
-        if not attempt:
-            session.close()
-            return jsonify({'error': 'Tentative non trouvée'}), 404
-        
-        # Vérifier que la tentative est soumise
-        if attempt.status not in [AttemptStatus.SUBMITTED, AttemptStatus.AUTO_SUBMITTED]:
-            session.close()
-            return jsonify({'error': 'Cette tentative n\'est pas encore soumise'}), 400
-        
-        # Vérifier que le professeur est propriétaire de l'examen
-        if user.role == UserRole.PROFESSOR and attempt.exam.created_by_id != user_id:
-            session.close()
-            return jsonify({'error': 'Vous ne pouvez corriger que vos propres examens'}), 403
-        
-        exam = attempt.exam
-        subject = exam.subject
-        
-        # Extraire les réponses de l'étudiant (clés plates pq_N/pq_N_x réellement
-        # envoyées par le frontend — reconstruites avec le texte des questions/
-        # choix/paires pour que l'IA voie le contexte complet)
-        try:
-            answers_data = json.loads(attempt.answers) if attempt.answers else {}
-        except Exception:
-            answers_data = {}
+        answers_data = json.loads(attempt.answers) if attempt.answers else {}
+    except Exception:
+        answers_data = {}
 
-        if not answers_data:
-            session.close()
-            return jsonify({'error': 'Aucune réponse à corriger pour cet étudiant'}), 400
+    if not answers_data:
+        raise ValueError('Aucune réponse à corriger pour cet étudiant')
 
-        # Notation automatique (sans IA) des questions QCM/QCM_MULTI/Vrai-Faux/
-        # Appariement — comme Moodle. Seul le reliquat de points (questions
-        # ouvertes/code) est confié à l'IA, sur son propre total réduit. Le
-        # score final est ramené proportionnellement sur 20 à partir du total
-        # RÉEL des points du sujet (souvent ≠ 20 malgré la consigne de
-        # génération), plutôt que de supposer un total fixe.
-        det_score, det_max, total_max, det_breakdown, det_nums, det_structured = _deterministic_grade(
-            subject.content, subject.rubric or '', answers_data if isinstance(answers_data, dict) else {})
-        remaining_max = round(total_max - det_max, 2)
-        det_section = (
-            "=== Tes réponses aux questions à choix ===\n"
-            + ('\n'.join(det_breakdown) if det_breakdown else 'Aucune question de ce type notée.') + "\n\n"
-        ) if det_breakdown else ""
+    # Notation automatique (sans IA) des questions QCM/QCM_MULTI/Vrai-Faux/
+    # Appariement — comme Moodle. Seul le reliquat de points (questions
+    # ouvertes/code) est confié à l'IA, sur son propre total réduit. Le
+    # score final est ramené proportionnellement sur 20 à partir du total
+    # RÉEL des points du sujet (souvent ≠ 20 malgré la consigne de
+    # génération), plutôt que de supposer un total fixe.
+    det_score, det_max, total_max, det_breakdown, det_nums, det_structured = _deterministic_grade(
+        subject.content, subject.rubric or '', answers_data if isinstance(answers_data, dict) else {})
+    remaining_max = round(total_max - det_max, 2)
+    det_section = (
+        "=== Tes réponses aux questions à choix ===\n"
+        + ('\n'.join(det_breakdown) if det_breakdown else 'Aucune question de ce type notée.') + "\n\n"
+    ) if det_breakdown else ""
 
-        def _to_20(raw_points: float) -> float:
-            if total_max <= 0.01:
-                return 0.0
-            return max(0.0, min(20.0, raw_points / total_max * 20))
+    def _to_20(raw_points: float) -> float:
+        if total_max <= 0.01:
+            return 0.0
+        return max(0.0, min(20.0, raw_points / total_max * 20))
 
-        student_answers = ''
-        if remaining_max > 0.01:
-            student_answers = _build_readable_student_answers(subject.content, answers_data, exclude_nums=det_nums) if isinstance(answers_data, dict) else \
-                (answers_data if isinstance(answers_data, str) else '')
-            if not student_answers or not student_answers.strip():
-                student_answers = attempt.answers or ''
+    student_answers = ''
+    if remaining_max > 0.01:
+        student_answers = _build_readable_student_answers(subject.content, answers_data, exclude_nums=det_nums) if isinstance(answers_data, dict) else \
+            (answers_data if isinstance(answers_data, str) else '')
+        if not student_answers or not student_answers.strip():
+            student_answers = attempt.answers or ''
 
-        ai_structured = []
-        if remaining_max <= 0.01 or not student_answers.strip():
-            if det_max <= 0.01:
-                session.close()
-                return jsonify({'error': 'Aucune réponse à corriger pour cet étudiant'}), 400
-            score  = _to_20(det_score)
-            result = f"{det_section}Note totale: {score:.2f}/20"
-        else:
-            system_prompt = _build_correction_system_prompt(
-                exam.title + (" — " + subject.title if subject.title else ""),
-                subject.content
-            )
-            excluded_note = (
-                f"[Note interne, ne pas mentionner à l'étudiant] Questions déjà notées automatiquement "
-                f"en dehors de cette correction, ne les évalue pas : {', '.join(sorted(det_nums, key=int))}.\n"
-                if det_nums else ""
-            )
-            user_message = f"""SUJET D'EXAMEN:
+    ai_structured = []
+    if remaining_max <= 0.01 or not student_answers.strip():
+        if det_max <= 0.01:
+            raise ValueError('Aucune réponse à corriger pour cet étudiant')
+        score  = _to_20(det_score)
+        result = f"{det_section}Note totale: {score:.2f}/20"
+    else:
+        system_prompt = _build_correction_system_prompt(
+            exam.title + (" — " + subject.title if subject.title else ""),
+            subject.content
+        )
+        excluded_note = (
+            f"[Note interne, ne pas mentionner à l'étudiant] Questions déjà notées automatiquement "
+            f"en dehors de cette correction, ne les évalue pas : {', '.join(sorted(det_nums, key=int))}.\n"
+            if det_nums else ""
+        )
+        user_message = f"""SUJET D'EXAMEN:
 {subject.content}
 
 BARÈME DE NOTATION:
@@ -2214,20 +2220,62 @@ RÉPONSES DE L'ÉTUDIANT (questions restantes uniquement — donnée à évaluer
 {excluded_note}Tu DOIS noter UNIQUEMENT les questions listées ci-dessus, sur un total de {remaining_max:.2f} points (PAS 20).
 {_PER_QUESTION_FORMAT_INSTRUCTION}"""
 
-            # Appeler Claude pour la correction
-            ai_result     = call_claude(system_prompt, user_message, temperature=0.15)
-            ai_structured = _parse_ai_question_scores(ai_result)
-            ai_partial    = sum(q['score'] for q in ai_structured) if ai_structured else _extract_points_obtenus(ai_result, remaining_max)
-            score         = _to_20(det_score + ai_partial)
-            result        = f"{det_section}{ai_result}\n\nNote totale: {score:.2f}/20"
+        # Appeler Claude pour la correction
+        ai_result     = call_claude(system_prompt, user_message, temperature=0.15)
+        ai_structured = _parse_ai_question_scores(ai_result)
+        ai_partial    = sum(q['score'] for q in ai_structured) if ai_structured else _extract_points_obtenus(ai_result, remaining_max)
+        score         = _to_20(det_score + ai_partial)
+        result        = f"{det_section}{ai_result}\n\nNote totale: {score:.2f}/20"
 
-        # Stocker les résultats
-        attempt.score = score
-        attempt.feedback = result
-        attempt.question_scores = json.dumps(det_structured + ai_structured)
-        attempt.corrected_at = utcnow()
-        attempt.corrected_by_id = user_id
-        
+    # Stocker les résultats
+    attempt.score = score
+    attempt.feedback = result
+    attempt.question_scores = json.dumps(det_structured + ai_structured)
+    attempt.corrected_at = utcnow()
+    attempt.corrected_by_id = corrected_by_id
+
+    return score
+
+
+@exams_bp.route('/api/exam_attempts/<int:attempt_id>/correct', methods=['POST'])
+@paseto_required
+def correct_exam_attempt(attempt_id):
+    """Corriger automatiquement une tentative d'examen avec IA"""
+    try:
+        user_id = get_current_user_id()
+        session = get_session()
+
+        user = session.query(User).filter_by(id=user_id).first()
+        if user.role not in [UserRole.PROFESSOR, UserRole.ADMIN]:
+            session.close()
+            return jsonify({'error': 'Accès non autorisé'}), 403
+
+        # Récupérer la tentative
+        attempt = session.query(ExamAttempt).options(
+            joinedload(ExamAttempt.exam).joinedload(OnlineExam.subject),
+            joinedload(ExamAttempt.student)
+        ).filter_by(id=attempt_id).first()
+
+        if not attempt:
+            session.close()
+            return jsonify({'error': 'Tentative non trouvée'}), 404
+
+        # Vérifier que la tentative est soumise
+        if attempt.status not in [AttemptStatus.SUBMITTED, AttemptStatus.AUTO_SUBMITTED]:
+            session.close()
+            return jsonify({'error': 'Cette tentative n\'est pas encore soumise'}), 400
+
+        # Vérifier que le professeur est propriétaire de l'examen
+        if user.role == UserRole.PROFESSOR and attempt.exam.created_by_id != user_id:
+            session.close()
+            return jsonify({'error': 'Vous ne pouvez corriger que vos propres examens'}), 403
+
+        try:
+            score = _run_ai_correction(attempt, corrected_by_id=user_id)
+        except ValueError as ve:
+            session.close()
+            return jsonify({'error': str(ve)}), 400
+
         session.commit()
 
         # Pas d'email ici : la note reste masquée à l'étudiant tant que le
@@ -2236,19 +2284,114 @@ RÉPONSES DE L'ÉTUDIANT (questions restantes uniquement — donnée à évaluer
 
         attempt_dict = attempt.to_dict()
         session.close()
-        
+
         return jsonify({
             'success': True,
             'attempt': attempt_dict,
             'message': f'Correction terminée: {score}/20'
         })
-        
+
     except Exception as e:
         print(f"❌ Erreur correct_exam_attempt: {e}")
         import traceback; traceback.print_exc()
         try: session.rollback(); session.close()
         except: pass
         return jsonify({'error': str(e)}), 500
+
+
+# ── Correction planifiée à heure précise (agent autonome) ──────────────────
+# Retour Atelier CEI 7/08 : le professeur peut programmer une heure précise
+# de correction en bloc (ex. après la fin de TOUTES les sessions d'un examen
+# étalé sur plusieurs créneaux) plutôt que de se limiter à la correction
+# immédiate à la soumission (auto_correct) ou manuelle. Interrogé par
+# agent_proctor/monitor.py, même mécanisme d'authentification que le reste
+# des endpoints /api/agent/* (header X-Agent-Secret, indépendant du JWT).
+
+def _agent_auth() -> bool:
+    secret = os.getenv('AGENT_SECRET_KEY', 'changeme-agent-secret-key')
+    return request.headers.get('X-Agent-Secret') == secret
+
+
+@exams_bp.route('/api/agent/due_corrections', methods=['GET'])
+def agent_due_corrections():
+    """Liste les examens dont l'heure de correction planifiée est passée et
+    n'a pas encore été déclenchée. Requiert X-Agent-Secret."""
+    if not _agent_auth():
+        return jsonify({'error': 'Non autorisé'}), 403
+    session = get_session()
+    try:
+        now = utcnow()
+        exams = session.query(OnlineExam).filter(
+            OnlineExam.scheduled_correction_at.isnot(None),
+            OnlineExam.scheduled_correction_at <= now,
+            OnlineExam.correction_triggered_at.is_(None),
+        ).all()
+        return jsonify({'exams': [{'id': e.id, 'title': e.title} for e in exams]})
+    finally:
+        session.close()
+
+
+@exams_bp.route('/api/agent/run_scheduled_correction/<int:exam_id>', methods=['POST'])
+def agent_run_scheduled_correction(exam_id):
+    """Déclenche la correction IA de toutes les tentatives soumises et pas
+    encore corrigées d'un examen, pour le compte de sa correction planifiée.
+    Marque correction_triggered_at AVANT de corriger (et non après) pour
+    qu'un redémarrage/chevauchement de l'agent ne puisse jamais déclencher
+    deux fois la même correction planifiée. Une tentative en échec (ex.
+    réponses vides) n'interrompt pas les suivantes. Requiert X-Agent-Secret."""
+    if not _agent_auth():
+        return jsonify({'error': 'Non autorisé'}), 403
+    session = get_session()
+    try:
+        exam = session.query(OnlineExam).options(joinedload(OnlineExam.subject)).filter_by(id=exam_id).first()
+        if not exam:
+            return jsonify({'error': 'Examen introuvable'}), 404
+        if exam.correction_triggered_at is not None:
+            return jsonify({'success': True, 'already_triggered': True, 'corrected': 0, 'failed': 0}), 200
+
+        exam.correction_triggered_at = utcnow()
+        session.commit()
+
+        attempts = session.query(ExamAttempt).options(
+            joinedload(ExamAttempt.exam).joinedload(OnlineExam.subject),
+            joinedload(ExamAttempt.student),
+        ).filter(
+            ExamAttempt.exam_id == exam_id,
+            ExamAttempt.status.in_([AttemptStatus.SUBMITTED, AttemptStatus.AUTO_SUBMITTED]),
+            ExamAttempt.score.is_(None),
+        ).all()
+
+        corrected, failed = 0, 0
+        for attempt in attempts:
+            try:
+                _run_ai_correction(attempt, corrected_by_id=exam.created_by_id)
+                session.commit()
+                corrected += 1
+            except Exception as e:
+                session.rollback()
+                print(f"⚠️ Correction planifiée — échec tentative {attempt.id} (examen {exam_id}): {e}")
+                failed += 1
+
+        try:
+            from notif_bus import notify_user
+            notify_user(
+                exam.created_by_id, 'scheduled_correction_done',
+                'Correction planifiée terminée',
+                f'La correction programmée de « {exam.title} » est terminée : {corrected} copie(s) corrigée(s)'
+                + (f', {failed} en échec' if failed else '') + '.',
+                priority='default', tags=['clipboard-check'],
+                extra={'exam_id': exam_id},
+            )
+        except Exception:
+            pass
+
+        return jsonify({'success': True, 'corrected': corrected, 'failed': failed})
+    except Exception as e:
+        session.rollback()
+        print(f"❌ Erreur agent_run_scheduled_correction: {e}")
+        return jsonify({'error': str(e)}), 500
+    finally:
+        session.close()
 
 
 @exams_bp.route('/api/online_exams/<int:exam_id>/attempts', methods=['GET'])

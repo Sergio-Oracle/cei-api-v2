@@ -677,6 +677,14 @@ class OnlineExam(Base):
     # Correction automatique par IA après soumission (optionnel, configuré par le prof)
     auto_correct = Column(Boolean, default=False)
 
+    # Correction planifiée à une heure précise plutôt qu'immédiatement à la
+    # soumission (Atelier CEI 7/08) — utile pour attendre que TOUS les
+    # étudiants aient composé avant de lancer la correction en bloc.
+    # correction_triggered_at est renseigné par l'agent une fois la correction
+    # effectivement déclenchée, pour ne jamais la relancer deux fois.
+    scheduled_correction_at = Column(DateTime, nullable=True)
+    correction_triggered_at = Column(DateTime, nullable=True)
+
     # Retour #29 — notes masquées aux étudiants tant que le professeur/admin
     # n'a pas explicitement publié les résultats (après délibération), même
     # symétrie que GradeTranscript.is_published pour les relevés de semestre
@@ -720,6 +728,8 @@ class OnlineExam(Base):
             'auto_ban_enabled': self.auto_ban_enabled or False,
             'status': self.status.value,
             'auto_correct': self.auto_correct if self.auto_correct is not None else False,
+            'scheduled_correction_at': self.scheduled_correction_at.isoformat() if self.scheduled_correction_at else None,
+            'correction_triggered_at': self.correction_triggered_at.isoformat() if self.correction_triggered_at else None,
             'results_published': self.results_published or False,
             'enable_calculator': self.enable_calculator or False,
             'creator_name': self.creator.full_name if self.creator else None,

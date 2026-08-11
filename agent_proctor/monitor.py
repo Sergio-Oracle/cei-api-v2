@@ -254,6 +254,43 @@ def _process_exam(exam: dict):
         send_alert_email(recipients, to_alert, exam_title)
 
 
+def _check_scheduled_corrections():
+    """Interroge la liste des examens dont l'heure de correction planifiée est
+    passée et déclenche leur correction en bloc (Atelier CEI 7/08). Chaque
+    examen n'est traité qu'une seule fois — le serveur marque
+    correction_triggered_at avant même de corriger, donc un appel en double
+    (ex. après un redémarrage de l'agent pendant que le cycle précédent
+    tournait encore) est sans danger : l'examen n'apparaîtra simplement plus
+    dans /api/agent/due_corrections."""
+    try:
+        r = requests.get(
+            f"{CEI_BASE_URL}/api/agent/due_corrections",
+            headers=_cei_headers(), timeout=10
+        )
+        if not r.ok:
+            return
+        due = r.json().get("exams", [])
+    except Exception as e:
+        print(f"⚠️  Impossible de récupérer les corrections planifiées : {e}")
+        return
+
+    for exam in due:
+        exam_id, title = exam.get("id"), exam.get("title", "?")
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] Correction planifiée déclenchée — examen #{exam_id} « {title} »")
+        try:
+            r = requests.post(
+                f"{CEI_BASE_URL}/api/agent/run_scheduled_correction/{exam_id}",
+                headers=_cei_headers(), timeout=300,  # une correction en bloc peut prendre plusieurs minutes
+            )
+            if r.ok:
+                data = r.json()
+                print(f"  → {data.get('corrected', 0)} copie(s) corrigée(s), {data.get('failed', 0)} échec(s)")
+            else:
+                print(f"  → échec HTTP {r.status_code}: {r.text[:200]}")
+        except Exception as e:
+            print(f"  → erreur : {e}")
+
+
 def _send_periodic_summaries():
     """Envoie un rapport périodique aux enseignants (cadence : SUMMARY_INTERVAL).
 
@@ -307,6 +344,11 @@ def run():
 
             # Écrire le heartbeat après chaque cycle
             _write_heartbeat(len(exams) if exams else 0, total_alerts_session)
+
+            # Corrections planifiées à heure précise — indépendant des examens
+            # "actifs" ci-dessus (une correction est typiquement programmée
+            # APRÈS la fin de la fenêtre de composition).
+            _check_scheduled_corrections()
 
             # Rapport périodique
             if time.time() - last_summary >= summary_interval:

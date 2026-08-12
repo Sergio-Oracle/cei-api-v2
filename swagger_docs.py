@@ -2529,11 +2529,18 @@ OPENAPI_SPEC = {
                 "`suggestion.total_points` (défaut 20) et `suggestion.points_by_type` (Retour Atelier CEI 7/08 — barème choisi par "
                 "l'enseignant, plus jamais réparti également par l'IA) remplacent le total fixe à 20 points d'origine : si plusieurs types de "
                 "questions sont sélectionnés, `points_by_type` (ex. `{\"qcm\": 8, \"open\": 12}`) impose le nombre de points de CHAQUE partie ; "
-                "un type absent de `points_by_type` (ou toute la clé si omise) retombe sur une répartition égale entre les types sélectionnés."
+                "un type absent de `points_by_type` (ou toute la clé si omise) retombe sur une répartition égale entre les types sélectionnés. "
+                "Retour Atelier CEI 7/08 (correctif) — `question_count` (1 à 100, défaut 20) est désormais généré PAR LOTS, quelques questions à "
+                "la fois par type plutôt qu'en un seul appel IA géant : élimine les trous de numérotation, titres corrompus et écarts de barème "
+                "observés au-delà d'une trentaine de questions demandées en un seul bloc. Le nombre exact de questions et la somme exacte des "
+                "points sont désormais garantis par le serveur (jamais recalculés à partir de ce que l'IA a écrit). Au-delà de 50 questions, le "
+                "temps de génération augmente sensiblement (plusieurs appels IA séquentiels) — le frontend affiche un avertissement au-delà de "
+                "ce seuil sans bloquer la génération."
             ),
             "requestBody": {"required": True, "content": {"application/json": {"schema": {
                 "type": "object", "required": ["suggestion"],
                 "properties": {"suggestion": {"type": "object", "description": "Objet suggestion retourné par generate-exam-suggestions, avec grading_criteria/total_points/points_by_type optionnellement adaptés par l'enseignant", "properties": {
+                    "question_count":  {"type": "integer", "default": 20, "minimum": 1, "maximum": 100, "description": "Nombre total de questions à générer (réparti entre les types sélectionnés), généré par lots côté serveur"},
                     "total_points":    {"type": "integer", "default": 20, "minimum": 1, "maximum": 200, "description": "Barème total de l'examen généré, choisi par l'enseignant"},
                     "points_by_type":  {"type": "object", "description": "Points par type de question sélectionné (clés : qcm, qcm_multi, vf, appariement, code, open, subopen) — doit sommer à total_points si plusieurs types sont sélectionnés", "additionalProperties": {"type": "integer"}}
                 }}}

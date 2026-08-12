@@ -4474,7 +4474,7 @@ def generate_full_exam_from_suggestion():
     ) if teacher_grading_criteria else ""
 
     try:
-        question_count = max(1, min(int(suggestion.get('question_count') or 20), 60))
+        question_count = max(1, min(int(suggestion.get('question_count') or 20), 100))
     except (TypeError, ValueError):
         question_count = 20
 
@@ -4630,114 +4630,297 @@ C) [Sous-question c) — DOIT s'appuyer sur b) (et/ou a)), poursuivant la même 
     if not _selected:
         _selected = ['open']  # comportement historique par défaut
 
-    if not is_mixed and len(_selected) == 1:
-        _title, _marker, _tpl, _rule, _rubric_rule = _TEMPLATES[_selected[0]]
-        questions_format = "\n\n".join(_tpl.format(n=i) for i in (1, 2)) + f"\n\n[Continuer ainsi jusqu'à {question_count} questions au total, selon durée et difficulté. Total des points = {total_points} pts]"
-        format_rules = f"- OBLIGATOIRE : {_rule}\n- EXACTEMENT {question_count} questions au total, numérotées Question 1 à Question {question_count} × points répartis pour totaliser {total_points} pts"
-        rubric_example = f"Question 1 — [Titre] (X pts)\n{_rubric_rule}"
-        rubric_format_rules = f"- OBLIGATOIRE, pour CHAQUE question du barème : {_rubric_rule.strip()}"
-        checklist_line = ""
-    else:
-        # Répartition des points par type — celle choisie par l'enseignant si
-        # fournie (suggestion.points_by_type), sinon répartition égale entre
-        # les types sélectionnés (comportement historique, en repli).
-        _even_split = max(1, total_points // len(_selected))
-        _remainder = total_points - _even_split * len(_selected)
-        pts_by_type: dict = {}
-        for idx, k in enumerate(_selected):
-            try:
-                _v = int(raw_points_by_type.get(k))
-            except (TypeError, ValueError):
-                _v = None
-            pts_by_type[k] = _v if _v and _v > 0 else (_even_split + (1 if idx < _remainder else 0))
+    # Répartition EXACTE du nombre de questions par type — le reliquat d'une
+    # division entière n'est plus perdu (ex: 50 questions / 4 types donnait
+    # auparavant 12×4=48, 2 questions jamais demandées à l'IA).
+    count_by_type: dict = {}
+    _base_q = question_count // len(_selected)
+    _rem_q  = question_count - _base_q * len(_selected)
+    for _idx, _k in enumerate(_selected):
+        count_by_type[_k] = _base_q + (1 if _idx < _rem_q else 0)
 
-        q_per_part = max(1, question_count // len(_selected))
-        sections = []
-        n_start = 1
-        for k in _selected:
-            _title, _marker, _tpl, _rule, _rubric_rule = _TEMPLATES[k]
-            sections.append(
-                f"Partie — {_title} ({pts_by_type[k]} pts, ~{q_per_part} questions)\n\n" +
-                "\n\n".join(_tpl.format(n=i) for i in (n_start, n_start+1)) +
-                "\n\n[... continuer cette partie selon durée/difficulté ...]"
-            )
-            n_start += q_per_part
-        _part_titles = [_TEMPLATES[k][0] for k in _selected]
-        _computed_total = sum(pts_by_type.values())
-        questions_format = "\n\n".join(sections) + f"\n\n[Numérotation continue d'une partie à l'autre. EXACTEMENT {question_count} questions au total. Total de toutes les parties = {_computed_total} pts]"
-        format_rules = (
-            "\n".join(f"- Partie {_TEMPLATES[k][0]} : {_TEMPLATES[k][3]} — cette partie doit totaliser EXACTEMENT {pts_by_type[k]} points (choisi par l'enseignant, à respecter strictement)" for k in _selected)
-            + f"\n- EXACTEMENT {question_count} questions au total (toutes parties confondues)\n- Total toutes parties confondues = {_computed_total} pts"
-            + f"\n- OBLIGATOIRE : les {len(_selected)} parties suivantes DOIVENT TOUTES apparaître dans le sujet final, chacune avec au moins {q_per_part} questions — "
-              f"il est INTERDIT d'omettre une partie entière, même partiellement : {', '.join(_part_titles)}"
-        )
-        total_points = _computed_total
-        rubric_example = "\n\n".join(f"Question {i} — [Titre] (X pts)  ({_TEMPLATES[k][0]})\n{_TEMPLATES[k][4]}" for i, k in enumerate(_selected, start=1))
-        rubric_format_rules = "\n".join(f"- Pour toute question de type {_TEMPLATES[k][0]} : {_TEMPLATES[k][4].strip()}" for k in _selected)
-        # Rappel final, juste avant la fin du prompt — un modèle suit mieux une
-        # consigne répétée en toute fin d'un long prompt qu'énoncée une seule
-        # fois au début (constaté en conditions réelles : la partie "Questions
-        # Ouvertes" disparaissait systématiquement malgré la même consigne
-        # donnée plus haut dans format_rules).
-        checklist_line = (
-            "\n\nAVANT DE RÉPONDRE, VÉRIFIE toi-même que ton sujet final contient BIEN, chacune sous son propre "
-            f"titre \"Partie — ...\", les {len(_selected)} parties suivantes, sans exception ni fusion entre elles : "
-            + ' ; '.join(f"({i}) {t}" for i, t in enumerate(_part_titles, start=1))
-            + ". Si l'une d'elles manque dans ta première rédaction, ajoute-la avant de terminer ta réponse."
-        )
+    # Répartition des points par type — celle choisie par l'enseignant si
+    # fournie (suggestion.points_by_type), sinon répartition égale entre les
+    # types sélectionnés (comportement historique, en repli).
+    _even_split = max(1, total_points // len(_selected))
+    _remainder = total_points - _even_split * len(_selected)
+    pts_by_type: dict = {}
+    for idx, k in enumerate(_selected):
+        try:
+            _v = int(raw_points_by_type.get(k))
+        except (TypeError, ValueError):
+            _v = None
+        pts_by_type[k] = _v if _v and _v > 0 else (_even_split + (1 if idx < _remainder else 0))
+    total_points = sum(pts_by_type.values())
 
     # Répartition des niveaux de difficulté par QUESTION (Retour — un examen ne
     # doit pas être uniformément d'un seul niveau) : le niveau choisi par
-    # l'enseignant ({difficulty}) reste la tendance dominante de l'EXAMEN (donc
-    # inchangé pour son étiquette/durée/filtrage), mais chaque question
-    # individuelle est taguée avec son propre niveau réel via un second
-    # marqueur juste après le marqueur de type — ex. "[QCM] [Facile]" —
-    # exactement comme [QCM]/[VF]/[OUVERT] sont déjà utilisés. Ce marqueur
-    # reste visible pour l'enseignant dans l'aperçu (avant publication) mais
-    # est retiré automatiquement de l'affichage étudiant côté frontend.
+    # l'enseignant ({difficulty}) reste la tendance dominante de l'EXAMEN, mais
+    # chaque question individuelle est taguée avec son propre niveau réel via
+    # un second marqueur juste après le marqueur de type — ex. "[QCM]
+    # [Facile]" — exactement comme [QCM]/[VF]/[OUVERT]. Ce marqueur reste
+    # visible pour l'enseignant dans l'aperçu mais est retiré automatiquement
+    # de l'affichage étudiant côté frontend.
     _DIFFICULTY_SPREAD = {
         'Facile':    "environ 60% de questions [Facile], 30% [Moyen], 10% [Difficile]",
         'Moyen':     "environ 25% de questions [Facile], 50% [Moyen], 25% [Difficile]",
         'Difficile': "environ 10% de questions [Facile], 30% [Moyen], 60% [Difficile]",
     }
     difficulty_spread_line = _DIFFICULTY_SPREAD.get(difficulty, _DIFFICULTY_SPREAD['Moyen'])
-    format_rules += (
-        f"\n- RÉPARTITION DE LA DIFFICULTÉ (OBLIGATOIRE) : le niveau « {difficulty} » choisi par l'enseignant "
-        f"reste la tendance dominante de l'examen, mais couvre TOUJOURS les trois niveaux — {difficulty_spread_line}. "
-        "N'IMPOSE JAMAIS le même niveau à toutes les questions.\n"
-        "- OBLIGATOIRE : chaque titre de question se termine par un second marqueur juste après son marqueur de "
-        "type, reflétant le niveau RÉEL de CETTE question précise — [Facile], [Moyen] ou [Difficile] "
-        "(ex: \"Question 3 — [Titre] ............. (2 pts) [QCM] [Difficile]\")."
-    )
-    checklist_line += (
-        "\n\nVÉRIFIE ÉGALEMENT que CHAQUE question porte bien son marqueur de difficulté ([Facile]/[Moyen]/"
-        "[Difficile]) juste après son marqueur de type, et que les trois niveaux sont représentés."
-    ) if checklist_line else (
-        "\n\nAVANT DE RÉPONDRE, VÉRIFIE que CHAQUE question porte bien son marqueur de difficulté "
-        "([Facile]/[Moyen]/[Difficile]) juste après son marqueur de type, et que les trois niveaux sont "
-        "représentés dans le sujet."
-    )
 
-    prompt = f"""Tu es un expert en création d'examens universitaires francophones, compétent dans TOUS les domaines académiques (sciences, droit, médecine, lettres, arts, ingénierie, langues, économie, histoire, philosophie, agronomie, architecture, etc.).
+    try:
+        # ── Génération PAR LOTS, un type de question à la fois ──────────────
+        # Retour Atelier CEI 7/08 : au-delà d'un certain nombre de questions,
+        # demander à l'IA de tout générer en un seul appel (comme avant)
+        # devient peu fiable — constaté en conditions réelles avec 50
+        # questions/4 types : seules ~28 questions réellement écrites, des
+        # trous dans la numérotation, des titres corrompus ("Question 7 —
+        # Question 39" — un numéro de continuation qui fuite dans le TITRE),
+        # et des totaux de barème incohérents avec leurs propres critères
+        # (barème rescalé après coup sans jamais vérifier que les critères
+        # d'une question à plusieurs lignes suivaient la même règle).
+        #
+        # Cause racine : un seul appel IA pour un examen long dépasse la
+        # capacité fiable de la chaîne de fournisseurs de ce serveur (paliers
+        # gratuits Groq/OpenRouter, délai Ollama) bien avant le plafond
+        # théorique de tokens — et rien ne détectait une réponse tronquée.
+        #
+        # Le correctif : au lieu d'un unique prompt géant, on découpe la
+        # génération en PETITS lots par type de question (quelques questions
+        # à la fois, taille calibrée sur le coût réel en tokens de CE type),
+        # chaque lot étant un appel IA indépendant largement dans la capacité
+        # fiable de n'importe quel fournisseur. Le serveur reste seul maître
+        # de la numérotation finale ET du calcul des points par question —
+        # jamais recalculé après coup à partir de ce que l'IA a écrit, donc
+        # plus aucun risque de trou, de titre corrompu ou de barème incohérent.
+        _TOKENS_PER_TYPE = {
+            'qcm': 180, 'qcm_multi': 220, 'vf': 130, 'appariement': 280,
+            'code': 550, 'open': 550, 'subopen': 900,
+        }
+        _SAFE_BATCH_TOKENS = 5000  # budget de sortie par appel — bien en-deçà des plafonds réels observés (paliers gratuits Groq/OpenRouter, délai Ollama/gunicorn)
 
-Crée un sujet d'examen COMPLET et DÉTAILLÉ avec ces informations :
-- Titre : {title}
-- Type : {exam_type}
-- Niveau : {student_level}
-- Difficulté : {difficulty}
-- Durée : {duration} minutes
-- Description : {description}
+        def _points_per_question(total_pts_for_type, n):
+            """Répartit total_pts_for_type sur n questions par pas de 0.5,
+            jamais sous 0.5 pt par question, reliquat absorbé en fin de liste.
+            Si le total demandé pour ce type ne permet mathématiquement PAS
+            0.5 pt/question (ex: 6 pts à répartir sur 13 questions — 0.46 pt
+            en moyenne, un cas réel constaté avec beaucoup de questions et peu
+            de points alloués à un type), le pas de 0.5 est structurellement
+            impossible à respecter tout en gardant chaque question > 0 : on
+            bascule alors sur une répartition proportionnelle à 2 décimales
+            (dernier élément absorbant l'arrondi) — le TOTAL exact annoncé à
+            l'enseignant prime toujours sur la « joliesse » des points
+            unitaires."""
+            if n <= 0:
+                return []
+            if total_pts_for_type >= 0.5 * n:
+                base = max(0.5, round((total_pts_for_type / n) * 2) / 2)
+                pts = [base] * n
+                diff = round(total_pts_for_type - sum(pts), 2)
+                i = n - 1
+                guard = 0
+                while abs(diff) > 0.001 and guard < 400:
+                    step = 0.5 if diff > 0 else -0.5
+                    if pts[i] + step >= 0.5:
+                        pts[i] = round(pts[i] + step, 2)
+                        diff = round(diff - step, 2)
+                    i = (i - 1) % n
+                    guard += 1
+                if abs(diff) <= 0.001:
+                    return pts
+                # sinon : repli ci-dessous (ne devrait plus se produire vu la
+                # garde total_pts_for_type >= 0.5*n, gardé par sécurité)
+            base = round((total_pts_for_type / n) * 100) / 100
+            pts = [base] * n
+            diff = round(total_pts_for_type - sum(pts), 2)
+            pts[-1] = round(pts[-1] + diff, 2)
+            return pts
+
+        _TEMPLATE_LEAK_RE = re.compile(r'^\[(?:\.\.\.|Continuer|Numérotation|Un critère).*\]\s*$', re.M | re.I)
+        _Q_BLOCK_SPLIT_RE = re.compile(r'(?=Question\s+\d{1,3}\s*[—\-–:.])')
+        _Q_PREFIX_STRIP_RE = re.compile(r'^Question\s+\d{1,3}\s*[—\-–:.]\s*', re.I)
+        _BARE_NUMBER_TITLE_RE = re.compile(r'^Question\s+\d{1,3}\s*$', re.I)
+        _TITLE_EXTRACT_RE = re.compile(r'^(.*?)(?:\s*\.{3,}|\s*\(\s*[\d.]+\s*pts?\s*\)|\s*\[)', re.S)
+        _POINTS_PAREN_RE = re.compile(r'\(\s*[\d.]+\s*pts?\s*\)', re.I)
+
+        def _split_question_blocks(text):
+            return [p.strip() for p in _Q_BLOCK_SPLIT_RE.split(text or '') if p.strip()]
+
+        def _generate_type_batch(type_key, batch_points, media_for_this_batch):
+            """Génère EXACTEMENT len(batch_points) questions du type demandé,
+            avec ces points imposés (un par question, dans l'ordre). Retourne
+            une liste de (content_block, rubric_block) appariés par POSITION
+            (jamais par le numéro que l'IA a pu écrire elle-même)."""
+            n = len(batch_points)
+            _t_title, _t_marker, _t_tpl, _t_rule, _t_rubric_rule = _TEMPLATES[type_key]
+            _pts_list_str = ', '.join(
+                f"Q{i+1}=" + (str(int(p)) if float(p).is_integer() else f'{p:.1f}') + ' pt' + ('s' if p != 1 else '')
+                for i, p in enumerate(batch_points)
+            )
+            example_block = _t_tpl.format(n=1)
+            batch_prompt = f"""Tu es un expert en création d'examens universitaires francophones, compétent dans TOUS les domaines académiques.
+
+Contexte de l'examen : « {title} », niveau {student_level}, difficulté dominante {difficulty}, durée totale {duration} minutes.
 {domain_line}
-{bloom_line}
-{media_line}
-{grading_hint_line}
 - Thèmes à couvrir :
 {key_points_str}
 {examples_section}
+{bloom_line}
+{media_for_this_batch}
+{grading_hint_line}
 
-GÉNÈRE le sujet en respectant EXACTEMENT ce format (NE DÉVIE JAMAIS de ce format) :
+Génère EXACTEMENT {n} questions de type « {_t_title} » pour cet examen (uniquement CES {n} questions, pas tout l'examen).
 
-══════════════════════════════════════
+Points imposés, un par question dans l'ordre où tu les écris (NE LES RECALCULE PAS, ne les change pas) : {_pts_list_str}
+
+Format EXACT pour chaque question (exemple, adapte le contenu réel au sujet) :
+{example_block}
+
+Règles ABSOLUES :
+- {_t_rule}
+- Numérote-les localement Question 1, Question 2, ... Question {n} (numérotation propre à ce lot uniquement, sans lien avec le reste de l'examen)
+- Chaque titre de question est un VRAI titre descriptif du contenu de la question — JAMAIS un texte du type "Question {n}" littéral comme titre
+- RÉPARTITION DE LA DIFFICULTÉ (OBLIGATOIRE) : {difficulty_spread_line} — chaque titre se termine par un second marqueur [Facile], [Moyen] ou [Difficile] juste après le marqueur de type, reflétant le niveau réel de CETTE question précise
+- Langage académique et rigoureux en français, adapté au niveau {student_level}
+- Aucune question vide, aucun texte de substitution, aucun commentaire entre crochets à la place d'un énoncé réel
+
+Puis, sur une nouvelle ligne EXACTEMENT "BARÈME:", pour CHAQUE question DANS LE MÊME ORDRE, un bloc de critères séparé par une ligne vide (SANS répéter le titre ni le numéro de la question, juste les critères), au format :
+{_t_rubric_rule.strip()}
+Le barème doit reprendre EXACTEMENT les points imposés ci-dessus pour chaque question, jamais un autre total recalculé.
+
+Réponds UNIQUEMENT avec les {n} questions puis "BARÈME:" puis leurs critères — rien d'autre (pas de préambule, pas de titre de section, pas de commentaire)."""
+
+            _batch_tokens = min(12000, 1200 + n * _TOKENS_PER_TYPE[type_key])
+            raw = call_claude("", batch_prompt, temperature=0.2, max_tokens=_batch_tokens).strip()
+            raw = _TEMPLATE_LEAK_RE.sub('', raw).strip()
+
+            _split = re.search(r'\n\s*BARÈME\s*:?\s*\n', raw, re.I)
+            if _split:
+                content_part = raw[:_split.start()].strip()
+                rubric_part  = raw[_split.end():].strip()
+            else:
+                content_part = raw
+                rubric_part  = ''
+
+            content_blocks = _split_question_blocks(content_part)[:n]
+            rubric_blocks = [b.strip() for b in re.split(r'\n\s*\n', rubric_part) if b.strip()][:n]
+            # Complète un barème manquant/incomplet avec le gabarit générique
+            # plutôt que de perdre l'alignement position-à-position avec le
+            # contenu — mieux vaut un critère générique visible et modifiable
+            # par l'enseignant qu'une question sans barème du tout.
+            while len(rubric_blocks) < len(content_blocks):
+                rubric_blocks.append(_t_rubric_rule.strip())
+
+            return list(zip(content_blocks, rubric_blocks))
+
+        all_questions = []  # [{type_key, content_block, rubric_block, points}]
+        _media_attached = False
+        for _type_idx, _k in enumerate(_selected):
+            _n_for_type = count_by_type[_k]
+            if _n_for_type <= 0:
+                continue
+            _per_q_pts = _points_per_question(pts_by_type[_k], _n_for_type)
+            _batch_size = max(1, _SAFE_BATCH_TOKENS // _TOKENS_PER_TYPE[_k])
+            _offset = 0
+            while _offset < _n_for_type:
+                _this_batch_pts = _per_q_pts[_offset:_offset + _batch_size]
+                _media_for_batch = media_line if (media_line and not _media_attached and _type_idx == 0 and _offset == 0) else ''
+                _pairs = None
+                for _attempt in range(2):  # un lot est petit — une seule relance suffit en pratique
+                    try:
+                        _pairs = _generate_type_batch(_k, _this_batch_pts, _media_for_batch)
+                        if len(_pairs) == len(_this_batch_pts):
+                            break
+                    except Exception as _e:
+                        print(f"WARNING generate-full-exam : lot {_k} [{_offset}:{_offset + len(_this_batch_pts)}] a échoué (tentative {_attempt + 1}) : {_e}")
+                        _pairs = None
+                if not _pairs:
+                    print(f"ERROR generate-full-exam : lot {_k} définitivement perdu après 2 tentatives, {len(_this_batch_pts)} question(s) manquante(s)")
+                    _offset += len(_this_batch_pts)
+                    continue
+                if _media_for_batch:
+                    _media_attached = True
+                for _i, (c_block, r_block) in enumerate(_pairs):
+                    _pts = _this_batch_pts[_i] if _i < len(_this_batch_pts) else _this_batch_pts[-1]
+                    all_questions.append({'type_key': _k, 'content_block': c_block, 'rubric_block': r_block, 'points': _pts})
+                _offset += len(_this_batch_pts)
+
+        if not all_questions:
+            return jsonify({'error': "L'IA n'a réussi à générer aucune question — réessayez, ou réduisez le nombre de questions demandé."}), 500
+
+        # ── Assemblage final : renumérotation strictement séquentielle 1..N,
+        # regroupée par type quand plusieurs types sont sélectionnés (mêmes
+        # en-têtes de section "Partie — ..." qu'avant). Jamais de trou ni de
+        # doublon possible : chaque question assemblée provient d'un lot dont
+        # on connaît exactement le contenu, pas d'une réparation après coup.
+        is_mixed_output = len(_selected) > 1
+        content_sections = []
+        rubric_entries = []
+        global_num = 1
+        for _k in _selected:
+            _type_questions = [q for q in all_questions if q['type_key'] == _k]
+            if not _type_questions:
+                continue
+            _t_title = _TEMPLATES[_k][0]
+            if is_mixed_output:
+                _section_total = round(sum(q['points'] for q in _type_questions), 2)
+                if _section_total == int(_section_total):
+                    _section_total = int(_section_total)
+                content_sections.append(
+                    f"Partie — {_t_title} ({_section_total} pts, {len(_type_questions)} question{'s' if len(_type_questions) != 1 else ''})"
+                )
+            for q in _type_questions:
+                pts = q['points']
+                # 2 décimales max, sans zéro superflu — jamais de .1f qui
+                # arrondirait l'affichage (ex: "0.5") différemment de la
+                # vraie valeur sommée dans le TOTAL (ex: 0.46), cas réel
+                # quand peu de points sont alloués à beaucoup de questions
+                # d'un même type (voir _points_per_question, repli fin).
+                pts_str = str(int(pts)) if float(pts).is_integer() else f'{pts:.2f}'.rstrip('0').rstrip('.')
+                body = _Q_PREFIX_STRIP_RE.sub('', q['content_block'], count=1).strip()
+                first_line, _, rest_body = body.partition('\n')
+                # Titre dégénéré ("Question 39" tel quel comme titre) — filet
+                # de sécurité direct contre la corruption déjà observée en
+                # réel ("Question 7 — Question 39") : remplacé par un
+                # intitulé neutre basé sur le type plutôt que d'afficher une
+                # confusion à l'enseignant.
+                _title_text = _TITLE_EXTRACT_RE.match(first_line)
+                _title_text = _title_text.group(1).strip() if _title_text else first_line.strip()
+                if _BARE_NUMBER_TITLE_RE.match(_title_text):
+                    first_line = re.sub(re.escape(_title_text), _t_title, first_line, count=1)
+                # Impose le point exact décidé par le serveur dans la ligne de
+                # titre, sans jamais faire confiance à ce que l'IA y a écrit.
+                if _POINTS_PAREN_RE.search(first_line):
+                    first_line = _POINTS_PAREN_RE.sub(f'({pts_str} pts)', first_line, count=1)
+                else:
+                    first_line = f"{first_line} ({pts_str} pts)"
+                body = first_line + ('\n' + rest_body if rest_body else '')
+                content_sections.append(f"Question {global_num} — {body}")
+
+                crit = _Q_PREFIX_STRIP_RE.sub('', q['rubric_block'], count=1).strip()
+                _rubric_header = f"Question {global_num} — {_title_text if not _BARE_NUMBER_TITLE_RE.match(_title_text) else _t_title} ({pts_str} pts)" + (f"  ({_t_title})" if is_mixed_output else '')
+                rubric_entries.append(f"{_rubric_header}\n{crit}")
+                global_num += 1
+
+        content_body = '\n\n'.join(content_sections)
+
+        # Instructions étudiants + en-tête générés déterministiquement (texte
+        # court, purement formulaire) plutôt que par un appel IA dédié —
+        # fiable à 100%, aucun risque de troncature ou de dérive de format.
+        _type_hints = []
+        if has_qcm or has_qcm_multi: _type_hints.append("cochez la ou les bonnes réponses pour les questions à choix multiples")
+        if has_vf: _type_hints.append("indiquez Vrai ou Faux pour les affirmations proposées")
+        if has_appariement: _type_hints.append("associez chaque élément à sa correspondance pour les questions d'appariement")
+        if has_open or has_code: _type_hints.append("rédigez des réponses claires et complètes pour les questions ouvertes")
+        if has_subopen: _type_hints.append("pour les exercices à sous-questions, appuyez-vous sur vos réponses précédentes lorsque c'est demandé")
+        instructions_text = (
+            f"Vous disposez de {duration} minutes pour composer cet examen, noté sur {total_points} points. "
+            f"Lisez attentivement chaque question avant de répondre"
+            + ((" ; " + ", ".join(_type_hints) + ".") if _type_hints else ".")
+            + " Gérez votre temps avec soin."
+        )
+
+        content = f"""══════════════════════════════════════
 {title.upper()}
 ══════════════════════════════════════
 Type d'examen : {exam_type}
@@ -4747,310 +4930,27 @@ Durée : {duration} minutes | Note totale : {total_points} points
 
 INSTRUCTIONS AUX ÉTUDIANTS
 ──────────────────────────
-[2-3 phrases d'instructions claires et précises adaptées au type d'examen]
+{instructions_text}
 
 ══════════════════════════════════════
 QUESTIONS
 ══════════════════════════════════════
 
-{questions_format}
+{content_body}
+══════════════════════════════════════"""
 
-══════════════════════════════════════
-BARÈME DE NOTATION
-══════════════════════════════════════
+        _final_total = round(sum(q['points'] for q in all_questions), 2)
+        if _final_total == int(_final_total):
+            _final_total = int(_final_total)
+        rubric = (
+            "BARÈME DE NOTATION\n══════════════════════════════════════\n\n"
+            + '\n\n'.join(rubric_entries)
+            + f"\n\n──────────────────────────\nTOTAL : {_final_total} / {_final_total} points\n══════════════════════════════════════"
+        )
+        full_exam_text = content + "\n\n" + rubric
 
-{rubric_example}
-
-[Un critère par question — respecte EXACTEMENT le format demandé ci-dessous selon le type de chaque question]
-
-──────────────────────────
-TOTAL : {total_points} / {total_points} points
-══════════════════════════════════════
-
-Règles ABSOLUES à respecter :
-{format_rules}
-- Langage académique et rigoureux en français
-- Questions adaptées au niveau {student_level} et à {duration} minutes de composition{"" if not media_items else chr(10) + "- Chaque marqueur média listé ci-dessus DOIT apparaître EXACTEMENT UNE FOIS, tel quel, seul sur sa ligne, juste après l'énoncé de la question qui l'exploite"}
-- Si la répartition des points par section ne divise pas parfaitement sur le nombre de questions demandé, RÉPARTIS le reliquat de points (même 1 seul point, même une fraction comme 0.5) sur les questions restantes de cette section plutôt que de réduire leur nombre — CHAQUE question annoncée DOIT être entièrement rédigée avec un énoncé réel et un nombre de points strictement supérieur à 0. Il est INTERDIT d'écrire une question vide, un texte de substitution, un commentaire entre crochets à la place d'une question, ou toute question valant 0 point — s'il n'y a plus assez de budget, ajuste les points des AUTRES questions déjà rédigées plutôt que de laisser une question sans contenu.
-
-Règles ABSOLUES pour le BARÈME (notation automatique sans IA pour QCM/Vrai-Faux/Appariement — la bonne réponse DOIT être écrite exactement dans ce format pour être reconnue) :
-{rubric_format_rules}
-{checklist_line}"""
-
-    try:
-        # call_ai_simple() plafonne à 4000 tokens de sortie — largement
-        # insuffisant dès qu'on demande beaucoup de questions détaillées
-        # (contenu + barème par question) : au-delà, la génération est
-        # tronquée en plein milieu et les instructions de gabarit destinées
-        # à l'IA (ex. "[... continuer cette partie ...]") se retrouvent
-        # recopiées telles quelles dans le sujet, à la place de vraies
-        # questions — constaté en conditions réelles (30 questions demandées,
-        # 24 obtenues + texte d'instruction laissé tel quel).
-        #
-        # Une moyenne fixe par question (300 tokens) sous-estime lourdement un
-        # examen mélangeant plusieurs types : un QCM/VF tient en ~150 tokens
-        # (énoncé + 4 choix + 1 ligne de barème) alors qu'un SUBOPEN/OUVERT en
-        # consomme facilement 700-900 (énoncé multi-parties + barème détaillé
-        # par sous-question) — constaté en conditions réelles (20 questions,
-        # 5 types dont sous-questions liées : seulement 14 générées avant
-        # d'épuiser le budget). On pondère donc par la composition réelle des
-        # types sélectionnés plutôt que par une moyenne unique.
-        _TOKENS_PER_TYPE = {
-            'qcm': 180, 'qcm_multi': 220, 'vf': 130, 'appariement': 280,
-            'code': 550, 'open': 550, 'subopen': 900,
-        }
-        if not is_mixed and len(_selected) == 1:
-            _content_tokens = _TOKENS_PER_TYPE[_selected[0]] * question_count
-        else:
-            _content_tokens = sum(_TOKENS_PER_TYPE[k] * q_per_part for k in _selected)
-        _max_tokens = min(28000, 2500 + _content_tokens)
-        full_exam_text = call_claude("", prompt, temperature=0.2, max_tokens=_max_tokens)
-
-        # Séparer contenu et barème
-        bareme_markers = ['BARÈME DE NOTATION', 'BAREME DE NOTATION', 'BARÈME', 'Barème']
-        rubric_start = -1
-        for marker in bareme_markers:
-            idx = full_exam_text.find(marker)
-            if idx != -1:
-                # Remonter jusqu'à la ligne de séparation
-                line_start = full_exam_text.rfind('\n', 0, idx)
-                rubric_start = line_start if line_start != -1 else idx
-                break
-
-        if rubric_start != -1:
-            content = full_exam_text[:rubric_start].strip()
-            rubric = full_exam_text[rubric_start:].strip()
-        else:
-            content = full_exam_text
-            rubric = full_exam_text
-
-        # Filet de sécurité : si l'IA recopie quand même une instruction de
-        # gabarit au lieu de générer une vraie question (ex. "[... continuer
-        # cette partie ...]", "[Numérotation continue ... EXACTEMENT N
-        # questions ...]"), la retirer plutôt que de l'afficher au professeur
-        # comme si c'était une question.
-        _TEMPLATE_LEAK_RE = re.compile(r'^\[(?:\.\.\.|Continuer|Numérotation|Un critère).*\]\s*$', re.M | re.I)
-        content = _TEMPLATE_LEAK_RE.sub('', content).strip()
-        rubric  = _TEMPLATE_LEAK_RE.sub('', rubric).strip()
-
-        # Filet de sécurité — réparation : l'IA omet parfois une partie
-        # ENTIÈRE malgré la consigne explicite (constaté en conditions
-        # réelles, de façon reproductible, avec la combinaison "Questions
-        # Ouvertes" + "Sous-questions liées" : la partie Ouvertes disparaît
-        # systématiquement). Plutôt que de re-tenter tout le sujet en
-        # espérant un résultat différent, on génère UNIQUEMENT la partie
-        # manquante via le même mécanisme déjà éprouvé que "Générer d'autres
-        # questions" (generate_more_questions), puis on l'insère — le filet
-        # de sécurité suivant (recalcul du barème sur 20 pts) s'applique
-        # ensuite à l'ensemble, anciennes et nouvelles questions confondues.
-        if is_mixed or len(_selected) > 1:
-            # Détecte non seulement les parties ENTIÈREMENT absentes, mais
-            # aussi celles SOUS-comptées (ex: 3 questions Appariement écrites
-            # sur 7 annoncées) — l'IA promet souvent plus qu'elle ne rédige
-            # réellement dans une partie donnée. Complète uniquement le
-            # manque réel (q_per_part - compte actuel), pas systématiquement
-            # q_per_part questions entières.
-            # Recherche par titre CONNU (jamais ré-extrait par regex générique
-            # depuis l'en-tête — un titre comme "Questions à Choix Multiples
-            # (une seule bonne réponse)" contient lui-même une parenthèse, ce
-            # qui casserait une extraction non-gourmande générique).
-            _any_header_re = re.compile(r'^Partie — .+? \([^)]*\)$', re.M)
-            _all_header_positions = sorted(m.start() for m in _any_header_re.finditer(content))
-            _count_by_title = {}
-            for _pt in _part_titles:
-                _hm = re.search(r'^Partie — ' + re.escape(_pt) + r' \([^)]*\)$', content, re.M)
-                if not _hm:
-                    _count_by_title[_pt] = 0
-                    continue
-                _next_positions = [p for p in _all_header_positions if p > _hm.start()]
-                _block_end = min(_next_positions) if _next_positions else len(content)
-                _block = content[_hm.end():_block_end]
-                _count_by_title[_pt] = len(re.findall(r'Question\s+\d{1,3}\s*[—\-–:.]', _block))
-            _title_to_key = {_TEMPLATES[k][0]: k for k in _selected}
-            # Plafond à 2 appels de réparation max — chacun coûte 1-2 min
-            # supplémentaires sur ce serveur ; réparer les 4-5 sections d'un
-            # coup peut dépasser 5-6 min au total. On traite les sections les
-            # plus incomplètes en priorité (le reliquat, moins grave, reste
-            # tel quel plutôt que de faire attendre indéfiniment).
-            _MAX_REPAIRS = 2
-            _shortfalls = [(t, q_per_part - _count_by_title.get(t, 0)) for t in _part_titles]
-            _to_repair = [t for t, sf in sorted(_shortfalls, key=lambda x: -x[1]) if sf > 0][:_MAX_REPAIRS]
-            for _part_title in _to_repair:
-                _current_count = _count_by_title.get(_part_title, 0)
-                _shortfall = q_per_part - _current_count
-                if _shortfall <= 0:
-                    continue
-                _mk = _title_to_key.get(_part_title)
-                if not _mk:
-                    continue
-                _m_title, _m_marker, _m_tpl, _m_rule, _m_rubric_rule = _TEMPLATES[_mk]
-                _existing_nums = [int(n) for n in re.findall(r'Question\s+(\d{1,3})\s*[—\-–:.]', content)]
-                _next_num = (max(_existing_nums) + 1) if _existing_nums else 1
-                _presence = "auquel il manque la partie" if _current_count == 0 else \
-                    f"dont la partie \"{_m_title}\" ne contient que {_current_count} question(s) au lieu des {q_per_part} annoncées"
-                _repair_prompt = f"""Tu es un expert en création d'examens universitaires francophones.
-
-Voici un sujet d'examen déjà généré (titre : {title}, niveau {student_level}, difficulté {difficulty}), {_presence} :
-
---- DÉBUT SUJET EXISTANT ---
-{content[:6000]}
---- FIN SUJET EXISTANT ---
-
-Génère EXACTEMENT {_shortfall} questions de type [{_m_marker}] pour compléter la partie "{_m_title}", à AJOUTER à ce sujet, PLUS leur barème.
-
-RÈGLES ABSOLUES :
-- Numérote-les en continuant à partir de {_next_num} (Question {_next_num}, Question {_next_num + 1}, ...)
-- {_m_rule}
-- Chaque question DOIT indiquer un nombre de points réel entre parenthèses (ex: "(2 pts)"), jamais "(X pts)" littéralement
-- Ces questions doivent couvrir des thèmes DIFFÉRENTS de ceux déjà présents dans le sujet ci-dessus
-- Réponds avec les {_shortfall} nouvelles questions, PUIS une ligne "BARÈME:" seule, PUIS pour CHAQUE question un barème réel et spécifique (JAMAIS "Z pts" ni "[Ce qui est attendu]" littéralement) au format : {_m_rubric_rule.strip()}
-- Pas de titre de section ni de commentaire, uniquement les questions puis "BARÈME:" puis leurs critères"""
-                try:
-                    _repair_raw = call_claude("", _repair_prompt, temperature=0.2, max_tokens=max(2000, _shortfall * 550)).strip()
-                    _repair_raw = _TEMPLATE_LEAK_RE.sub('', _repair_raw).strip()
-                except Exception as _e:
-                    print(f"WARNING generate-full-exam : réparation de la partie '{_m_title}' a échoué : {_e}")
-                    continue
-                _rb_split = re.search(r'\nBARÈME\s*:?\s*\n', _repair_raw, re.I)
-                if _rb_split:
-                    _repair_text = _repair_raw[:_rb_split.start()].strip()
-                    _repair_rubric_text = _repair_raw[_rb_split.end():].strip()
-                else:
-                    _repair_text = _repair_raw
-                    _repair_rubric_text = ''
-                if _current_count == 0:
-                    content = f"{content}\n\nPartie — {_m_title} ({pts_per_part} pts, ~{q_per_part} questions)\n\n{_repair_text}"
-                else:
-                    # Insérer à la fin du bloc existant de cette partie plutôt
-                    # qu'à la toute fin du sujet, pour garder les questions du
-                    # même type regroupées ensemble.
-                    _insert_re = re.compile(r'(Partie — ' + re.escape(_m_title) + r' \([^)]*\)\n\n.*?)(?=\n\nPartie — |\Z)', re.S)
-                    _im = _insert_re.search(content)
-                    if _im:
-                        content = content[:_im.end()] + f"\n\n{_repair_text}" + content[_im.end():]
-                    else:
-                        content = f"{content}\n\n{_repair_text}"
-                _new_points = _question_points_map(_repair_text)
-                _titles_map = dict(re.findall(r'Question\s+(\d{1,3})\s*[—\-–:.]\s*(.+?)\s*\.{3,}', _repair_text))
-                # Critères RÉELS générés par l'IA pour ces questions (jamais le
-                # gabarit non rempli type "Z pts — [Ce qui est attendu]", qui
-                # se retrouvait tel quel dans le barème final avant ce correctif).
-                _repair_criteria_by_num = {}
-                if _repair_rubric_text:
-                    for _cm in re.finditer(r'Question\s+(\d{1,3})\s*[—\-–:.].*?(?=\nQuestion\s+\d{1,3}\s*[—\-–:.]|\Z)', _repair_rubric_text, re.S):
-                        _crit_block = _cm.group(0)
-                        _crit_lines = '\n'.join(_crit_block.split('\n')[1:]).strip()
-                        if _crit_lines:
-                            _repair_criteria_by_num[_cm.group(1)] = _crit_lines
-                _addendum_entries = []
-                for _num, _pts in sorted(_new_points.items(), key=lambda kv: int(kv[0])):
-                    _pts_str = str(int(_pts)) if float(_pts).is_integer() else f'{_pts:.1f}'
-                    _ttl = _titles_map.get(_num, '').strip() or f'Question {_num}'
-                    _crit = _repair_criteria_by_num.get(_num) or _m_rubric_rule
-                    _addendum_entries.append(
-                        f"Question {_num} — {_ttl} ({_pts_str} pts)  ({_m_title})\n{_crit}"
-                    )
-                if _addendum_entries:
-                    _addendum = '\n\n'.join(_addendum_entries)
-                    _total_marker = re.search(r'\n─+\nTOTAL\s*:', rubric)
-                    if _total_marker:
-                        _idx = _total_marker.start()
-                        rubric = f"{rubric[:_idx].rstrip()}\n\n{_addendum}\n{rubric[_idx:].lstrip(chr(10))}"
-                    else:
-                        rubric = f"{rubric}\n\n{_addendum}"
-
-        # Filet de sécurité : malgré la consigne "Total des points = {total_points} pts",
-        # l'IA additionne parfois mal ses propres sections (ex. constaté : 3
-        # sections annoncées à 6/6/6 pts alors que l'énoncé affiche un total
-        # différent — somme réelle des questions incohérente). Comme la
-        # notation (correction déterministe ET recalcul manuel question par
-        # question, voir update_question_grades) se base sur le total RÉEL
-        # des points par question extraits de `content`, un barème qui ne
-        # totalise pas le total choisi par l'enseignant fait dériver la note
-        # lors du recalcul. On rescale donc proportionnellement (en
-        # préservant la pondération relative voulue par l'IA, contrairement à
-        # generate_more_questions qui répartit à parts égales) pour que le
-        # barème soit toujours cohérent avec lui-même dès la génération.
-        _q_points = {int(n): p for n, p in _question_points_map(content).items()}
-        _total_pts = sum(_q_points.values())
-        if _q_points and abs(_total_pts - total_points) > 0.01:
-            _scale = total_points / _total_pts
-            _rescaled = {n: round(p * _scale * 2) / 2 for n, p in _q_points.items()}
-            _diff = round(total_points - sum(_rescaled.values()), 2)
-            # Absorber le reliquat par pas de 0.5 sur la question la PLUS
-            # grande qui peut l'encaisser SANS descendre sous 0.5 pt — l'ancien
-            # code ajoutait tout le reliquat d'un coup sur la plus grande
-            # question, ce qui pouvait la faire passer en dessous de 0 (ex:
-            # -0.5 pt constaté en conditions réelles) quand peu de questions
-            # existent dans le lot (barème très hétérogène après un sous-
-            # comptage). Une question ne peut jamais valoir 0 pt ou moins.
-            _guard = 0
-            while abs(_diff) > 0.001 and _guard < 200:
-                _step = 0.5 if _diff > 0 else -0.5
-                _eligible = [n for n, p in _rescaled.items() if p + _step >= 0.5]
-                if not _eligible:
-                    break
-                _target = max(_eligible, key=lambda n: _rescaled[n])
-                _rescaled[_target] = round(_rescaled[_target] + _step, 2)
-                _diff = round(_diff - _step, 2)
-                _guard += 1
-            content = _patch_question_points(content, _rescaled)
-            _rubric_before = rubric
-            rubric  = _patch_question_points(rubric, _rescaled)
-            rubric  = _redistribute_rubric_criteria(_rubric_before, rubric, _rescaled)
-
-        # Filet de sécurité — renumérotation finale déterministe : l'IA
-        # "réserve" parfois des numéros pour des questions qu'elle prévoyait
-        # d'écrire dans une partie (ex: annonce ~7 questions Appariement,
-        # n'en rédige que 3) sans jamais les écrire, laissant un trou dans la
-        # numérotation (Question 17 suivie directement de Question 22). Plutôt
-        # que de compter sur l'IA pour numéroter juste, on renumérote nous-
-        # mêmes 1, 2, 3... séquentiellement selon l'ORDRE RÉEL d'apparition
-        # des questions dans le texte — élimine tout trou ou doublon, quel
-        # que soit ce que l'IA a effectivement écrit.
-        _old_nums_in_order = []
-        for _n in re.findall(r'Question\s+(\d{1,3})\s*[—\-–:.]', content):
-            if _n not in _old_nums_in_order:
-                _old_nums_in_order.append(_n)
-        _renumber_map = {old: str(i) for i, old in enumerate(_old_nums_in_order, start=1)}
-        if any(old != new for old, new in _renumber_map.items()):
-            _renumber_re = re.compile(r'(Question\s+)(\d{1,3})(\s*[—\-–:.])')
-            def _renumber_sub(m):
-                new = _renumber_map.get(m.group(2))
-                return f"{m.group(1)}{new}{m.group(3)}" if new else m.group(0)
-            content = _renumber_re.sub(_renumber_sub, content)
-            rubric  = _renumber_re.sub(_renumber_sub, rubric)
-
-        # Filet de sécurité — recalcul des en-têtes de partie ("Partie — X (Y
-        # pts, Z questions)") à partir du contenu RÉEL plutôt que des valeurs
-        # que l'IA y écrit elle-même : constaté en conditions réelles que
-        # l'IA réécrit parfois ces en-têtes avec des valeurs incohérentes
-        # (ex: "0.5 pts, 7 questions" pour une partie qui n'en contient que 3,
-        # chaque question valant déjà 0.5 pts individuellement).
-        if is_mixed or len(_selected) > 1:
-            _final_points = _question_points_map(content)
-            # Découpage par split (garde les en-têtes comme délimiteurs) plutôt
-            # que suivi manuel de positions/décalages — évite toute corruption
-            # de texte si un titre contient lui-même une parenthèse (ex.
-            # "Questions à Choix Multiples (une seule bonne réponse)").
-            _part_header_re = re.compile(r'^Partie — .+? \([^)]*\)$', re.M)
-            _parts_between = _part_header_re.split(content)
-            _headers_found = _part_header_re.findall(content)
-            if len(_headers_found) == len(_part_titles):
-                _pieces = [_parts_between[0]]
-                for _i, _ptitle in enumerate(_part_titles):
-                    _block = _parts_between[_i + 1]
-                    _block_nums = re.findall(r'Question\s+(\d{1,3})\s*[—\-–:.]', _block)
-                    _block_count = len(_block_nums)
-                    _block_total = round(sum(_final_points.get(n, 0) for n in _block_nums), 2)
-                    if _block_total == int(_block_total):
-                        _block_total = int(_block_total)
-                    _pieces.append(f"Partie — {_ptitle} ({_block_total} pts, {_block_count} question{'s' if _block_count != 1 else ''})")
-                    _pieces.append(_block)
-                content = ''.join(_pieces)
-
-        # Retour #10 — vérifier les doublons AVANT validation : questions du lot
-        # généré qui se ressemblent entre elles à ≥95% (même pattern que
+        # Retour #10 — vérifier les doublons : questions du lot généré qui se
+        # ressemblent entre elles à ≥95% (même pattern que
         # generate_more_questions, qui compare contre un sujet déjà existant).
         q_texts = re.findall(r'Question\s+\d{1,3}\s*[—\-–:.].*?(?=\nQuestion\s+\d{1,3}\s*[—\-–:.]|\Z)', content, re.S)
         duplicates = []
@@ -5110,58 +5010,6 @@ def _patch_question_points(text, points_map):
             line = re.sub(r'\d+(?:\.\d+)?(\s*pts?\b)', lambda mm, s=pts_str: f'{s}{mm.group(1)}', line)
         out_lines.append(line)
     return '\n'.join(out_lines)
-
-
-_CRIT_LINE_RE = re.compile(r'•\s*Crit[èe]re\s*:\s*\d+(?:\.\d+)?\s*pts?', re.I)
-_CRIT_PTS_RE  = re.compile(r'\d+(?:\.\d+)?')
-
-
-def _redistribute_rubric_criteria(rubric_before, rubric_after, points_map):
-    """`_patch_question_points` remplace CHAQUE mention de points d'une
-    question par le même nouveau total — correct pour les questions à un
-    seul critère, mais pour une question ouverte à plusieurs critères (ex:
-    2×4 pts), ça donne 2×[nouveau total] au lieu de les redistribuer au
-    prorata (ex: 2×5 pts pour un nouveau total de 10). On corrige ici les
-    lignes "• Critère : X pts" en se basant sur les proportions d'origine,
-    question par question (repère chaque bloc via son ancien découpage)."""
-    for m in _RUBRIC_Q_BLOCK_RE.finditer(rubric_before or ''):
-        num = int(m.group(1))
-        if num not in points_map:
-            continue
-        old_block  = m.group(0)
-        old_crits  = [float(_CRIT_PTS_RE.search(l).group(0)) for l in _CRIT_LINE_RE.findall(old_block)]
-        if len(old_crits) < 2:
-            continue  # un seul critère : déjà correct via _patch_question_points
-        old_sum = sum(old_crits)
-        if old_sum <= 0:
-            continue
-        new_total = points_map[num]
-        new_crits = [round(c / old_sum * new_total * 2) / 2 for c in old_crits]
-        diff = round(new_total - sum(new_crits), 2)
-        if abs(diff) > 0.001:
-            new_crits[-1] = round(new_crits[-1] + diff, 2)
-
-        # Localise le même bloc (par numéro de question) dans le texte déjà patché
-        new_block_match = None
-        for nm in _RUBRIC_Q_BLOCK_RE.finditer(rubric_after):
-            if int(nm.group(1)) == num:
-                new_block_match = nm
-                break
-        if not new_block_match:
-            continue
-
-        it = iter(new_crits)
-        def _crit_sub(cm):
-            try:
-                v = next(it)
-            except StopIteration:
-                return cm.group(0)
-            v_str = str(int(v)) if float(v).is_integer() else f'{v:.1f}'
-            return _CRIT_PTS_RE.sub(v_str, cm.group(0), count=1)
-        patched_block = _CRIT_LINE_RE.sub(_crit_sub, new_block_match.group(0))
-        rubric_after = rubric_after[:new_block_match.start()] + patched_block + rubric_after[new_block_match.end():]
-
-    return rubric_after
 
 
 @exams_bp.route('/api/subjects/generate-more-questions', methods=['POST'])

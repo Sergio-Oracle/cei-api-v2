@@ -20,7 +20,7 @@ DEEPSEEK_MODEL    = "deepseek-chat"
 GROQ_API_URL       = "https://api.groq.com/openai/v1/chat/completions"
 GROQ_MODEL         = "llama-3.3-70b-versatile"
 CEREBRAS_API_URL   = "https://api.cerebras.ai/v1/chat/completions"
-CEREBRAS_MODEL     = "llama-3.3-70b"
+CEREBRAS_MODEL     = "gemma-4-31b"
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 OPENROUTER_MODEL   = "openai/gpt-oss-20b:free"
 

@@ -154,9 +154,17 @@ def _is_garbled(text):
         if garbled_tokens / len(tokens) > 0.15:
             return True
 
-    # Format pdfplumber : (cid:3) séquences intégrées
+    # Format pdfplumber : (cid:3) séquences intégrées — seuil relatif à la
+    # longueur du texte, pas un compte absolu : un document long (cours de
+    # plusieurs centaines de pages) contient souvent des dizaines
+    # d'occurrences isolées de glyphes de puces non mappés (polices
+    # Wingdings/Symbol utilisées par PowerPoint pour les listes à puces)
+    # sans que le texte réel autour ne soit du tout illisible. Un seuil
+    # absolu de 5 rejetait à tort l'extraction pdfplumber, pourtant bonne,
+    # d'un document de 217 pages (cas réel constaté), forçant un repli OCR
+    # qui dépasse largement le budget de temps sur un document aussi long.
     cid_count = len(re.findall(r'\(cid:\d+\)', text))
-    if cid_count > 5:
+    if cid_count > 5 and tokens and cid_count / len(tokens) > 0.03:
         return True
 
     # Texte lisible : au moins 50 caractères de vraies lettres latines
@@ -179,7 +187,7 @@ def _ocr_pdf(filepath):
             img_prefix = os.path.join(tmpdir, 'page')
             r = subprocess.run(
                 ['pdftoppm', '-r', '200', '-png', filepath, img_prefix],
-                capture_output=True, timeout=120
+                capture_output=True, timeout=300
             )
             if r.returncode != 0:
                 print(f"⚠️ pdftoppm erreur : {r.stderr.decode()[:200]}")

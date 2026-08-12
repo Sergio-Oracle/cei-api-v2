@@ -2,9 +2,11 @@
 Service IA — couche Modèle du MVC.
 
 Encapsule toute la logique d'appel aux fournisseurs IA (Anthropic → Gemini →
-Groq → OpenRouter → DeepSeek → Ollama) avec fallback automatique. Les routes
-(Contrôleurs) ne connaissent pas les fournisseurs — elles appellent
-uniquement `call_ai` ou `call_ai_simple`.
+Groq → Cerebras → OpenRouter → DeepSeek → Ollama) avec fallback automatique.
+Groq/Cerebras/OpenRouter supportent chacun plusieurs clés en rotation (même
+principe que Gemini) — utile quand une clé atteint son quota journalier
+avant les autres. Les routes (Contrôleurs) ne connaissent pas les
+fournisseurs — elles appellent uniquement `call_ai` ou `call_ai_simple`.
 """
 from __future__ import annotations
 import os
@@ -17,6 +19,8 @@ DEEPSEEK_API_URL  = "https://api.deepseek.com/chat/completions"
 DEEPSEEK_MODEL    = "deepseek-chat"
 GROQ_API_URL       = "https://api.groq.com/openai/v1/chat/completions"
 GROQ_MODEL         = "llama-3.3-70b-versatile"
+CEREBRAS_API_URL   = "https://api.cerebras.ai/v1/chat/completions"
+CEREBRAS_MODEL     = "llama-3.3-70b"
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 OPENROUTER_MODEL   = "openai/gpt-oss-20b:free"
 
@@ -24,12 +28,51 @@ _anthropic_client   = None
 _gemini_clients: list = []
 _gemini_index   = 0
 _deepseek_key   = os.getenv("DEEPSEEK_API_KEY")
-_groq_key       = os.getenv("GROQ_API_KEY")
-_openrouter_key = os.getenv("OPENROUTER_API_KEY")
+
+# Rotation multi-clés (même principe que _gemini_clients) — une clé qui a
+# atteint son quota journalier (ex: Groq, 100k tokens/jour sur le palier
+# gratuit) n'immobilise plus tout le fournisseur : la suivante prend le relai.
+_groq_keys = [v for k, v in sorted(os.environ.items())
+              if (k == "GROQ_API_KEY" or k.startswith("GROQ_API_KEY_")) and v]
+_groq_index = 0
+_cerebras_keys = [v for k, v in sorted(os.environ.items())
+                  if (k == "CEREBRAS_API_KEY" or k.startswith("CEREBRAS_API_KEY_")) and v]
+_cerebras_index = 0
+_openrouter_keys = [v for k, v in sorted(os.environ.items())
+                    if (k == "OPENROUTER_API_KEY" or k.startswith("OPENROUTER_API_KEY_")) and v]
+_openrouter_index = 0
+
 _ollama_url     = os.getenv("OLLAMA_API_URL", "").rstrip("/")
 _ollama_key     = os.getenv("OLLAMA_API_KEY")
 OLLAMA_MODEL      = os.getenv("OLLAMA_MODEL",      "qwen3.6:latest")
 OLLAMA_MODEL_FAST = os.getenv("OLLAMA_MODEL_FAST", "gemma3:12b")
+
+
+def _next_groq_key():
+    global _groq_index
+    if not _groq_keys:
+        return None
+    key = _groq_keys[_groq_index % len(_groq_keys)]
+    _groq_index = (_groq_index + 1) % len(_groq_keys)
+    return key
+
+
+def _next_cerebras_key():
+    global _cerebras_index
+    if not _cerebras_keys:
+        return None
+    key = _cerebras_keys[_cerebras_index % len(_cerebras_keys)]
+    _cerebras_index = (_cerebras_index + 1) % len(_cerebras_keys)
+    return key
+
+
+def _next_openrouter_key():
+    global _openrouter_index
+    if not _openrouter_keys:
+        return None
+    key = _openrouter_keys[_openrouter_index % len(_openrouter_keys)]
+    _openrouter_index = (_openrouter_index + 1) % len(_openrouter_keys)
+    return key
 
 
 def init_ai_clients() -> None:
@@ -56,7 +99,7 @@ def init_ai_clients() -> None:
             pass
 
     if not _anthropic_client and not _gemini_clients and not _deepseek_key \
-            and not _groq_key and not _openrouter_key and not _ollama_key:
+            and not _groq_keys and not _cerebras_keys and not _openrouter_keys and not _ollama_key:
         print("WARNING: Aucune clé IA configurée")
 
 
@@ -136,45 +179,98 @@ def _call_deepseek(system_prompt: str, user_message: str, temperature: float,
 def _call_groq(system_prompt: str, user_message: str, temperature: float,
                max_tokens: int = 8192) -> str:
     """Groq — inférence très rapide (LPU), testé et confirmé joignable
-    directement depuis le serveur (contrairement à DeepSeek)."""
-    if not _groq_key:
+    directement depuis le serveur (contrairement à DeepSeek). Essaie chaque
+    clé disponible en rotation avant d'abandonner — une clé qui a atteint son
+    quota journalier (429 TPD) ne bloque plus les autres."""
+    if not _groq_keys:
         raise Exception("Clé Groq non configurée")
     import requests
     messages = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
     messages.append({"role": "user", "content": user_message})
-    resp = requests.post(
-        GROQ_API_URL,
-        headers={"Authorization": f"Bearer {_groq_key}", "Content-Type": "application/json"},
-        json={"model": GROQ_MODEL, "messages": messages,
-              "temperature": temperature, "max_tokens": max_tokens, "stream": False},
-        timeout=60,
-    )
-    resp.raise_for_status()
-    return resp.json()["choices"][0]["message"]["content"]
+    last_error = None
+    for _ in range(len(_groq_keys)):
+        key = _next_groq_key()
+        try:
+            resp = requests.post(
+                GROQ_API_URL,
+                headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+                json={"model": GROQ_MODEL, "messages": messages,
+                      "temperature": temperature, "max_tokens": max_tokens, "stream": False},
+                timeout=60,
+            )
+            resp.raise_for_status()
+            return resp.json()["choices"][0]["message"]["content"]
+        except Exception as e:
+            last_error = e
+            print(f"WARNING Clé Groq en rotation ({key[:12]}...) : {_describe_error(e)}")
+    raise last_error
+
+
+def _call_cerebras(system_prompt: str, user_message: str, temperature: float,
+                   max_tokens: int = 8192) -> str:
+    """Cerebras — inférence matérielle dédiée (wafer-scale), très rapide comme
+    Groq mais fournisseur et quota entièrement distincts (donc utile en
+    parallèle de Groq, pas seulement en repli). Essaie chaque clé disponible
+    en rotation avant d'abandonner."""
+    if not _cerebras_keys:
+        raise Exception("Clé Cerebras non configurée")
+    import requests
+    messages = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+    messages.append({"role": "user", "content": user_message})
+    last_error = None
+    for _ in range(len(_cerebras_keys)):
+        key = _next_cerebras_key()
+        try:
+            resp = requests.post(
+                CEREBRAS_API_URL,
+                headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+                json={"model": CEREBRAS_MODEL, "messages": messages,
+                      "temperature": temperature, "max_tokens": max_tokens, "stream": False},
+                timeout=60,
+            )
+            resp.raise_for_status()
+            return resp.json()["choices"][0]["message"]["content"]
+        except Exception as e:
+            last_error = e
+            print(f"WARNING Clé Cerebras en rotation ({key[:12]}...) : {_describe_error(e)}")
+    raise last_error
 
 
 def _call_openrouter(system_prompt: str, user_message: str, temperature: float,
                      max_tokens: int = 8192) -> str:
     """OpenRouter — modèle gratuit en secours, testé et confirmé joignable
-    directement depuis le serveur (contrairement à DeepSeek)."""
-    if not _openrouter_key:
+    directement depuis le serveur (contrairement à DeepSeek). Essaie chaque
+    clé disponible en rotation avant d'abandonner (le palier gratuit peut
+    être saturé côté fournisseur indépendamment de la clé, mais une seconde
+    clé donne un second essai avec son propre quota)."""
+    if not _openrouter_keys:
         raise Exception("Clé OpenRouter non configurée")
     import requests
     messages = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
     messages.append({"role": "user", "content": user_message})
-    resp = requests.post(
-        OPENROUTER_API_URL,
-        headers={"Authorization": f"Bearer {_openrouter_key}", "Content-Type": "application/json"},
-        json={"model": OPENROUTER_MODEL, "messages": messages,
-              "temperature": temperature, "max_tokens": max_tokens},
-        timeout=90,
-    )
-    resp.raise_for_status()
-    return resp.json()["choices"][0]["message"]["content"]
+    last_error = None
+    for _ in range(len(_openrouter_keys)):
+        key = _next_openrouter_key()
+        try:
+            resp = requests.post(
+                OPENROUTER_API_URL,
+                headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+                json={"model": OPENROUTER_MODEL, "messages": messages,
+                      "temperature": temperature, "max_tokens": max_tokens},
+                timeout=90,
+            )
+            resp.raise_for_status()
+            return resp.json()["choices"][0]["message"]["content"]
+        except Exception as e:
+            last_error = e
+            print(f"WARNING Clé OpenRouter en rotation ({key[:12]}...) : {_describe_error(e)}")
+    raise last_error
 
 
 def _ollama_chat(model: str, system_prompt: str, user_message: str,
@@ -312,16 +408,25 @@ def call_ai(system_prompt: str, user_message: str,
             gemini_err = str(e)
             print(f"WARNING {_tag}Gemini échec ({time.monotonic()-_t0:.1f}s) → Groq : {_describe_error(e)}")
 
-    if _groq_key:
+    if _groq_keys:
         _t0 = time.monotonic()
         try:
             result = _call_groq(system_prompt, user_message, temperature, max_tokens)
             print(f"INFO {_tag}Groq OK — {time.monotonic()-_t0:.1f}s")
             return result
         except Exception as e:
-            print(f"WARNING {_tag}Groq échec ({time.monotonic()-_t0:.1f}s) → OpenRouter : {_describe_error(e)}")
+            print(f"WARNING {_tag}Groq échec ({time.monotonic()-_t0:.1f}s) → Cerebras : {_describe_error(e)}")
 
-    if _openrouter_key:
+    if _cerebras_keys:
+        _t0 = time.monotonic()
+        try:
+            result = _call_cerebras(system_prompt, user_message, temperature, max_tokens)
+            print(f"INFO {_tag}Cerebras OK — {time.monotonic()-_t0:.1f}s")
+            return result
+        except Exception as e:
+            print(f"WARNING {_tag}Cerebras échec ({time.monotonic()-_t0:.1f}s) → OpenRouter : {_describe_error(e)}")
+
+    if _openrouter_keys:
         _t0 = time.monotonic()
         try:
             result = _call_openrouter(system_prompt, user_message, temperature, max_tokens)

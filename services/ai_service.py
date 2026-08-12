@@ -259,55 +259,97 @@ def _call_ollama_vision(raw: bytes, instructions: str) -> str:
 
 # ── API publique ──────────────────────────────────────────────────────────────
 
+def _describe_error(e: Exception) -> str:
+    """Message d'erreur enrichi du code HTTP + début du corps de réponse quand
+    disponible (ex: requests.HTTPError sur un 429/500) — un simple str(e) sur
+    une HTTPError ne montre que 'XXX Client/Server Error: ... for url: ...'
+    sans le corps, qui contient pourtant souvent le détail utile (ex: Groq
+    renvoie {"error":{"message":"Rate limit reached...", "code":"rate_limit_exceeded"}})."""
+    resp = getattr(e, 'response', None)
+    if resp is not None:
+        try:
+            body = resp.text[:200].replace('\n', ' ')
+        except Exception:
+            body = ''
+        return f"HTTP {resp.status_code} — {body}" if body else f"HTTP {resp.status_code}"
+    return str(e)
+
+
 def call_ai(system_prompt: str, user_message: str,
-            temperature: float = 0.2, max_tokens: int = 8192, fast: bool = False) -> str:
+            temperature: float = 0.2, max_tokens: int = 8192, fast: bool = False,
+            label: str = '') -> str:
     """Appel IA avec fallback automatique Anthropic → Gemini → Groq → OpenRouter → DeepSeek → Ollama.
     Lève une Exception si tous les fournisseurs sont indisponibles.
     `fast=True` utilise le modèle Ollama rapide (OLLAMA_MODEL_FAST) plutôt que
     le modèle lourd — pour les tâches courtes où le modèle par défaut est trop
     lent/instable sur ce serveur (ex: résumé d'un transcript audio).
+    `label` (optionnel) : identifiant court affiché dans les traces (ex: nom
+    du lot "qcm[0:13]") pour corréler plusieurs appels concurrents/successifs
+    d'une même requête HTTP dans les logs — sans lui, deux appels simultanés
+    sont indiscernables l'un de l'autre dans error.log.
     """
+    import time
+    _tag = f"[{label}] " if label else ""
     anthropic_err = gemini_err = deepseek_err = None
 
     if _anthropic_client:
+        _t0 = time.monotonic()
         try:
-            return _call_anthropic(system_prompt, user_message, temperature, max_tokens)
+            result = _call_anthropic(system_prompt, user_message, temperature, max_tokens)
+            print(f"INFO {_tag}Anthropic OK — {time.monotonic()-_t0:.1f}s")
+            return result
         except Exception as e:
             anthropic_err = str(e)
-            print(f"WARNING Anthropic → Gemini: {e}")
+            print(f"WARNING {_tag}Anthropic échec ({time.monotonic()-_t0:.1f}s) → Gemini : {_describe_error(e)}")
 
     if _gemini_clients:
+        _t0 = time.monotonic()
         try:
-            return _call_gemini(system_prompt, user_message, temperature)
+            result = _call_gemini(system_prompt, user_message, temperature)
+            print(f"INFO {_tag}Gemini OK — {time.monotonic()-_t0:.1f}s")
+            return result
         except Exception as e:
             gemini_err = str(e)
-            print(f"WARNING Gemini → Groq: {e}")
+            print(f"WARNING {_tag}Gemini échec ({time.monotonic()-_t0:.1f}s) → Groq : {_describe_error(e)}")
 
     if _groq_key:
+        _t0 = time.monotonic()
         try:
-            return _call_groq(system_prompt, user_message, temperature, max_tokens)
+            result = _call_groq(system_prompt, user_message, temperature, max_tokens)
+            print(f"INFO {_tag}Groq OK — {time.monotonic()-_t0:.1f}s")
+            return result
         except Exception as e:
-            print(f"WARNING Groq → OpenRouter: {e}")
+            print(f"WARNING {_tag}Groq échec ({time.monotonic()-_t0:.1f}s) → OpenRouter : {_describe_error(e)}")
 
     if _openrouter_key:
+        _t0 = time.monotonic()
         try:
-            return _call_openrouter(system_prompt, user_message, temperature, max_tokens)
+            result = _call_openrouter(system_prompt, user_message, temperature, max_tokens)
+            print(f"INFO {_tag}OpenRouter OK — {time.monotonic()-_t0:.1f}s")
+            return result
         except Exception as e:
-            print(f"WARNING OpenRouter → DeepSeek: {e}")
+            print(f"WARNING {_tag}OpenRouter échec ({time.monotonic()-_t0:.1f}s) → DeepSeek : {_describe_error(e)}")
 
     if _deepseek_key:
+        _t0 = time.monotonic()
         try:
-            return _call_deepseek(system_prompt, user_message, temperature, max_tokens)
+            result = _call_deepseek(system_prompt, user_message, temperature, max_tokens)
+            print(f"INFO {_tag}DeepSeek OK — {time.monotonic()-_t0:.1f}s")
+            return result
         except Exception as e:
             deepseek_err = str(e)
-            print(f"WARNING DeepSeek → Ollama: {e}")
+            print(f"WARNING {_tag}DeepSeek échec ({time.monotonic()-_t0:.1f}s) → Ollama : {_describe_error(e)}")
 
     if _ollama_key and _ollama_url:
+        _t0 = time.monotonic()
         try:
-            return _call_ollama(system_prompt, user_message, temperature, max_tokens, fast=fast)
+            result = _call_ollama(system_prompt, user_message, temperature, max_tokens, fast=fast)
+            print(f"INFO {_tag}Ollama OK — {time.monotonic()-_t0:.1f}s")
+            return result
         except Exception as e:
-            print(f"WARNING Ollama indisponible: {e}")
+            print(f"WARNING {_tag}Ollama indisponible ({time.monotonic()-_t0:.1f}s) : {_describe_error(e)}")
 
+    print(f"ERROR {_tag}tous les fournisseurs IA ont échoué")
     if 'credit balance' in (anthropic_err or '').lower():
         raise Exception("Crédits Anthropic épuisés. Rechargez sur console.anthropic.com")
     if 'quota' in (gemini_err or '').lower() or 'resource_exhausted' in (gemini_err or '').lower():

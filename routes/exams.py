@@ -4793,7 +4793,8 @@ Le barème doit reprendre EXACTEMENT les points imposés ci-dessus pour chaque q
 Réponds UNIQUEMENT avec les {n} questions puis "BARÈME:" puis leurs critères — rien d'autre (pas de préambule, pas de titre de section, pas de commentaire)."""
 
             _batch_tokens = min(12000, 1200 + n * _TOKENS_PER_TYPE[type_key])
-            raw = call_claude("", batch_prompt, temperature=0.2, max_tokens=_batch_tokens).strip()
+            raw = call_claude("", batch_prompt, temperature=0.2, max_tokens=_batch_tokens,
+                               label=f"generate-full-exam:{type_key}[n={n}]").strip()
             raw = _TEMPLATE_LEAK_RE.sub('', raw).strip()
 
             _split = re.search(r'\n\s*BARÈME\s*:?\s*\n', raw, re.I)

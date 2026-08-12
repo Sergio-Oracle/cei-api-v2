@@ -4277,7 +4277,7 @@ Pour chaque suggestion :
 3. Le type d'examen adapté à la discipline (QCM, Dissertation, Exercices, Étude de cas, Problème, Commentaire de texte, Calcul, TP, Oral, etc.)
 4. 4-6 points clés extraits du cours
 5. 3-5 exemples de questions concrètes issues du cours, dont le nombre et la profondeur sont réalistes pour {duration} minutes de composition
-6. Critères d'évaluation avec barème sur 20 points
+6. Philosophie de notation, QUALITATIVE uniquement — SANS aucun chiffre de points ni découpage par question (le barème numérique précis, par type de question, est décidé séparément par l'enseignant via l'écran "Barème" AVANT la génération, et ne doit jamais être anticipé ni contredit ici) : ce qui doit être valorisé ou pénalisé dans la correction
 
 Réponds UNIQUEMENT avec un JSON valide dans ce format exact (OBLIGATOIREMENT 3 suggestions) :
 {{
@@ -4293,7 +4293,7 @@ Réponds UNIQUEMENT avec un JSON valide dans ce format exact (OBLIGATOIREMENT 3 
             "difficulty": "{difficulty}",
             "key_points": ["Point clé 1", "Point clé 2", "Point clé 3"],
             "questions_examples": ["Exemple question 1", "Exemple question 2"],
-            "grading_criteria": "Barème : Q1 (5pts) — ..., Q2 (8pts) — ..., Q3 (7pts) — ..."
+            "grading_criteria": "Ex: Valoriser la rigueur du raisonnement et la justesse terminologique ; pénaliser les réponses hors-sujet ; accorder un crédit partiel pour une méthode correcte avec un résultat erroné. JAMAIS de chiffres de points ici."
         }},
         {{
             "title": "Titre de la suggestion 2",
@@ -4303,7 +4303,7 @@ Réponds UNIQUEMENT avec un JSON valide dans ce format exact (OBLIGATOIREMENT 3 
             "difficulty": "{difficulty}",
             "key_points": ["Point clé 1", "Point clé 2", "Point clé 3"],
             "questions_examples": ["Exemple question 1", "Exemple question 2"],
-            "grading_criteria": "Barème : Q1 (5pts) — ..., Q2 (8pts) — ..., Q3 (7pts) — ..."
+            "grading_criteria": "Ex: Valoriser la rigueur du raisonnement et la justesse terminologique ; pénaliser les réponses hors-sujet ; accorder un crédit partiel pour une méthode correcte avec un résultat erroné. JAMAIS de chiffres de points ici."
         }},
         {{
             "title": "Titre de la suggestion 3",
@@ -4313,7 +4313,7 @@ Réponds UNIQUEMENT avec un JSON valide dans ce format exact (OBLIGATOIREMENT 3 
             "difficulty": "{difficulty}",
             "key_points": ["Point clé 1", "Point clé 2", "Point clé 3"],
             "questions_examples": ["Exemple question 1", "Exemple question 2"],
-            "grading_criteria": "Barème : Q1 (5pts) — ..., Q2 (8pts) — ..., Q3 (7pts) — ..."
+            "grading_criteria": "Ex: Valoriser la rigueur du raisonnement et la justesse terminologique ; pénaliser les réponses hors-sujet ; accorder un crédit partiel pour une méthode correcte avec un résultat erroné. JAMAIS de chiffres de points ici."
         }}
     ]
 }}
@@ -4461,16 +4461,18 @@ def generate_full_exam_from_suggestion():
     detected_domain = suggestion.get('detected_domain', '')
     domain_line = f"- Domaine disciplinaire : {detected_domain}" if detected_domain else ""
 
-    # Retour DFIP #22 — barème indicatif choisi/adapté par l'enseignant DÈS le
-    # choix de la suggestion (avant génération complète), à respecter comme
-    # guide de répartition des points — le barème détaillé final reste généré
-    # question par question (impossible de le connaître avant que les
-    # questions réelles n'existent), mais sa logique/pondération doit suivre
-    # cette indication plutôt qu'être réinventée.
+    # Retour DFIP #22 (repris Atelier CEI 7/08) — philosophie de notation
+    # QUALITATIVE choisie/adaptée par l'enseignant dès le choix de la
+    # suggestion : ce qui doit être valorisé/pénalisé dans les critères de
+    # chaque question. Purement qualitatif — ne contient jamais de chiffres
+    # de points (ceux-ci viennent exclusivement de total_points/points_by_type,
+    # décidés séparément par l'enseignant et appliqués tels quels par le
+    # serveur ; les mélanger créait une incohérence visible : deux totaux
+    # numériques différents affichés pour le même examen).
     teacher_grading_criteria = (suggestion.get('grading_criteria') or '').strip()
     grading_hint_line = (
-        f"- Barème indicatif choisi par l'enseignant (respecte cette répartition/ces critères "
-        f"en les détaillant question par question sur les questions réellement générées) : {teacher_grading_criteria}"
+        f"- Philosophie de notation choisie par l'enseignant (à respecter dans la formulation des critères "
+        f"de chaque question, SANS y ajouter de chiffres — les points sont déjà fixés séparément) : {teacher_grading_criteria}"
     ) if teacher_grading_criteria else ""
 
     try:

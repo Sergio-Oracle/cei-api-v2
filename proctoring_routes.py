@@ -3004,9 +3004,30 @@ def agent_exam_proctoring(exam_id):
 
         # Tentatives actives
         attempts = session.query(ExamAttempt).filter_by(exam_id=exam_id).all()
+        attempt_ids = [a.id for a in attempts]
+
+        # Comptage réel des événements no_face_detected / multiple_faces par
+        # tentative (une seule requête groupée plutôt qu'une par tentative) —
+        # ces deux champs étaient auparavant codés en dur à 0 (jamais requêtés),
+        # ce qui faussait silencieusement les résumés IA envoyés par email.
+        face_counts = {}
+        if attempt_ids:
+            from sqlalchemy import func as _sa_func2
+            rows = session.query(
+                ExamActivityLog.attempt_id,
+                ExamActivityLog.event_type,
+                _sa_func2.count(ExamActivityLog.id)
+            ).filter(
+                ExamActivityLog.attempt_id.in_(attempt_ids),
+                ExamActivityLog.event_type.in_(['no_face_detected', 'multiple_faces'])
+            ).group_by(ExamActivityLog.attempt_id, ExamActivityLog.event_type).all()
+            for aid, etype, cnt in rows:
+                face_counts.setdefault(aid, {})[etype] = cnt
+
         attempts_data = []
         for a in attempts:
             student = session.query(User).filter_by(id=a.student_id).first()
+            counts = face_counts.get(a.id, {})
             attempts_data.append({
                 'id':                     a.id,
                 'student_name':           student.full_name if student else '?',
@@ -3014,8 +3035,8 @@ def agent_exam_proctoring(exam_id):
                 'risk_score':             a.risk_score or 0,
                 'tab_switches':           a.tab_switches or 0,
                 'warnings_count':         a.warnings_count or 0,
-                'no_face_detected_count': 0,
-                'multiple_faces_count':   0,
+                'no_face_detected_count': counts.get('no_face_detected', 0),
+                'multiple_faces_count':   counts.get('multiple_faces', 0),
             })
 
         session.close()

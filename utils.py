@@ -176,8 +176,14 @@ def _is_garbled(text):
 
 
 def _ocr_pdf(filepath):
-    """OCR via pdftoppm + tesseract (fallback ultime pour PDFs non décodables)."""
-    import subprocess, tempfile, glob
+    """OCR via pdftoppm + tesseract (fallback ultime pour PDFs non décodables).
+    Pages traitées en parallèle (thread par page) : chaque appel tesseract est
+    CPU-bound sur ses propres processus enfants, donc le GIL n'est pas un frein.
+    OMP_THREAD_LIMIT=1 empêche chaque tesseract de monopoliser tous les coeurs,
+    ce qui permet un vrai parallélisme entre pages sur la machine hôte.
+    """
+    import subprocess, tempfile, glob, time
+    from concurrent.futures import ThreadPoolExecutor
     try:
         res = subprocess.run(['which', 'tesseract'], capture_output=True)
         if res.returncode != 0:
@@ -195,17 +201,28 @@ def _ocr_pdf(filepath):
             images = sorted(glob.glob(os.path.join(tmpdir, '*.png')))
             if not images:
                 return None
-            pages_text = []
-            for img_path in images:
+
+            tesseract_env = {**os.environ, 'OMP_THREAD_LIMIT': '1'}
+
+            def _ocr_one_page(img_path):
                 out_prefix = img_path.replace('.png', '_ocr')
                 subprocess.run(
                     ['tesseract', img_path, out_prefix, '-l', 'fra+eng', '--psm', '6'],
-                    capture_output=True, timeout=60
+                    capture_output=True, timeout=60, env=tesseract_env
                 )
                 out_txt = out_prefix + '.txt'
                 if os.path.exists(out_txt):
                     with open(out_txt, 'r', encoding='utf-8', errors='replace') as f:
-                        pages_text.append(f.read())
+                        return f.read()
+                return ''
+
+            n_workers = min(8, os.cpu_count() or 4, len(images))
+            print(f"🔍 OCR {len(images)} page(s) sur {n_workers} threads en parallèle...")
+            t0 = time.monotonic()
+            with ThreadPoolExecutor(max_workers=n_workers) as pool:
+                pages_text = list(pool.map(_ocr_one_page, images))
+            print(f"🔍 OCR terminé en {time.monotonic() - t0:.1f}s")
+
             result = '\n'.join(pages_text).strip()
             return result if result else None
     except Exception as e:

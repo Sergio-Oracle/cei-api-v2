@@ -149,7 +149,7 @@ def get_online_exams():
         session.close()
         return jsonify(exams_list)
     except Exception as e:
-        print(f"❌ Erreur get_online_exams: {e}")
+        print(f"Erreur get_online_exams: {e}")
         try: session.rollback(); session.close()
         except: pass
         return jsonify({'error': str(e)}), 500
@@ -254,7 +254,7 @@ def create_online_exam():
         session.add(exam)
         session.commit()
         exam_dict = exam.to_dict()
-        print(f"✅ Examen créé: {exam.title} stocké de {start_time} à {end_time} UTC (durée: {duration_minutes} min)")
+        print(f"Examen créé: {exam.title} stocké de {start_time} à {end_time} UTC (durée: {duration_minutes} min)")
 
         # Auto-assignation des surveillants des groupes rattachés à l'EC du sujet,
         # et pré-répartition des étudiants inscrits entre eux — seule source de
@@ -268,7 +268,7 @@ def create_online_exam():
 
         return jsonify({'success': True, 'exam': exam_dict}), 201
     except Exception as e:
-        print(f"❌ Erreur create_online_exam: {e}")
+        print(f"Erreur create_online_exam: {e}")
         try: session.rollback(); session.close()
         except Exception: pass
         return jsonify({'error': 'Erreur lors de la création de l\'examen'}), 500
@@ -369,7 +369,7 @@ def extend_online_exam(exam_id):
     except Exception as e:
         try: session.rollback(); session.close()
         except Exception: pass
-        print(f"❌ Erreur extend_online_exam: {e}")
+        print(f"Erreur extend_online_exam: {e}")
         return jsonify({'error': str(e)}), 500
 
 
@@ -425,7 +425,7 @@ def close_online_exam(exam_id):
     except Exception as e:
         try: session.rollback(); session.close()
         except Exception: pass
-        print(f"❌ Erreur close_online_exam: {e}")
+        print(f"Erreur close_online_exam: {e}")
         return jsonify({'error': str(e)}), 500
 
 @exams_bp.route('/api/admin/online_exams/<int:exam_id>', methods=['PUT'])
@@ -524,7 +524,7 @@ def edit_online_exam(exam_id):
         if session:
             session.rollback()
             session.close()
-        print(f"❌ Erreur edit_online_exam: {e}")
+        print(f"Erreur edit_online_exam: {e}")
         return jsonify({'error': str(e)}), 500
 
 
@@ -588,7 +588,7 @@ def delete_online_exam(exam_id):
         if session:
             session.rollback()
             session.close()
-        print(f"❌ Erreur delete_online_exam: {e}")
+        print(f"Erreur delete_online_exam: {e}")
         import traceback; traceback.print_exc()
         return jsonify({'error': str(e)}), 500
 
@@ -662,7 +662,7 @@ def get_online_exam_details(exam_id):
     except Exception as e:
         try: session.rollback(); session.close()
         except Exception: pass
-        print(f"❌ Erreur get_online_exam_details: {e}")
+        print(f"Erreur get_online_exam_details: {e}")
         import traceback
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500
@@ -853,7 +853,7 @@ def start_exam_attempt(exam_id):
 
         return jsonify({'success': True, 'attempt': attempt_dict}), 201
     except Exception as e:
-        print(f"❌ Erreur start_exam_attempt: {e}")
+        print(f"Erreur start_exam_attempt: {e}")
         import traceback
         traceback.print_exc()
         try: session.rollback(); session.close()
@@ -885,7 +885,7 @@ def save_exam_answers(attempt_id):
         
         return jsonify({'success': True, 'message': 'Réponses sauvegardées'})
     except Exception as e:
-        print(f"❌ Erreur save_exam_answers: {e}")
+        print(f"Erreur save_exam_answers: {e}")
         try: session.rollback(); session.close()
         except Exception: pass
         return jsonify({'error': str(e)}), 500
@@ -1072,7 +1072,7 @@ def log_exam_activity(attempt_id):
                     'timestamp': utcnow().isoformat(),
                 })
             except Exception as _pa_err:
-                print(f"⚠️ push_alert (log_activity) échoué: {_pa_err}")
+                print(f"push_alert (log_activity) échoué: {_pa_err}")
             try:
                 from notif_bus import notify_exam
                 notify_exam(exam.id, 'threshold_alert', 'Seuil de surveillance atteint',
@@ -1106,7 +1106,7 @@ def log_exam_activity(attempt_id):
         return jsonify(response_data)
         
     except Exception as e:
-        print(f"❌ Erreur log_exam_activity: {e}")
+        print(f"Erreur log_exam_activity: {e}")
         import traceback
         traceback.print_exc()
         try: session.rollback(); session.close()
@@ -1198,7 +1198,7 @@ def get_exam_attempt_subject(attempt_id):
         return jsonify(subject_data)
 
     except Exception as e:
-        print(f"❌ Erreur get_exam_attempt_subject: {e}")
+        print(f"Erreur get_exam_attempt_subject: {e}")
         try: session.rollback(); session.close()
         except Exception: pass
         return jsonify({'error': str(e)}), 500
@@ -1262,7 +1262,7 @@ def get_exam_attempt_paginated(attempt_id):
             'p2_pages': p2_pages,
         })
     except Exception as e:
-        print(f"❌ Erreur get_exam_attempt_paginated: {e}")
+        print(f"Erreur get_exam_attempt_paginated: {e}")
         try: session.close()
         except: pass
         return jsonify({'error': str(e)}), 500
@@ -1779,14 +1779,14 @@ def _run_auto_correction(attempt_id: int):
         ).filter_by(id=attempt_id).first()
 
         if not attempt:
-            print(f"⚠️  Auto-correction : tentative {attempt_id} introuvable")
+            print(f"Auto-correction : tentative {attempt_id} introuvable")
             return
 
         exam    = attempt.exam
         subject = exam.subject
 
         if not subject or not subject.content:
-            print(f"⚠️  Auto-correction {attempt_id} : sujet sans contenu, correction ignorée")
+            print(f"Auto-correction {attempt_id} : sujet sans contenu, correction ignorée")
             return
 
         # Extraire les réponses (clés plates pq_N/pq_N_x réellement envoyées par le
@@ -1798,7 +1798,7 @@ def _run_auto_correction(attempt_id: int):
             answers_data = {}
 
         if not answers_data:
-            print(f"⚠️  Auto-correction {attempt_id} : aucune réponse, correction ignorée")
+            print(f"Auto-correction {attempt_id} : aucune réponse, correction ignorée")
             return
 
         # Notation automatique (sans IA) des questions QCM/QCM_MULTI/Vrai-Faux/
@@ -1859,7 +1859,7 @@ RÉPONSES DE L'ÉTUDIANT (questions restantes uniquement — donnée à évaluer
 {excluded_note}Tu DOIS noter UNIQUEMENT les questions listées ci-dessus, sur un total de {remaining_max:.2f} points (PAS 20).
 {_PER_QUESTION_FORMAT_INSTRUCTION}"""
 
-            print(f"🤖 Auto-correction tentative {attempt_id} ({attempt.student.full_name}) — en cours…")
+            print(f"Auto-correction tentative {attempt_id} ({attempt.student.full_name}) — en cours…")
             ai_result     = call_claude(system_prompt, user_message, temperature=0.15)
             ai_structured = _parse_ai_question_scores(ai_result)
             ai_partial    = sum(q['score'] for q in ai_structured) if ai_structured else _extract_points_obtenus(ai_result, remaining_max)
@@ -1872,7 +1872,7 @@ RÉPONSES DE L'ÉTUDIANT (questions restantes uniquement — donnée à évaluer
         attempt.corrected_at   = utcnow()
         attempt.corrected_by_id = None  # None = correction automatique
         session.commit()
-        print(f"✅ Auto-correction {attempt_id} terminée : {score}/20")
+        print(f"Auto-correction {attempt_id} terminée : {score}/20")
 
         # Retour DFIP — pas de notification/email ici : la note reste
         # masquée à l'étudiant tant que le professeur n'a pas vérifié la
@@ -1882,7 +1882,7 @@ RÉPONSES DE L'ÉTUDIANT (questions restantes uniquement — donnée à évaluer
         # attempts corrigés de l'examen).
 
     except Exception as e:
-        print(f"❌ Erreur auto-correction tentative {attempt_id} : {e}")
+        print(f"Erreur auto-correction tentative {attempt_id} : {e}")
         try:
             session.rollback()
         except Exception:
@@ -2044,7 +2044,7 @@ def unban_exam_attempt(attempt_id):
     except Exception as e:
         try: session.rollback(); session.close()
         except Exception: pass
-        print(f"❌ Erreur unban_exam_attempt: {e}")
+        print(f"Erreur unban_exam_attempt: {e}")
         return jsonify({'error': str(e)}), 500
 
 
@@ -2129,7 +2129,7 @@ def export_exam_results_csv(exam_id):
     except Exception as e:
         try: session.rollback(); session.close()
         except Exception: pass
-        print(f"❌ Erreur export_exam_results_csv: {e}")
+        print(f"Erreur export_exam_results_csv: {e}")
         return jsonify({'error': str(e)}), 500
 
 
@@ -2292,7 +2292,7 @@ def correct_exam_attempt(attempt_id):
         })
 
     except Exception as e:
-        print(f"❌ Erreur correct_exam_attempt: {e}")
+        print(f"Erreur correct_exam_attempt: {e}")
         import traceback; traceback.print_exc()
         try: session.rollback(); session.close()
         except: pass
@@ -2382,7 +2382,7 @@ def agent_run_scheduled_correction(exam_id):
                 corrected += 1
             except Exception as e:
                 session.rollback()
-                print(f"⚠️ Correction planifiée — échec tentative {attempt.id} (examen {exam_id}): {e}")
+                print(f"Correction planifiée — échec tentative {attempt.id} (examen {exam_id}): {e}")
                 failed += 1
 
         try:
@@ -2401,7 +2401,7 @@ def agent_run_scheduled_correction(exam_id):
         return jsonify({'success': True, 'corrected': corrected, 'failed': failed})
     except Exception as e:
         session.rollback()
-        print(f"❌ Erreur agent_run_scheduled_correction: {e}")
+        print(f"Erreur agent_run_scheduled_correction: {e}")
         return jsonify({'error': str(e)}), 500
     finally:
         session.close()
@@ -2446,7 +2446,7 @@ def get_exam_attempts(exam_id):
         return jsonify(attempts_list)
         
     except Exception as e:
-        print(f"❌ Erreur get_exam_attempts: {e}")
+        print(f"Erreur get_exam_attempts: {e}")
         try: session.rollback(); session.close()
         except: pass
         return jsonify({'error': str(e)}), 500
@@ -2504,7 +2504,7 @@ def export_exam_csv(exam_id):
             download_name=filename
         )
     except Exception as e:
-        print(f"❌ export_exam_csv {exam_id}: {e}")
+        print(f"export_exam_csv {exam_id}: {e}")
         try: session.close()
         except: pass
         return jsonify({'error': str(e)}), 500
@@ -2623,7 +2623,7 @@ def import_exam_grades(exam_id):
     except RequestEntityTooLarge:
         raise  # laisser remonter au handler 413 global (app.py) — pas de message générique
     except Exception as e:
-        print(f"❌ import_exam_grades {exam_id}: {e}")
+        print(f"import_exam_grades {exam_id}: {e}")
         try: session.rollback(); session.close()
         except: pass
         return jsonify({'error': str(e)}), 500
@@ -2678,7 +2678,7 @@ def publish_exam_results(exam_id):
                         priority='high', tags=['white_check_mark'],
                     )
                 except Exception as _nb_err:
-                    print(f"⚠️  notif_bus publish exam {exam_id} attempt {att.id}: {_nb_err}")
+                    print(f"notif_bus publish exam {exam_id} attempt {att.id}: {_nb_err}")
                 try:
                     if att.student and att.student.email and '@temp.edu' not in att.student.email:
                         send_paper_corrected_email(
@@ -2689,12 +2689,12 @@ def publish_exam_results(exam_id):
                             paper_id=att.id,
                         )
                 except Exception as email_err:
-                    print(f"⚠️  Email publish exam {exam_id} attempt {att.id}: {email_err}")
+                    print(f"Email publish exam {exam_id} attempt {att.id}: {email_err}")
 
         session.close()
         return jsonify({'success': True, 'results_published': published})
     except Exception as e:
-        print(f"❌ publish_exam_results {exam_id}: {e}")
+        print(f"publish_exam_results {exam_id}: {e}")
         try: session.rollback(); session.close()
         except: pass
         return jsonify({'error': str(e)}), 500
@@ -2755,7 +2755,7 @@ def get_exam_stats(exam_id):
             'high_risk_count':  sum(1 for a in attempts if (a.risk_score or 0) >= 70),
         })
     except Exception as e:
-        print(f"❌ get_exam_stats {exam_id}: {e}")
+        print(f"get_exam_stats {exam_id}: {e}")
         try: session.close()
         except: pass
         return jsonify({'error': str(e)}), 500
@@ -2826,7 +2826,7 @@ def get_exam_bilan(exam_id):
         session.close()
         return jsonify({'exam_title': exam_title, 'attempts': rows_out})
     except Exception as e:
-        print(f"❌ get_exam_bilan {exam_id}: {e}")
+        print(f"get_exam_bilan {exam_id}: {e}")
         try: session.close()
         except: pass
         return jsonify({'error': str(e)}), 500
@@ -2945,7 +2945,7 @@ def get_exam_bilan_pdf(exam_id):
         return response
     except Exception as e:
         import traceback
-        print(f"❌ get_exam_bilan_pdf {exam_id}: {e}\n{traceback.format_exc()}")
+        print(f"get_exam_bilan_pdf {exam_id}: {e}\n{traceback.format_exc()}")
         try: session.close()
         except: pass
         return jsonify({'error': str(e)}), 500
@@ -3062,7 +3062,7 @@ def get_exam_security_report_pdf(exam_id):
         return response
     except Exception as e:
         import traceback
-        print(f"❌ get_exam_security_report_pdf {exam_id}: {e}\n{traceback.format_exc()}")
+        print(f"get_exam_security_report_pdf {exam_id}: {e}\n{traceback.format_exc()}")
         try: session.close()
         except: pass
         return jsonify({'error': str(e)}), 500
@@ -3119,7 +3119,7 @@ def manual_grade_attempt(attempt_id):
         session.close()
         return jsonify({'success': True, 'score': score, 'message': 'Note enregistrée'})
     except Exception as e:
-        print(f"❌ manual_grade_attempt {attempt_id}: {e}")
+        print(f"manual_grade_attempt {attempt_id}: {e}")
         try: session.rollback(); session.close()
         except: pass
         return jsonify({'error': str(e)}), 500
@@ -3199,7 +3199,7 @@ def update_question_grades(attempt_id):
         session.close()
         return jsonify(result)
     except Exception as e:
-        print(f"❌ update_question_grades {attempt_id}: {e}")
+        print(f"update_question_grades {attempt_id}: {e}")
         try: session.rollback(); session.close()
         except Exception: pass
         return jsonify({'error': str(e)}), 500
@@ -3246,7 +3246,7 @@ def get_student_exam_history():
         session.close()
         return jsonify({'history': history, 'total': len(history)})
     except Exception as e:
-        print(f"❌ get_student_exam_history: {e}")
+        print(f"get_student_exam_history: {e}")
         try: session.close()
         except: pass
         return jsonify({'error': str(e)}), 500
@@ -3329,7 +3329,7 @@ def plagiarism_check(exam_id):
         })
     except Exception as e:
         import traceback
-        print(f"❌ Erreur plagiarism_check exam {exam_id}: {e}\n{traceback.format_exc()}")
+        print(f"Erreur plagiarism_check exam {exam_id}: {e}\n{traceback.format_exc()}")
         try: session.close()
         except: pass
         return jsonify({'error': str(e)}), 500
@@ -3837,7 +3837,7 @@ def get_exam_incidents(exam_id):
     except Exception as e:
         try: session.rollback(); session.close()
         except Exception: pass
-        print(f"❌ Erreur get_exam_incidents: {e}")
+        print(f"Erreur get_exam_incidents: {e}")
         return jsonify({'error': str(e)}), 500
 
 
@@ -3949,7 +3949,7 @@ def get_professor_recent_incidents():
     except Exception as e:
         try: session.rollback(); session.close()
         except Exception: pass
-        print(f"❌ Erreur get_professor_recent_incidents: {e}")
+        print(f"Erreur get_professor_recent_incidents: {e}")
         return jsonify({'error': str(e)}), 500
 
 
@@ -3990,7 +3990,7 @@ def dismiss_recent_incidents():
     except Exception as e:
         try: session.rollback(); session.close()
         except Exception: pass
-        print(f"❌ Erreur dismiss_recent_incidents: {e}")
+        print(f"Erreur dismiss_recent_incidents: {e}")
         return jsonify({'error': str(e)}), 500
 
 
@@ -4140,7 +4140,7 @@ def professor_corrected_papers():
     except Exception as e:
         try: session.rollback(); session.close()
         except Exception: pass
-        print(f"❌ Erreur professor_corrected_papers: {e}")
+        print(f"Erreur professor_corrected_papers: {e}")
         return jsonify({'error': str(e)}), 500
 
 @exams_bp.route('/api/ai/generate-exam-suggestions', methods=['POST'])
@@ -5324,7 +5324,7 @@ def create_subject_from_suggestion():
             _enrich_question_bank_from_subject(session, new_subject, int(current_user_id))
             session.commit()
         except Exception as _enrich_err:
-            print(f"⚠️ Enrichissement banque de questions échoué (non bloquant) : {_enrich_err}")
+            print(f"Enrichissement banque de questions échoué (non bloquant) : {_enrich_err}")
             session.rollback()
 
         subject_id      = new_subject.id
@@ -5348,7 +5348,7 @@ def create_subject_from_suggestion():
     except Exception as e:
         session.rollback()
         session.close()
-        print(f"❌ Erreur création sujet from suggestion: {e}")
+        print(f"Erreur création sujet from suggestion: {e}")
         _tb.print_exc()
         return jsonify({'success': False, 'error': str(e)}), 500
 
@@ -5724,10 +5724,10 @@ def grant_extra_time(attempt_id):
                         f'{minutes} min de plus pour « {exam_title} » (total : +{total} min).',
                         priority='high', tags=['clock3'])
         except Exception as _nu_err:
-            print(f"⚠️ notify_user (extra_time) échoué: {_nu_err}")
+            print(f"notify_user (extra_time) échoué: {_nu_err}")
         return jsonify({'success': True, 'total_extra': total, 'added': minutes})
     except Exception as e:
-        print(f"❌ grant_extra_time {attempt_id}: {e}")
+        print(f"grant_extra_time {attempt_id}: {e}")
         try: session.close()
         except: pass
         return jsonify({'error': str(e)}), 500
@@ -5783,7 +5783,7 @@ def add_proctor_note(attempt_id):
         session.close()
         return jsonify({'success': True, 'note': note, 'author': author_name})
     except Exception as e:
-        print(f"❌ add_proctor_note {attempt_id}: {e}")
+        print(f"add_proctor_note {attempt_id}: {e}")
         try: session.close()
         except: pass
         return jsonify({'error': str(e)}), 500
@@ -5817,7 +5817,7 @@ def get_proctor_notes(attempt_id):
         session.close()
         return jsonify({'notes': notes, 'total': len(notes)})
     except Exception as e:
-        print(f"❌ get_proctor_notes {attempt_id}: {e}")
+        print(f"get_proctor_notes {attempt_id}: {e}")
         try: session.close()
         except: pass
         return jsonify({'error': str(e)}), 500
@@ -5865,7 +5865,7 @@ def get_exam_qrcode(exam_id):
         })
     except Exception as e:
         import traceback
-        print(f"❌ get_exam_qrcode {exam_id}: {e}\n{traceback.format_exc()}")
+        print(f"get_exam_qrcode {exam_id}: {e}\n{traceback.format_exc()}")
         try: session.close()
         except: pass
         return jsonify({'error': str(e)}), 500
@@ -5913,11 +5913,11 @@ def _send_exam_closure_summary(exam_id: int, professor_email: str, professor_nam
   </div>
 </div>"""
         _send_email(professor_email, subject_line, html_body)
-        print(f"📧 Email clôture envoyé à {professor_email} pour exam#{exam_id}")
+        print(f"Email clôture envoyé à {professor_email} pour exam#{exam_id}")
     except Exception as e:
         try: session.rollback(); session.close()
         except Exception: pass
-        print(f"⚠️  Email clôture exam#{exam_id}: {e}")
+        print(f"Email clôture exam#{exam_id}: {e}")
 
 
 # ============================================================================
@@ -6006,7 +6006,7 @@ def download_corrections_zip(exam_id):
             download_name=f"corrections_{safe_title}.zip"
         )
     except Exception as e:
-        print(f"❌ download_corrections_zip {exam_id}: {e}")
+        print(f"download_corrections_zip {exam_id}: {e}")
         try: session.close()
         except: pass
         return jsonify({'error': str(e)}), 500
@@ -6117,7 +6117,7 @@ def get_attempt_review(attempt_id):
         session.close()
         return jsonify(result)
     except Exception as e:
-        print(f"❌ get_attempt_review {attempt_id}: {e}")
+        print(f"get_attempt_review {attempt_id}: {e}")
         try: session.close()
         except: pass
         return jsonify({'error': str(e)}), 500
@@ -6263,7 +6263,7 @@ def get_professor_analytics():
             'ratios':           ratios,
         })
     except Exception as e:
-        print(f"❌ get_professor_analytics: {e}")
+        print(f"get_professor_analytics: {e}")
         try: session.close()
         except: pass
         return jsonify({'error': str(e)}), 500
@@ -6454,7 +6454,7 @@ def download_attempt_report_pdf(attempt_id):
             download_name=f"rapport_{safe_sn}_attempt{attempt_id}.pdf"
         )
     except Exception as e:
-        print(f"❌ download_attempt_report_pdf {attempt_id}: {e}")
+        print(f"download_attempt_report_pdf {attempt_id}: {e}")
         import traceback; traceback.print_exc()
         try: session.close()
         except: pass

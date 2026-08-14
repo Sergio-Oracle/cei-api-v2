@@ -2318,7 +2318,7 @@ def get_exam_recordings(exam_id):
     except Exception as e:
         try: session.rollback(); session.close()
         except Exception: pass
-        print(f"❌ Erreur get_exam_recordings: {e}")
+        print(f"Erreur get_exam_recordings: {e}")
         import traceback
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500
@@ -2764,7 +2764,7 @@ def get_video_recordings(exam_id):
     except Exception as e:
         try: session.rollback(); session.close()
         except Exception: pass
-        print(f"❌ Erreur get_video_recordings: {e}")
+        print(f"Erreur get_video_recordings: {e}")
         import traceback
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500

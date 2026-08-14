@@ -86,7 +86,7 @@ def extract_text_from_file(filepath):
         else:
             return None
     except Exception as e:
-        print(f"⚠️ Erreur extraction texte: {e}")
+        print(f"Erreur extraction texte: {e}")
         return None
 
 
@@ -102,7 +102,7 @@ def extract_text_from_word(filepath):
         with open(filepath, 'rb') as f:
             header = f.read(8)
     except Exception as e:
-        print(f"⚠️ Erreur lecture fichier Word: {e}")
+        print(f"Erreur lecture fichier Word: {e}")
         return None
 
     if header.startswith(b'PK\x03\x04'):
@@ -128,18 +128,18 @@ def extract_text_from_doc_legacy(filepath):
             capture_output=True, timeout=30,
         )
         if result.returncode != 0:
-            print(f"⚠️ catdoc a échoué (code {result.returncode}): {result.stderr.decode('utf-8', errors='replace')[:300]}")
+            print(f"catdoc a échoué (code {result.returncode}): {result.stderr.decode('utf-8', errors='replace')[:300]}")
             return None
         text = result.stdout.decode('utf-8', errors='replace').strip()
         return text or None
     except FileNotFoundError:
-        print("⚠️ catdoc introuvable sur ce serveur (paquet système `catdoc` requis pour lire les .doc legacy)")
+        print("catdoc introuvable sur ce serveur (paquet système `catdoc` requis pour lire les .doc legacy)")
         return None
     except subprocess.TimeoutExpired:
-        print("⚠️ catdoc: délai dépassé (fichier .doc trop volumineux ou corrompu)")
+        print("catdoc: délai dépassé (fichier .doc trop volumineux ou corrompu)")
         return None
     except Exception as e:
-        print(f"⚠️ Erreur extraction .doc legacy: {e}")
+        print(f"Erreur extraction .doc legacy: {e}")
         return None
 
 def _is_garbled(text):
@@ -187,7 +187,7 @@ def _ocr_pdf(filepath):
     try:
         res = subprocess.run(['which', 'tesseract'], capture_output=True)
         if res.returncode != 0:
-            print("⚠️ tesseract absent — lance en root : apt install -y tesseract-ocr tesseract-ocr-fra")
+            print("tesseract absent — lance en root : apt install -y tesseract-ocr tesseract-ocr-fra")
             return None
         with tempfile.TemporaryDirectory() as tmpdir:
             img_prefix = os.path.join(tmpdir, 'page')
@@ -196,7 +196,7 @@ def _ocr_pdf(filepath):
                 capture_output=True, timeout=300
             )
             if r.returncode != 0:
-                print(f"⚠️ pdftoppm erreur : {r.stderr.decode()[:200]}")
+                print(f"pdftoppm erreur : {r.stderr.decode()[:200]}")
                 return None
             images = sorted(glob.glob(os.path.join(tmpdir, '*.png')))
             if not images:
@@ -217,16 +217,16 @@ def _ocr_pdf(filepath):
                 return ''
 
             n_workers = min(8, os.cpu_count() or 4, len(images))
-            print(f"🔍 OCR {len(images)} page(s) sur {n_workers} threads en parallèle...")
+            print(f"OCR {len(images)} page(s) sur {n_workers} threads en parallèle...")
             t0 = time.monotonic()
             with ThreadPoolExecutor(max_workers=n_workers) as pool:
                 pages_text = list(pool.map(_ocr_one_page, images))
-            print(f"🔍 OCR terminé en {time.monotonic() - t0:.1f}s")
+            print(f"OCR terminé en {time.monotonic() - t0:.1f}s")
 
             result = '\n'.join(pages_text).strip()
             return result if result else None
     except Exception as e:
-        print(f"⚠️ OCR erreur : {e}")
+        print(f"OCR erreur : {e}")
         return None
 
 
@@ -243,11 +243,11 @@ def extract_text_from_pdf(filepath):
                     pages_text.append(t)
         text = "\n".join(pages_text).strip()
         if text and not _is_garbled(text):
-            print(f"✅ pdfplumber OK — {len(text)} caractères")
+            print(f"pdfplumber OK — {len(text)} caractères")
             return text
-        print("⚠️ pdfplumber : texte garbled, bascule PyPDF2")
+        print("pdfplumber : texte garbled, bascule PyPDF2")
     except Exception as e:
-        print(f"⚠️ pdfplumber erreur : {e}")
+        print(f"pdfplumber erreur : {e}")
 
     # 2. PyPDF2
     try:
@@ -260,20 +260,20 @@ def extract_text_from_pdf(filepath):
                     text += page_text + "\n"
         text = text.strip()
         if text and not _is_garbled(text):
-            print(f"✅ PyPDF2 OK — {len(text)} caractères")
+            print(f"PyPDF2 OK — {len(text)} caractères")
             return text
-        print("⚠️ PyPDF2 : texte garbled, bascule OCR")
+        print("PyPDF2 : texte garbled, bascule OCR")
     except Exception as e:
-        print(f"⚠️ Erreur PDF PyPDF2: {e}")
+        print(f"Erreur PDF PyPDF2: {e}")
 
     # 3. OCR tesseract (pour PDFs avec polices non-Unicode)
-    print("🔍 Tentative OCR tesseract...")
+    print("Tentative OCR tesseract...")
     text = _ocr_pdf(filepath)
     if text and not _is_garbled(text):
-        print(f"✅ OCR OK — {len(text)} caractères")
+        print(f"OCR OK — {len(text)} caractères")
         return text
 
-    print("❌ Impossible d'extraire le texte de ce PDF (police non-Unicode, tesseract requis)")
+    print("Impossible d'extraire le texte de ce PDF (police non-Unicode, tesseract requis)")
     return None
 
 def extract_text_from_docx(filepath):
@@ -283,7 +283,7 @@ def extract_text_from_docx(filepath):
         text = "\n".join([para.text for para in doc.paragraphs])
         return text.strip()
     except Exception as e:
-        print(f"⚠️ Erreur DOCX: {e}")
+        print(f"Erreur DOCX: {e}")
         return None
 
 def extract_student_name_from_content_improved(content):
@@ -480,7 +480,7 @@ def _send_direct_mx(to_email, msg_obj, from_email):
     if not mx_host:
         _log.warning('MX introuvable pour domaine %s', domain)
         return False
-    print(f"📡 Livraison directe → {mx_host}:25")
+    print(f"Livraison directe → {mx_host}:25")
     try:
         with smtplib.SMTP(mx_host, 25, timeout=15) as s:
             s.ehlo()
@@ -925,7 +925,7 @@ def match_student_by_name(extracted_name, session):
 
         # 1. Matching exact
         if norm_extracted == norm_student:
-            print(f" ✅ Match exact: {student.full_name}")
+            print(f" Match exact: {student.full_name}")
             return student
 
         # 2. Matching inversé (Prénom Nom vs Nom Prénom)
@@ -936,7 +936,7 @@ def match_student_by_name(extracted_name, session):
             # Inverser et comparer
             reversed_extracted = ' '.join(reversed(parts_extracted))
             if reversed_extracted == norm_student:
-                print(f" ✅ Match inversé: {student.full_name}")
+                print(f" Match inversé: {student.full_name}")
                 return student
 
             # 3. Nom de famille + prénom partiel

@@ -117,7 +117,7 @@ def _notify_reclamation_decision(rec: Reclamation) -> None:
             msg += f' {rec.response.strip()[:200]}'
         notify_user(rec.student_id, 'reclamation_decided', title, msg, priority='high', tags=tags)
     except Exception as exc:
-        print(f"⚠️ notify_user (reclamation_decided) échoué: {exc}")
+        print(f"notify_user (reclamation_decided) échoué: {exc}")
 
 
 # ── GET liste ─────────────────────────────────────────────────────────────────

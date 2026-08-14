@@ -57,7 +57,7 @@ def _write_heartbeat(exams_monitored: int, total_alerts_session: int):
         with open(_HEARTBEAT_FILE, 'w') as f:
             _j.dump(data, f)
     except Exception as e:
-        print(f"⚠️  Heartbeat write error: {e}")
+        print(f"Heartbeat write error: {e}")
 
 
 # ── Appel API CEI ─────────────────────────────────────────────────────────────
@@ -78,7 +78,7 @@ def _get_active_exams() -> list[dict]:
         if r.ok:
             return r.json().get("exams", [])
     except Exception as e:
-        print(f"⚠️  Impossible de récupérer les examens actifs : {e}")
+        print(f"Impossible de récupérer les examens actifs : {e}")
     return []
 
 
@@ -91,7 +91,7 @@ def _get_exam_proctoring(exam_id: int) -> dict:
         if r.ok:
             return r.json()
     except Exception as e:
-        print(f"⚠️  Proctoring examen {exam_id} : {e}")
+        print(f"Proctoring examen {exam_id} : {e}")
     return {}
 
 
@@ -105,7 +105,7 @@ def _push_alert(alert: dict):
             timeout=5
         )
     except Exception as e:
-        print(f"⚠️  Push alerte dashboard : {e}")
+        print(f"Push alerte dashboard : {e}")
 
 
 def _claim_lock(key: str, ttl_seconds: int) -> bool:
@@ -127,7 +127,7 @@ def _claim_lock(key: str, ttl_seconds: int) -> bool:
         if r.ok:
             return bool(r.json().get("claimed"))
     except Exception as e:
-        print(f"⚠️  claim_lock({key}) : {e}")
+        print(f"claim_lock({key}) : {e}")
     return True
 
 
@@ -171,7 +171,7 @@ def _ai_analyze(student_name: str, risk_score: int, no_face: int,
             content = _re.sub(r'<think>.*?</think>', '', content, flags=_re.DOTALL).strip()
             return content[:300]
     except Exception as e:
-        print(f"⚠️  Ollama analyse : {e}")
+        print(f"Ollama analyse : {e}")
 
     # Fallback règle-basée si Ollama échoue
     if risk_score >= RISK_URGENT:
@@ -256,7 +256,7 @@ def _process_exam(exam: dict):
     if not to_alert:
         return
 
-    print(f"🚨 {len(to_alert)} alerte(s) — {exam_title}")
+    print(f"{len(to_alert)} alerte(s) — {exam_title}")
 
     # Pousser vers le dashboard
     for alert_obj in to_alert:
@@ -291,7 +291,7 @@ def _check_scheduled_corrections():
             return
         due = r.json().get("exams", [])
     except Exception as e:
-        print(f"⚠️  Impossible de récupérer les corrections planifiées : {e}")
+        print(f"Impossible de récupérer les corrections planifiées : {e}")
         return
 
     for exam in due:
@@ -380,9 +380,9 @@ def run():
                 last_summary = time.time()
 
         except KeyboardInterrupt:
-            print("\n⛔ Agent arrêté.")
+            print("\nAgent arrêté.")
             break
         except Exception as e:
-            print(f"❌ Erreur cycle principal : {e}")
+            print(f"Erreur cycle principal : {e}")
 
         time.sleep(CHECK_INTERVAL)

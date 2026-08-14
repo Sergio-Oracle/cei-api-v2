@@ -21,10 +21,10 @@ def _send(to_emails: list[str], subject: str, html: str) -> bool:
             s.starttls()
             s.login(SMTP_USERNAME, SMTP_PASSWORD)
             s.sendmail(FROM_EMAIL, to_emails, msg.as_string())
-        print(f"✅ Email envoyé → {to_emails}")
+        print(f"Email envoyé → {to_emails}")
         return True
     except Exception as e:
-        print(f"❌ Erreur email : {e}")
+        print(f"Erreur email : {e}")
         return False
 
 

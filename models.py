@@ -1237,7 +1237,7 @@ if not DATABASE_URL:
         "DATABASE_URL=postgresql://<user>:<password>@localhost:5432/<db_name>"
     )
 
-print(f"🔗 Connexion à: {DATABASE_URL.split('@')[1] if '@' in DATABASE_URL else DATABASE_URL}")
+print(f"Connexion à: {DATABASE_URL.split('@')[1] if '@' in DATABASE_URL else DATABASE_URL}")
 
 # pool_size=3, max_overflow=7 → 10 conns max/worker × 9 workers = 90 total
 # PostgreSQL max_connections=100 → 10 réservées pour admin/monitoring
@@ -1297,4 +1297,4 @@ def init_db():
                 _conn.commit()
             except Exception:
                 _conn.rollback()
-    print("✅ Base de données initialisée avec examens en ligne et relevés de notes")
+    print("Base de données initialisée avec examens en ligne et relevés de notes")

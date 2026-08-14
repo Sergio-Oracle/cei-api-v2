@@ -71,11 +71,11 @@ def detect_encoding(file):
     encoding = result['encoding']
     confidence = result['confidence']
 
-    print(f"📊 Encodage détecté: {encoding} (confiance: {confidence:.2%})")
+    print(f"Encodage détecté: {encoding} (confiance: {confidence:.2%})")
 
     # Fallback si confiance faible
     if confidence < 0.7:
-        print("⚠️ Confiance faible, tentative avec UTF-8")
+        print("Confiance faible, tentative avec UTF-8")
         return 'utf-8'
 
     # Mapping des encodages courants
@@ -237,7 +237,7 @@ def register_csv_routes(app):
         except Exception as e:
             try: session.rollback(); session.close()
             except Exception: pass
-            print(f"❌ Erreur download_users_csv_template: {e}")
+            print(f"Erreur download_users_csv_template: {e}")
             return jsonify({'error': str(e)}), 500
 
     @app.route('/api/admin/maquette/csv-template', methods=['GET'])
@@ -266,7 +266,7 @@ def register_csv_routes(app):
         except Exception as e:
             try: session.rollback(); session.close()
             except Exception: pass
-            print(f"❌ Erreur download_maquette_csv_template: {e}")
+            print(f"Erreur download_maquette_csv_template: {e}")
             return jsonify({'error': str(e)}), 500
 
     @app.route('/api/admin/maquette/excel-template', methods=['GET'])
@@ -292,7 +292,7 @@ def register_csv_routes(app):
         except Exception as e:
             try: session.rollback(); session.close()
             except Exception: pass
-            print(f"❌ Erreur download_maquette_excel_template: {e}")
+            print(f"Erreur download_maquette_excel_template: {e}")
             return jsonify({'error': str(e)}), 500
 
     # ========================================================================
@@ -333,7 +333,7 @@ def register_csv_routes(app):
             try:
                 df = pd.read_csv(file, encoding=encoding)
             except Exception as e:
-                print(f"⚠️ Échec avec {encoding}, tentative UTF-8")
+                print(f"Échec avec {encoding}, tentative UTF-8")
                 file.seek(0)
                 df = pd.read_csv(file, encoding='utf-8', errors='ignore')
 
@@ -405,7 +405,7 @@ def register_csv_routes(app):
                         ), daemon=True).start()
                         email_queued_count += 1
                     except Exception as email_error:
-                        print(f"⚠️ Erreur mise en file email à {row['email']}: {email_error}")
+                        print(f"Erreur mise en file email à {row['email']}: {email_error}")
                         # Ne pas bloquer l'import si la mise en file échoue
 
                     created_users.append({
@@ -435,7 +435,7 @@ def register_csv_routes(app):
         except Exception as e:
             try: session.rollback(); session.close()
             except Exception: pass
-            print(f"❌ Erreur import_users_csv: {e}")
+            print(f"Erreur import_users_csv: {e}")
             import traceback
             traceback.print_exc()
             return jsonify({'error': str(e)}), 500
@@ -474,21 +474,21 @@ def register_csv_routes(app):
             # ⭐ LECTURE ROBUSTE AVEC CORRECTION AUTOMATIQUE
             try:
                 df = pd.read_csv(file, encoding=encoding)
-                print(f"✅ Lecture CSV réussie avec {encoding}")
+                print(f"Lecture CSV réussie avec {encoding}")
             except UnicodeDecodeError as e:
-                print(f"⚠️ Erreur avec {encoding}: {e}")
+                print(f"Erreur avec {encoding}: {e}")
                 file.seek(0)
                 try:
                     df = pd.read_csv(file, encoding='cp1252')
-                    print(f"✅ Lecture CSV réussie avec cp1252")
+                    print(f"Lecture CSV réussie avec cp1252")
                 except:
-                    print(f"⚠️ Erreur avec cp1252, tentative UTF-8...")
+                    print(f"Erreur avec cp1252, tentative UTF-8...")
                     file.seek(0)
                     df = pd.read_csv(file, encoding='utf-8', errors='ignore')
-                    print(f"⚠️ Lecture avec UTF-8 errors='ignore'")
+                    print(f"Lecture avec UTF-8 errors='ignore'")
 
             # ⭐ CORRECTION DES CARACTÈRES MAL ENCODÉS
-            print("🔧 Correction des caractères mal encodés...")
+            print("Correction des caractères mal encodés...")
             for col in df.columns:
                 if df[col].dtype == 'object':
                     df[col] = df[col].apply(lambda x: fix_windows_1252_chars(x) if isinstance(x, str) else x)
@@ -497,7 +497,7 @@ def register_csv_routes(app):
             df = df.map(lambda x: x.strip() if isinstance(x, str) else x)
 
             # ⭐ LOG DE VÉRIFICATION
-            print("\n📊 Aperçu des données après correction:")
+            print("\nAperçu des données après correction:")
             print(f"   Total lignes: {len(df)}")
 
             for row_type in ['formation', 'semester', 'ue', 'ec']:
@@ -521,7 +521,7 @@ def register_csv_routes(app):
             semester_map = {}   # {(formation_id, numero): semester_id}
             ue_map = {}         # {code: ue_id}
 
-            print("\n🔄 Début de l'import hiérarchique...\n")
+            print("\nDébut de l'import hiérarchique...\n")
 
             # ====================================================================
             # TRAITER CHAQUE LIGNE
@@ -530,7 +530,7 @@ def register_csv_routes(app):
             for index, row in df.iterrows():
                 try:
                     row_type = str(row['type']).strip().lower()
-                    print(f"📍 Ligne {index+2}: type={row_type}")
+                    print(f"Ligne {index+2}: type={row_type}")
 
                     # === FORMATION — respecte la hiérarchie Pôle → Niveau → Formation ===
                     if row_type == 'formation':
@@ -557,9 +557,9 @@ def register_csv_routes(app):
                                     pole = Pole(code=pole_code, name=pole_name, description=pole_description)
                                     session_db.add(pole)
                                     session_db.flush()
-                                    print(f"   ➕ Pôle '{pole_code}' créé ({pole_name})")
+                                    print(f"   Pôle '{pole_code}' créé ({pole_name})")
                                 else:
-                                    print(f"   ⚠️  Pôle '{pole_code}' introuvable et pole_name absent — formation créée sans pôle")
+                                    print(f"   Pôle '{pole_code}' introuvable et pole_name absent — formation créée sans pôle")
 
                         # Niveau : rattaché au pôle ci-dessus, auto-créé s'il n'existe pas encore
                         # pour CE pôle (le même code peut exister sous plusieurs pôles)
@@ -571,24 +571,24 @@ def register_csv_routes(app):
                                     niveau = Niveau(code=niveau_code, name=niveau_name, description=niveau_description, pole_id=pole.id)
                                     session_db.add(niveau)
                                     session_db.flush()
-                                    print(f"   ➕ Niveau '{niveau_code}' créé sous {pole_code} ({niveau_name})")
+                                    print(f"   Niveau '{niveau_code}' créé sous {pole_code} ({niveau_name})")
                                 else:
-                                    print(f"   ⚠️  Niveau '{niveau_code}' introuvable et niveau_name absent — formation créée sans niveau")
+                                    print(f"   Niveau '{niveau_code}' introuvable et niveau_name absent — formation créée sans niveau")
                         elif niveau_code and not pole:
-                            print(f"   ⚠️  niveau_code '{niveau_code}' fourni sans pole_code résolu — niveau ignoré")
+                            print(f"   niveau_code '{niveau_code}' fourni sans pole_code résolu — niveau ignoré")
 
                         # pole_id/level dérivés du niveau (même règle que routes/formations.py)
                         pole_id = niveau.pole_id if niveau else (pole.id if pole else None)
                         formation_level = niveau.name if niveau else ''
 
-                        print(f"   🎓 Formation: {formation_name} ({formation_code})")
+                        print(f"   Formation: {formation_name} ({formation_code})")
                         print(f"      → Pôle: {pole_code or '—'}, Niveau: {niveau_code or '—'} ({formation_level or '—'}), Département: {formation_department}")
 
                         # Vérifier doublon
                         existing = session_db.query(Formation).filter_by(code=formation_code).first()
                         if existing:
                             formation_map[formation_code] = existing.id
-                            print(f"   ℹ️  Formation existe déjà (ID: {existing.id})")
+                            print(f"   ℹFormation existe déjà (ID: {existing.id})")
                             continue
 
                         formation = Formation(
@@ -604,7 +604,7 @@ def register_csv_routes(app):
 
                         formation_map[formation_code] = formation.id
                         created_formations.append(f"{formation_name} ({formation_code})")
-                        print(f"   ✅ Formation créée (ID: {formation.id})")
+                        print(f"   Formation créée (ID: {formation.id})")
 
                     # === SEMESTRE ===
                     elif row_type == 'semester':
@@ -613,13 +613,13 @@ def register_csv_routes(app):
                         semester_name = str(row['semester_name']).strip()
                         semester_credits = int(row['semester_credits']) if pd.notna(row['semester_credits']) else 30
 
-                        print(f"   📅 Semestre: {semester_name} (formation: {formation_code}, numéro: {semester_number})")
+                        print(f"   Semestre: {semester_name} (formation: {formation_code}, numéro: {semester_number})")
 
                         if formation_code not in formation_map:
                             error_msg = f"Formation {formation_code} non trouvée"
                             errors.append(f"Ligne {index+2}: {error_msg}")
-                            print(f"   ❌ {error_msg}")
-                            print(f"   🗺️  formation_map actuel: {formation_map}")
+                            print(f"   {error_msg}")
+                            print(f"   formation_map actuel: {formation_map}")
                             continue
 
                         formation_id = formation_map[formation_code]
@@ -632,7 +632,7 @@ def register_csv_routes(app):
 
                         if existing:
                             semester_map[(formation_id, semester_number)] = existing.id
-                            print(f"   ℹ️  Semestre existe déjà (ID: {existing.id})")
+                            print(f"   ℹSemestre existe déjà (ID: {existing.id})")
                             continue
 
                         semester = Semester(
@@ -646,7 +646,7 @@ def register_csv_routes(app):
 
                         semester_map[(formation_id, semester_number)] = semester.id
                         created_semesters.append(f"{semester_name}")
-                        print(f"   ✅ Semestre créé (ID: {semester.id})")
+                        print(f"   Semestre créé (ID: {semester.id})")
 
                     # === UE ===
                     elif row_type == 'ue':
@@ -656,21 +656,21 @@ def register_csv_routes(app):
                         ue_name = str(row['ue_name']).strip()
                         ue_credits = int(row['ue_credits']) if pd.notna(row['ue_credits']) else 6
 
-                        print(f"   📚 UE: {ue_name} ({ue_code})")
+                        print(f"   UE: {ue_name} ({ue_code})")
                         print(f"      → formation_code: {formation_code}, semester_number: {semester_number}")
 
                         # Validation
                         if not formation_code or not semester_number:
                             error_msg = "Formation code ou semester number manquant"
                             errors.append(f"Ligne {index+2}: {error_msg}")
-                            print(f"   ❌ {error_msg}")
+                            print(f"   {error_msg}")
                             continue
 
                         if formation_code not in formation_map:
                             error_msg = f"Formation {formation_code} non trouvée dans formation_map"
                             errors.append(f"Ligne {index+2}: {error_msg}")
-                            print(f"   ❌ {error_msg}")
-                            print(f"   🗺️  formation_map actuel: {formation_map}")
+                            print(f"   {error_msg}")
+                            print(f"   formation_map actuel: {formation_map}")
                             continue
 
                         formation_id = formation_map[formation_code]
@@ -679,8 +679,8 @@ def register_csv_routes(app):
                         if semester_key not in semester_map:
                             error_msg = f"Semestre {semester_number} non trouvé pour formation {formation_code}"
                             errors.append(f"Ligne {index+2}: {error_msg}")
-                            print(f"   ❌ {error_msg}")
-                            print(f"   🗺️  semester_map actuel: {semester_map}")
+                            print(f"   {error_msg}")
+                            print(f"   semester_map actuel: {semester_map}")
                             continue
 
                         semester_id = semester_map[semester_key]
@@ -690,7 +690,7 @@ def register_csv_routes(app):
                         existing = session_db.query(UE).filter_by(code=ue_code).first()
                         if existing:
                             ue_map[ue_code] = existing.id
-                            print(f"   ℹ️  UE existe déjà (ID: {existing.id})")
+                            print(f"   ℹUE existe déjà (ID: {existing.id})")
                             continue
 
                         ue = UE(
@@ -704,7 +704,7 @@ def register_csv_routes(app):
 
                         ue_map[ue_code] = ue.id
                         created_ues.append(f"{ue_name} ({ue_code})")
-                        print(f"   ✅ UE créée (ID: {ue.id})")
+                        print(f"   UE créée (ID: {ue.id})")
 
                     # === EC ===
                     elif row_type == 'ec':
@@ -721,21 +721,21 @@ def register_csv_routes(app):
                         total_hours = int(row['ec_vht']) if pd.notna(row['ec_vht']) else (cm_hours + td_hours + tp_hours + tpe_hours)
                         coefficient = int(row['ec_coefficient']) if pd.notna(row['ec_coefficient']) else 1
 
-                        print(f"   📖 EC: {ec_name} ({ec_code})")
+                        print(f"   EC: {ec_name} ({ec_code})")
                         print(f"      → ue_code: {ue_code}")
 
                         # Validation
                         if not ue_code:
                             error_msg = "UE code manquant"
                             errors.append(f"Ligne {index+2}: {error_msg}")
-                            print(f"   ❌ {error_msg}")
+                            print(f"   {error_msg}")
                             continue
 
                         if ue_code not in ue_map:
                             error_msg = f"UE {ue_code} non trouvée dans ue_map"
                             errors.append(f"Ligne {index+2}: {error_msg}")
-                            print(f"   ❌ {error_msg}")
-                            print(f"   🗺️  ue_map actuel: {ue_map}")
+                            print(f"   {error_msg}")
+                            print(f"   ue_map actuel: {ue_map}")
                             continue
 
                         ue_id = ue_map[ue_code]
@@ -744,7 +744,7 @@ def register_csv_routes(app):
                         # Vérifier doublon
                         existing = session_db.query(EC).filter_by(code=ec_code).first()
                         if existing:
-                            print(f"   ℹ️  EC existe déjà (ID: {existing.id})")
+                            print(f"   ℹEC existe déjà (ID: {existing.id})")
                             continue
 
                         ec = EC(
@@ -762,16 +762,16 @@ def register_csv_routes(app):
                         session_db.flush()
 
                         created_ecs.append(f"{ec_name} ({ec_code})")
-                        print(f"   ✅ EC créé (ID: {ec.id})")
+                        print(f"   EC créé (ID: {ec.id})")
 
                     else:
-                        print(f"   ⚠️ Type inconnu: {row_type}")
+                        print(f"   Type inconnu: {row_type}")
 
                 except Exception as e:
                     session_db.rollback()  # sans ça, une erreur sur une ligne invalide la session pour les suivantes
                     error_msg = f"Erreur: {str(e)}"
                     errors.append(f"Ligne {index+2}: {error_msg}")
-                    print(f"   ❌ {error_msg}")
+                    print(f"   {error_msg}")
                     import traceback
                     traceback.print_exc()
 
@@ -779,9 +779,9 @@ def register_csv_routes(app):
             session_db.commit()
 
             print("\n" + "="*70)
-            print("✅ IMPORT TERMINÉ")
+            print("IMPORT TERMINÉ")
             print("="*70)
-            print(f"📊 Résultats:")
+            print(f"Résultats:")
             print(f"   - Formations: {len(created_formations)}")
             print(f"   - Semestres: {len(created_semesters)}")
             print(f"   - UEs: {len(created_ues)}")
@@ -811,7 +811,7 @@ def register_csv_routes(app):
             raise  # laisser remonter au handler 413 global (app.py) — pas de message générique
         except Exception as e:
             session_db.rollback()
-            print(f"\n❌ ERREUR GLOBALE: {e}")
+            print(f"\nERREUR GLOBALE: {e}")
             import traceback
             traceback.print_exc()
             return jsonify({'error': str(e)}), 500

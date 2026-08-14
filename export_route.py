@@ -119,7 +119,7 @@ def register_export_route(app):
             )
             
         except Exception as e:
-            print(f"❌ Erreur export_paper_pdf: {e}")
+            print(f"Erreur export_paper_pdf: {e}")
             import traceback
             traceback.print_exc()
             return jsonify({'error': str(e)}), 500

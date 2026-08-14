@@ -171,7 +171,7 @@ def run_concurrent_test(test_name: str, n_users: int, scenario_fn,
     lock = threading.Lock()
     token = get_token()
     if not token:
-        print(f"{Fore.RED}✗ Impossible d'obtenir un token pour le test '{test_name}'")
+        print(f"{Fore.RED}Impossible d'obtenir un token pour le test '{test_name}'")
         return StressReport(test_name, n_users, 0)
 
     def worker():
@@ -232,7 +232,7 @@ def main():
     # Récupérer les IDs de tentatives une fois
     token = get_token()
     if not token:
-        print(f"{Fore.RED}✗ Impossible de se connecter. Vérifiez le serveur.")
+        print(f"{Fore.RED}Impossible de se connecter. Vérifiez le serveur.")
         sys.exit(1)
 
     with httpx.Client(base_url=BASE_URL, timeout=TIMEOUT) as c:
@@ -365,9 +365,9 @@ def main():
     for r in reports: all_latencies.extend(r.latencies)
 
     if all_pass:
-        print(f"{Fore.GREEN}{Style.BRIGHT}  ✓ TOUS LES TESTS PASSÉS")
+        print(f"{Fore.GREEN}{Style.BRIGHT}  TOUS LES TESTS PASSÉS")
     else:
-        print(f"{Fore.RED}{Style.BRIGHT}  ✗ CERTAINS TESTS ÉCHOUÉS — voir détails ci-dessus")
+        print(f"{Fore.RED}{Style.BRIGHT}  CERTAINS TESTS ÉCHOUÉS — voir détails ci-dessus")
 
     print(f"\n  Requêtes totales     : {total_reqs}")
     print(f"  Erreurs serveur (5xx): {total_errs}")

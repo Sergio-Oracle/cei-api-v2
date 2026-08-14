@@ -104,7 +104,6 @@ def _notify_reclamation_decision(rec: Reclamation) -> None:
         else:
             subject_title = 'votre examen'
 
-        from notif_bus import notify_user
         if rec.status == ReclamationStatus.RESOLVED:
             title, tags = 'Réclamation acceptée', ['white_check_mark']
             msg = f'Votre réclamation pour « {subject_title} » a été acceptée.'
@@ -112,12 +111,21 @@ def _notify_reclamation_decision(rec: Reclamation) -> None:
             title, tags = 'Réclamation rejetée', ['x']
             msg = f'Votre réclamation pour « {subject_title} » a été rejetée.'
         else:
-            return  # in_review — pas de décision finale, pas de notification
+            return None
         if rec.response:
             msg += f' {rec.response.strip()[:200]}'
-        notify_user(rec.student_id, 'reclamation_decided', title, msg, priority='high', tags=tags)
+        payload = {
+            'student_id': rec.student_id,
+            'event': 'reclamation_decided',
+            'title': title,
+            'message': msg,
+            'priority': 'high',
+            'tags': tags,
+        }
+        return payload
     except Exception as exc:
         print(f"notify_user (reclamation_decided) échoué: {exc}")
+        return None
 
 
 # ── GET liste ─────────────────────────────────────────────────────────────────
@@ -284,11 +292,19 @@ def respond_reclamation(rid):
                     attempt.corrected_by_id = user_id
 
         session.commit()
-        _notify_reclamation_decision(rec)
+        payload = _notify_reclamation_decision(rec)
         result = {'id': rec.id, 'status': rec.status.value,
                   'response': rec.response,
                   'updated_at': rec.updated_at.isoformat() if rec.updated_at else None}
         session.close()
+
+        if payload:
+            try:
+                from notif_bus import notify_user
+                notify_user(payload['student_id'], payload['event'], payload['title'], payload['message'], priority=payload.get('priority'), tags=payload.get('tags'))
+            except Exception:
+                pass
+
         return jsonify({'success': True, 'reclamation': result})
     except Exception as e:
         try: session.rollback(); session.close()
@@ -389,6 +405,20 @@ Si REJECTED: Correction originale inchangée"""
                 f"###DONNEE_FIN###\n\nAnalyse et décide."
             )
 
+        # Fermer la session avant l'appel IA
+        try:
+            rec_id_local = rec.id
+        except Exception:
+            rec_id_local = None
+        try:
+            session.expunge(rec)
+        except Exception:
+            pass
+        try:
+            session.close()
+        except Exception:
+            pass
+
         ia_response = _call_claude(system_prompt, user_message, temperature=0.1)
 
         decision_m  = re.search(r'=== DÉCISION ===\n(RESOLVED|REJECTED)', ia_response)
@@ -397,7 +427,7 @@ Si REJECTED: Correction originale inchangée"""
         grade_m     = re.search(r'=== NOUVELLE CORRECTION ===\n(.*)', ia_response, re.DOTALL)
 
         if not decision_m:
-            session.close(); return jsonify({'error': 'Réponse IA invalide'}), 500
+            return jsonify({'error': 'Réponse IA invalide'}), 500
 
         decision  = decision_m.group(1)
         reason    = reason_m.group(1).strip() if reason_m else ''
@@ -406,14 +436,27 @@ Si REJECTED: Correction originale inchangée"""
         if decision == 'RESOLVED' and score_m:
             new_score = _extract_score(score_m.group(1).strip())
 
-        rec.ia_decision         = ia_response
-        rec.ia_proposed_status  = 'resolved' if decision == 'RESOLVED' else 'rejected'
-        rec.ia_proposed_reason  = reason
-        rec.ia_proposed_grade   = new_grade if decision == 'RESOLVED' else None
-        rec.ia_proposed_score   = new_score if decision == 'RESOLVED' else original_score
-        rec.ia_processed_at     = utcnow()
-        rec.updated_at          = utcnow()
-        session.commit(); session.close()
+        # Persister la proposition IA dans une session courte
+        from models import get_session as _get_session
+        s2 = _get_session()
+        try:
+            r = s2.query(Reclamation).filter_by(id=rec_id_local).first() if rec_id_local else None
+            if r:
+                r.ia_decision = ia_response
+                r.ia_proposed_status = 'resolved' if decision == 'RESOLVED' else 'rejected'
+                r.ia_proposed_reason = reason
+                r.ia_proposed_grade = new_grade if decision == 'RESOLVED' else None
+                r.ia_proposed_score = new_score if decision == 'RESOLVED' else original_score
+                r.ia_processed_at = utcnow()
+                r.updated_at = utcnow()
+                s2.commit()
+        except Exception as _e:
+            try: s2.rollback()
+            except Exception: pass
+            print(f"Persistance échec IA réclamation {rec_id_local}: {_e}")
+        finally:
+            try: s2.close()
+            except Exception: pass
 
         return jsonify({'success': True, 'decision': decision, 'ia_response': ia_response})
     except Exception as e:
@@ -467,8 +510,14 @@ def apply_ai_proposal(rid):
         rec.responded_by_id  = user_id
         rec.updated_at       = utcnow()
         session.commit()
-        _notify_reclamation_decision(rec)
+        payload = _notify_reclamation_decision(rec)
         session.close()
+        if payload:
+            try:
+                from notif_bus import notify_user
+                notify_user(payload['student_id'], payload['event'], payload['title'], payload['message'], priority=payload.get('priority'), tags=payload.get('tags'))
+            except Exception:
+                pass
         return jsonify({'success': True, 'message': 'Proposition IA appliquée'})
     except Exception as e:
         try: session.rollback(); session.close()
@@ -508,8 +557,14 @@ def reject_ai_proposal(rid):
         rec.responded_by_id  = user_id
         rec.updated_at       = utcnow()
         session.commit()
-        _notify_reclamation_decision(rec)
+        payload = _notify_reclamation_decision(rec)
         session.close()
+        if payload:
+            try:
+                from notif_bus import notify_user
+                notify_user(payload['student_id'], payload['event'], payload['title'], payload['message'], priority=payload.get('priority'), tags=payload.get('tags'))
+            except Exception:
+                pass
         return jsonify({'success': True, 'message': 'Proposition IA rejetée'})
     except Exception as e:
         try: session.rollback(); session.close()

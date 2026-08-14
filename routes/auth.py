@@ -275,12 +275,14 @@ def change_password():
         session.commit()
         app_url   = os.getenv('APP_URL', 'https://dev-cei.ddns.net').rstrip('/')
         reset_url = f"{app_url}/app?action=forgot"
+        saved_email = user.email
+        saved_name = user.full_name
+        session.close()
         try:
-            if user.email:
-                send_password_changed_email(user.email, user.full_name, reset_url)
+            if saved_email:
+                send_password_changed_email(saved_email, saved_name, reset_url)
         except Exception:
             pass
-        session.close()
         return jsonify({'success': True, 'message': 'Mot de passe modifié avec succès'})
     except Exception as e:
         try: session.rollback(); session.close()
@@ -313,15 +315,19 @@ def forgot_password():
 
         app_url    = os.getenv('APP_URL', request.host_url.rstrip('/'))
         reset_link = f"{app_url}/app?reset_token={token}"
-        email_sent = False
-        try:
-            email_sent = send_password_reset_email(user.email, user.full_name, reset_link)
-        except Exception as e:
-            print(f"WARNING email reset: {e}")
-
+        email_to_send = user.email
+        email_name = user.full_name
         parts  = (user.email or '').split('@')
         masked = parts[0][:2] + '***@' + parts[1] if len(parts) == 2 and len(parts[0]) > 2 else user.email
         session.close()
+
+        email_sent = False
+        try:
+            if email_to_send:
+                email_sent = send_password_reset_email(email_to_send, email_name, reset_link)
+        except Exception as e:
+            print(f"WARNING email reset: {e}")
+
         return jsonify({'success': True, 'masked_email': masked, 'email_sent': email_sent})
     except Exception as e:
         try: session.rollback(); session.close()
@@ -361,15 +367,14 @@ def reset_password():
         user.reset_token         = None
         user.reset_token_expires = None
         session.commit()
-
         app_url   = os.getenv('APP_URL', 'https://dev-cei.ddns.net').rstrip('/')
         reset_url = f"{app_url}/app?action=forgot"
+        session.close()
         try:
             if saved_email:
                 send_password_changed_email(saved_email, saved_name, reset_url)
         except Exception:
             pass
-        session.close()
         return jsonify({'success': True, 'message': 'Mot de passe mis à jour avec succès.'})
     except Exception as e:
         try: session.rollback(); session.close()

@@ -67,7 +67,10 @@ def notify_user(
     if extra:
         payload.update(extra)
     Thread(target=_redis_publish, args=(f'cei:notif:user:{user_id}', payload), daemon=True).start()
-    _ntfy_push(f'student-{user_id}', title, message, priority, tags)
+    try:
+        Thread(target=_ntfy_push, args=(f'student-{user_id}', title, message, priority, tags), daemon=True).start()
+    except Exception as exc:
+        _log.warning('Failed to spawn ntfy thread for user %s: %s', user_id, exc)
 
 
 def notify_exam(
@@ -85,7 +88,10 @@ def notify_exam(
     """
     payload = {'type': event_type, 'title': title, 'message': message}
     Thread(target=_redis_publish, args=(f'cei:notif:exam:{exam_id}', payload), daemon=True).start()
-    _ntfy_push(f'exam-{exam_id}', title, message, priority, tags)
+    try:
+        Thread(target=_ntfy_push, args=(f'exam-{exam_id}', title, message, priority, tags), daemon=True).start()
+    except Exception as exc:
+        _log.warning('Failed to spawn ntfy thread for exam %s: %s', exam_id, exc)
 
 
 def _publish_to_admins(payload: dict) -> None:
@@ -118,4 +124,7 @@ def notify_admins(
     """
     payload = {'type': event_type, 'title': title, 'message': message}
     Thread(target=_publish_to_admins, args=(payload,), daemon=True).start()
-    _ntfy_push('admin-alerts', title, message, priority, tags)
+    try:
+        Thread(target=_ntfy_push, args=('admin-alerts', title, message, priority, tags), daemon=True).start()
+    except Exception as exc:
+        _log.warning('Failed to spawn ntfy thread for admins: %s', exc)

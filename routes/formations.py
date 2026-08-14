@@ -110,6 +110,7 @@ def create_pole():
         session = get_session()
         ok, _ = _is_admin(session)
         if not ok:
+            session.close()
             return jsonify({'error': 'Accès non autorisé'}), 403
         data = request.get_json() or {}
         if not data.get('code') or not data.get('name'):
@@ -155,6 +156,7 @@ def update_pole(pid):
         session = get_session()
         ok, _ = _is_admin(session)
         if not ok:
+            session.close()
             return jsonify({'error': 'Accès non autorisé'}), 403
         data = request.get_json() or {}
         pole = session.query(Pole).filter_by(id=pid).first()
@@ -185,6 +187,7 @@ def delete_pole(pid):
         session = get_session()
         ok, _ = _is_admin(session)
         if not ok:
+            session.close()
             return jsonify({'error': 'Accès non autorisé'}), 403
         pole = session.query(Pole).filter_by(id=pid).first()
         if not pole:
@@ -262,6 +265,7 @@ def create_niveau():
         session = get_session()
         ok, _ = _is_admin(session)
         if not ok:
+            session.close()
             return jsonify({'error': 'Accès non autorisé'}), 403
         data = request.get_json() or {}
         if not data.get('code') or not data.get('name'):
@@ -310,6 +314,7 @@ def update_niveau(nid):
         session = get_session()
         ok, _ = _is_admin(session)
         if not ok:
+            session.close()
             return jsonify({'error': 'Accès non autorisé'}), 403
         data = request.get_json() or {}
         niveau = session.query(Niveau).filter_by(id=nid).first()
@@ -352,6 +357,7 @@ def delete_niveau(nid):
         session = get_session()
         ok, _ = _is_admin(session)
         if not ok:
+            session.close()
             return jsonify({'error': 'Accès non autorisé'}), 403
         niveau = session.query(Niveau).filter_by(id=nid).first()
         if not niveau:
@@ -518,7 +524,7 @@ def create_formation():
     try:
         session = get_session()
         ok, _ = _is_admin(session)
-        if not ok: return jsonify({'error': 'Accès non autorisé'}), 403
+        if not ok: session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
         data = request.json or {}
         if session.query(Formation).filter_by(code=data.get('code', '')).first():
             session.close()
@@ -556,7 +562,7 @@ def update_formation(fid):
     try:
         session = get_session()
         ok, _ = _is_admin(session)
-        if not ok: return jsonify({'error': 'Accès non autorisé'}), 403
+        if not ok: session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
         f = session.query(Formation).filter_by(id=fid).first()
         if not f: session.close(); return jsonify({'error': 'Formation non trouvée'}), 404
         data = request.json or {}
@@ -592,7 +598,7 @@ def delete_formation(fid):
     try:
         session = get_session()
         ok, _ = _is_admin(session)
-        if not ok: return jsonify({'error': 'Accès non autorisé'}), 403
+        if not ok: session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
         f = session.query(Formation).filter_by(id=fid).first()
         if not f: session.close(); return jsonify({'error': 'Formation non trouvée'}), 404
 
@@ -635,7 +641,7 @@ def create_semester():
     try:
         session = get_session()
         ok, _ = _is_admin(session)
-        if not ok: return jsonify({'error': 'Accès non autorisé'}), 403
+        if not ok: session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
         data = request.json or {}
         if not session.query(Formation).filter_by(id=data.get('formation_id')).first():
             session.close(); return jsonify({'error': 'Formation non trouvée'}), 404
@@ -658,7 +664,7 @@ def update_semester(sid):
     try:
         session = get_session()
         ok, _ = _is_admin(session)
-        if not ok: return jsonify({'error': 'Accès non autorisé'}), 403
+        if not ok: session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
         s = session.query(Semester).filter_by(id=sid).first()
         if not s: session.close(); return jsonify({'error': 'Semestre non trouvé'}), 404
         data = request.json or {}
@@ -679,7 +685,7 @@ def delete_semester(sid):
     try:
         session = get_session()
         ok, _ = _is_admin(session)
-        if not ok: return jsonify({'error': 'Accès non autorisé'}), 403
+        if not ok: session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
         s = session.query(Semester).filter_by(id=sid).first()
         if not s: session.close(); return jsonify({'error': 'Semestre non trouvé'}), 404
         session.delete(s); session.commit(); session.close()
@@ -701,7 +707,7 @@ def create_ue():
     try:
         session = get_session()
         ok, _ = _is_admin(session)
-        if not ok: return jsonify({'error': 'Accès non autorisé'}), 403
+        if not ok: session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
         data = request.json or {}
         if session.query(UE).filter_by(code=data.get('code', '')).first():
             session.close(); return jsonify({'error': 'Code UE déjà utilisé'}), 400
@@ -725,7 +731,7 @@ def update_ue(uid):
     try:
         session = get_session()
         ok, _ = _is_admin(session)
-        if not ok: return jsonify({'error': 'Accès non autorisé'}), 403
+        if not ok: session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
         ue = session.query(UE).filter_by(id=uid).first()
         if not ue: session.close(); return jsonify({'error': 'UE non trouvée'}), 404
         data = request.json or {}
@@ -750,7 +756,7 @@ def delete_ue(uid):
     try:
         session = get_session()
         ok, _ = _is_admin(session)
-        if not ok: return jsonify({'error': 'Accès non autorisé'}), 403
+        if not ok: session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
         ue = session.query(UE).filter_by(id=uid).first()
         if not ue: session.close(); return jsonify({'error': 'UE non trouvée'}), 404
         session.delete(ue); session.commit(); session.close()
@@ -772,7 +778,7 @@ def create_ec():
     try:
         session = get_session()
         ok, _ = _is_admin(session)
-        if not ok: return jsonify({'error': 'Accès non autorisé'}), 403
+        if not ok: session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
         data = request.json or {}
         if session.query(EC).filter_by(code=data.get('code', '')).first():
             session.close(); return jsonify({'error': 'Code EC déjà utilisé'}), 400
@@ -799,7 +805,7 @@ def update_ec(eid):
     try:
         session = get_session()
         ok, _ = _is_admin(session)
-        if not ok: return jsonify({'error': 'Accès non autorisé'}), 403
+        if not ok: session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
         ec = session.query(EC).filter_by(id=eid).first()
         if not ec: session.close(); return jsonify({'error': 'EC non trouvé'}), 404
         data = request.json or {}
@@ -824,7 +830,7 @@ def delete_ec(eid):
     try:
         session = get_session()
         ok, _ = _is_admin(session)
-        if not ok: return jsonify({'error': 'Accès non autorisé'}), 403
+        if not ok: session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
         ec = session.query(EC).filter_by(id=eid).first()
         if not ec: session.close(); return jsonify({'error': 'EC non trouvé'}), 404
         # Détache les sujets et questions de banque plutôt que de les détruire :
@@ -852,7 +858,7 @@ def assign_ec_to_professor():
     try:
         session = get_session()
         ok, _ = _is_admin(session)
-        if not ok: return jsonify({'error': 'Accès non autorisé'}), 403
+        if not ok: session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
         data = request.json or {}
         ec_id, prof_id = data.get('ec_id'), data.get('professor_id')
         if not ec_id or not prof_id:
@@ -866,13 +872,14 @@ def assign_ec_to_professor():
         ec = session.query(EC).filter_by(id=ec_id).first()
         session.add(ECAssignment(ec_id=ec_id, professor_id=prof_id))
         session.commit()
+        session.close()
+
         try:
             from notif_bus import notify_user
             notify_user(prof_id, 'ec_assigned', 'Affecté à un EC',
                          f'Vous avez été affecté à l\'EC « {ec.code} — {ec.name} ».', priority='default', tags=['books'])
         except Exception:
             pass
-        session.close()
         return jsonify({'success': True, 'message': 'EC affecté avec succès'}), 201
     except Exception as e:
         try: session.rollback(); session.close()
@@ -886,7 +893,7 @@ def assign_ec_by_id(eid):
     try:
         session = get_session()
         ok, _ = _is_admin(session)
-        if not ok: return jsonify({'error': 'Accès non autorisé'}), 403
+        if not ok: session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
         data = request.json or {}
         prof_id = data.get('professor_id')
         if not prof_id: session.close(); return jsonify({'error': 'Professeur requis'}), 400
@@ -899,13 +906,13 @@ def assign_ec_by_id(eid):
             session.close(); return jsonify({'error': 'Ce professeur est déjà affecté à cet EC'}), 400
         session.add(ECAssignment(ec_id=eid, professor_id=prof_id))
         session.commit()
+        session.close()
         try:
             from notif_bus import notify_user
             notify_user(prof_id, 'ec_assigned', 'Affecté à un EC',
                          f'Vous avez été affecté à l\'EC « {ec.code} — {ec.name} ».', priority='default', tags=['books'])
         except Exception:
             pass
-        session.close()
         return jsonify({'success': True, 'message': 'EC affecté avec succès'}), 201
     except Exception as e:
         try: session.rollback(); session.close()
@@ -919,7 +926,7 @@ def remove_ec_assignment(aid):
     try:
         session = get_session()
         ok, _ = _is_admin(session)
-        if not ok: return jsonify({'error': 'Accès non autorisé'}), 403
+        if not ok: session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
         a = session.query(ECAssignment).filter_by(id=aid).first()
         if not a: session.close(); return jsonify({'error': 'Affectation non trouvée'}), 404
         session.delete(a); session.commit(); session.close()
@@ -973,7 +980,7 @@ def enroll_student_to_ue():
     try:
         session = get_session()
         ok, _ = _is_admin(session)
-        if not ok: return jsonify({'error': 'Accès non autorisé'}), 403
+        if not ok: session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
         data = request.json or {}
         sid, uid = data.get('student_id'), data.get('ue_id')
         if not sid or not uid: session.close(); return jsonify({'error': 'Étudiant et UE requis'}), 400
@@ -991,13 +998,14 @@ def enroll_student_to_ue():
         _sync_formation_from_ue(student, ue)
         session.add(StudentUEEnrollment(student_id=sid, ue_id=uid))
         session.commit()
+        # Préparer payload hors-session
+        notify_payload = (sid, f'Vous avez été inscrit à l\'UE « {ue.code} — {ue.name} ».')
+        session.close()
         try:
             from notif_bus import notify_user
-            notify_user(sid, 'ue_enrolled', 'Inscription à une UE',
-                         f'Vous avez été inscrit à l\'UE « {ue.code} — {ue.name} ».', priority='default', tags=['bookmark'])
+            notify_user(notify_payload[0], 'ue_enrolled', 'Inscription à une UE', notify_payload[1], priority='default', tags=['bookmark'])
         except Exception:
             pass
-        session.close()
         return jsonify({'success': True, 'message': 'Étudiant inscrit avec succès'}), 201
     except Exception as e:
         try: session.rollback(); session.close()
@@ -1014,7 +1022,7 @@ def enroll_students_bulk():
     try:
         session = get_session()
         ok, _ = _is_admin(session)
-        if not ok: return jsonify({'error': 'Accès non autorisé'}), 403
+        if not ok: session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
         data = request.json or {}
         student_ids = data.get('student_ids') or []
         ue_id = data.get('ue_id')
@@ -1025,27 +1033,48 @@ def enroll_students_bulk():
             session.close(); return jsonify({'error': 'UE non trouvée'}), 404
 
         enrolled, already, errors = [], [], []
+
+        # Pré-charger les étudiants demandés pour éviter des requêtes par itération
+        students = session.query(User).filter(User.id.in_(student_ids), User.role == UserRole.STUDENT).all()
+        students_by_id = {s.id: s for s in students}
+
+        # Existant en une seule requête
+        existing = session.query(StudentUEEnrollment).filter(
+            StudentUEEnrollment.ue_id == ue_id,
+            StudentUEEnrollment.student_id.in_(student_ids)
+        ).all()
+        existing_ids = {e.student_id for e in existing}
+
         for sid in student_ids:
-            student = session.query(User).filter_by(id=sid, role=UserRole.STUDENT).first()
+            student = students_by_id.get(sid)
             if not student:
-                errors.append(f"Étudiant {sid} non trouvé"); continue
-            if session.query(StudentUEEnrollment).filter_by(student_id=sid, ue_id=ue_id).first():
-                already.append(sid); continue
+                errors.append(f"Étudiant {sid} non trouvé")
+                continue
+            if sid in existing_ids:
+                already.append(sid)
+                continue
             mismatch = _formation_mismatch_error(student, ue)
             if mismatch:
-                errors.append(mismatch); continue
+                errors.append(mismatch)
+                continue
+            # Synchroniser la formation (modifie l'objet student en session)
             _sync_formation_from_ue(student, ue)
             session.add(StudentUEEnrollment(student_id=sid, ue_id=ue_id))
             enrolled.append(sid)
+
         session.commit()
+        # Préparer payloads hors-session
+        notify_payloads = [(sid, f'Vous avez été inscrit à l\'UE « {ue.code} — {ue.name} ».') for sid in enrolled]
+        session.close()
         try:
             from notif_bus import notify_user
-            for sid in enrolled:
-                notify_user(sid, 'ue_enrolled', 'Inscription à une UE',
-                             f'Vous avez été inscrit à l\'UE « {ue.code} — {ue.name} ».', priority='default', tags=['bookmark'])
+            for sid, message in notify_payloads:
+                try:
+                    notify_user(sid, 'ue_enrolled', 'Inscription à une UE', message, priority='default', tags=['bookmark'])
+                except Exception:
+                    pass
         except Exception:
             pass
-        session.close()
         return jsonify({
             'success': True,
             'enrolled': len(enrolled),
@@ -1067,19 +1096,26 @@ def unenroll_students_bulk():
     try:
         session = get_session()
         ok, _ = _is_admin(session)
-        if not ok: return jsonify({'error': 'Accès non autorisé'}), 403
+        if not ok: session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
         data = request.json or {}
         student_ids = data.get('student_ids') or []
         ue_id = data.get('ue_id')
         if not student_ids or not ue_id:
             session.close(); return jsonify({'error': 'Étudiants et UE requis'}), 400
 
-        removed = 0
-        for sid in student_ids:
-            e = session.query(StudentUEEnrollment).filter_by(student_id=sid, ue_id=ue_id).first()
-            if e:
-                session.delete(e)
-                removed += 1
+        # Supprimer en batch pour éviter des suppressions itératives
+        q = session.query(StudentUEEnrollment).filter(
+            StudentUEEnrollment.ue_id == ue_id,
+            StudentUEEnrollment.student_id.in_(student_ids)
+        )
+        try:
+            removed = q.delete(synchronize_session=False)
+        except Exception:
+            # Fallback : suppression manuelle si delete() non supporté
+            removed = 0
+            existing = q.all()
+            for e in existing:
+                session.delete(e); removed += 1
         session.commit()
         session.close()
         return jsonify({'success': True, 'removed': removed}), 200
@@ -1095,7 +1131,7 @@ def enroll_student_by_id(student_id):
     try:
         session = get_session()
         ok, _ = _is_admin(session)
-        if not ok: return jsonify({'error': 'Accès non autorisé'}), 403
+        if not ok: session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
         data = request.json or {}
         ue_id = data.get('ue_id')
         if not ue_id: session.close(); return jsonify({'error': 'UE requis (ue_id manquant)'}), 400
@@ -1113,13 +1149,13 @@ def enroll_student_by_id(student_id):
         _sync_formation_from_ue(student, ue)
         session.add(StudentUEEnrollment(student_id=student_id, ue_id=ue_id))
         session.commit()
+        notify_payload = (student_id, f'Vous avez été inscrit à l\'UE « {ue.code} — {ue.name} ».')
+        session.close()
         try:
             from notif_bus import notify_user
-            notify_user(student_id, 'ue_enrolled', 'Inscription à une UE',
-                         f'Vous avez été inscrit à l\'UE « {ue.code} — {ue.name} ».', priority='default', tags=['bookmark'])
+            notify_user(notify_payload[0], 'ue_enrolled', 'Inscription à une UE', notify_payload[1], priority='default', tags=['bookmark'])
         except Exception:
             pass
-        session.close()
         return jsonify({'success': True, 'message': 'Étudiant inscrit avec succès'}), 201
     except Exception as e:
         try: session.rollback(); session.close()
@@ -1236,7 +1272,7 @@ def get_all_students_enrollments():
     try:
         session = get_session()
         ok, _ = _is_admin(session)
-        if not ok: return jsonify({'error': 'Accès non autorisé'}), 403
+        if not ok: session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
 
         rows = (
             session.query(StudentUEEnrollment, UE, Semester, Formation)
@@ -1270,7 +1306,7 @@ def get_student_enrollments(student_id):
     try:
         session = get_session()
         ok, _ = _is_admin(session)
-        if not ok: return jsonify({'error': 'Accès non autorisé'}), 403
+        if not ok: session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
         result = []
         for e in session.query(StudentUEEnrollment).filter_by(student_id=student_id).all():
             ue = session.query(UE).filter_by(id=e.ue_id).first()
@@ -1300,7 +1336,7 @@ def set_student_formation(student_id):
     try:
         session = get_session()
         ok, _ = _is_admin(session)
-        if not ok: return jsonify({'error': 'Accès non autorisé'}), 403
+        if not ok: session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
         data = request.get_json() or {}
         formation_id = data.get('formation_id')
         if not formation_id: session.close(); return jsonify({'error': 'formation_id requis'}), 400
@@ -1334,7 +1370,7 @@ def remove_student_enrollment(eid):
     try:
         session = get_session()
         ok, _ = _is_admin(session)
-        if not ok: return jsonify({'error': 'Accès non autorisé'}), 403
+        if not ok: session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
         e = session.query(StudentUEEnrollment).filter_by(id=eid).first()
         if not e: session.close(); return jsonify({'error': 'Inscription non trouvée'}), 404
         session.delete(e); session.commit(); session.close()
@@ -1355,7 +1391,7 @@ def list_proctor_groups():
     try:
         session = get_session()
         ok, user = _is_admin_or_professor(session)
-        if not ok: return jsonify({'error': 'Accès non autorisé'}), 403
+        if not ok: session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
         query = session.query(ProctorGroup)
         if user.role == UserRole.PROFESSOR:
             # Un professeur ne voit que les groupes qu'il a lui-même créés —
@@ -1377,7 +1413,7 @@ def create_proctor_group():
     try:
         session = get_session()
         ok, user = _is_admin_or_professor(session)
-        if not ok: return jsonify({'error': 'Accès non autorisé'}), 403
+        if not ok: session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
         data = request.json or {}
         name = (data.get('name') or '').strip()
         if not name:
@@ -1399,7 +1435,7 @@ def update_proctor_group(gid):
     try:
         session = get_session()
         ok, user = _is_admin_or_professor(session)
-        if not ok: return jsonify({'error': 'Accès non autorisé'}), 403
+        if not ok: session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
         group = session.query(ProctorGroup).filter_by(id=gid).first()
         if not group: session.close(); return jsonify({'error': 'Groupe non trouvé'}), 404
         if not _can_manage_proctor_group(user, group):
@@ -1436,7 +1472,7 @@ def delete_proctor_group(gid):
     try:
         session = get_session()
         ok, user = _is_admin_or_professor(session)
-        if not ok: return jsonify({'error': 'Accès non autorisé'}), 403
+        if not ok: session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
         group = session.query(ProctorGroup).filter_by(id=gid).first()
         if not group: session.close(); return jsonify({'error': 'Groupe non trouvé'}), 404
         if not _can_manage_proctor_group(user, group):
@@ -1444,9 +1480,27 @@ def delete_proctor_group(gid):
         ec_ids = [ge.ec_id for ge in group.ecs]
         session.delete(group); session.commit()
         from services.proctor_service import sync_ec_proctors
+        to_notify = []
         for ec_id in ec_ids:
-            sync_ec_proctors(session, ec_id)
+            try:
+                res = sync_ec_proctors(session, ec_id) or []
+                to_notify.extend(res)
+            except Exception:
+                pass
         session.close()
+
+        # Envoyer notifications hors transaction
+        if to_notify:
+            try:
+                from notif_bus import notify_user
+                for n in to_notify:
+                    try:
+                        notify_user(n.get('user_id'), n.get('event'), n.get('title'), n.get('message'), priority=n.get('priority'), tags=n.get('tags'))
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
         return jsonify({'success': True, 'message': 'Groupe supprimé'})
     except Exception as e:
         try: session.rollback(); session.close()
@@ -1460,7 +1514,7 @@ def add_proctor_group_member(gid):
     try:
         session = get_session()
         ok, user = _is_admin_or_professor(session)
-        if not ok: return jsonify({'error': 'Accès non autorisé'}), 403
+        if not ok: session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
         group = session.query(ProctorGroup).filter_by(id=gid).first()
         if not group: session.close(); return jsonify({'error': 'Groupe non trouvé'}), 404
         if not _can_manage_proctor_group(user, group):
@@ -1479,27 +1533,63 @@ def add_proctor_group_member(gid):
                 continue
             session.add(ProctorGroupMember(group_id=gid, proctor_id=pid))
             added += 1
+            # Accumuler notifications et emails pour envoi hors transaction
             try:
-                from notif_bus import notify_user
-                notify_user(pid, 'proctor_group_added', 'Ajouté à un groupe de surveillance',
-                             f'Vous avez été ajouté au groupe « {group.name} ».', priority='default', tags=['busts_in_silhouette'])
+                if 'pending_notifs' not in locals():
+                    pending_notifs = []
+                pending_notifs.append({'user_id': pid, 'event': 'proctor_group_added', 'title': 'Ajouté à un groupe de surveillance', 'message': f'Vous avez été ajouté au groupe « {group.name} ».', 'priority': 'default', 'tags': ['busts_in_silhouette']})
             except Exception:
                 pass
             try:
-                from utils import send_proctor_group_added_email
+                if 'pending_emails' not in locals():
+                    pending_emails = []
                 if proctor.email:
-                    send_proctor_group_added_email(proctor.email, proctor.full_name, group.name)
+                    pending_emails.append({'email': proctor.email, 'name': proctor.full_name, 'group': group.name})
             except Exception:
                 pass
         session.commit()
         # Un renfort ajouté au groupe se propage à tous les examens à venir
         # des EC couverts par ce groupe (plus de gestion manuelle par examen).
+        to_notify = []
         if added:
             from services.proctor_service import sync_ec_proctors
             for ec_id in [ge.ec_id for ge in group.ecs]:
-                sync_ec_proctors(session, ec_id)
+                try:
+                    res = sync_ec_proctors(session, ec_id) or []
+                    to_notify.extend(res)
+                except Exception:
+                    pass
         result = group.to_dict()
         session.close()
+
+        # Envoyer notifications et emails hors transaction
+        try:
+            from notif_bus import notify_user
+            if 'pending_notifs' in locals():
+                for n in pending_notifs:
+                    try:
+                        notify_user(n.get('user_id'), n.get('event'), n.get('title'), n.get('message'), priority=n.get('priority'), tags=n.get('tags'))
+                    except Exception:
+                        pass
+            if to_notify:
+                for n in to_notify:
+                    try:
+                        notify_user(n.get('user_id'), n.get('event'), n.get('title'), n.get('message'), priority=n.get('priority'), tags=n.get('tags'))
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        try:
+            if 'pending_emails' in locals():
+                from utils import send_proctor_group_added_email
+                for e in pending_emails:
+                    try:
+                        send_proctor_group_added_email(e['email'], e['name'], e['group'])
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
         return jsonify({'success': True, 'added': added, 'already': already, 'group': result}), 201
     except Exception as e:
         try: session.rollback(); session.close()
@@ -1513,7 +1603,7 @@ def remove_proctor_group_member(gid, mid):
     try:
         session = get_session()
         ok, user = _is_admin_or_professor(session)
-        if not ok: return jsonify({'error': 'Accès non autorisé'}), 403
+        if not ok: session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
         group = session.query(ProctorGroup).filter_by(id=gid).first()
         if not group: session.close(); return jsonify({'error': 'Groupe non trouvé'}), 404
         if not _can_manage_proctor_group(user, group):
@@ -1538,7 +1628,7 @@ def add_proctor_group_supervisor(gid):
     try:
         session = get_session()
         ok, user = _is_admin_or_professor(session)
-        if not ok: return jsonify({'error': 'Accès non autorisé'}), 403
+        if not ok: session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
         group = session.query(ProctorGroup).filter_by(id=gid).first()
         if not group: session.close(); return jsonify({'error': 'Groupe non trouvé'}), 404
         if not _can_manage_proctor_group(user, group):
@@ -1573,7 +1663,7 @@ def remove_proctor_group_supervisor(gid, sid):
     try:
         session = get_session()
         ok, user = _is_admin_or_professor(session)
-        if not ok: return jsonify({'error': 'Accès non autorisé'}), 403
+        if not ok: session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
         group = session.query(ProctorGroup).filter_by(id=gid).first()
         if not group: session.close(); return jsonify({'error': 'Groupe non trouvé'}), 404
         if not _can_manage_proctor_group(user, group):
@@ -1595,7 +1685,7 @@ def link_proctor_group_ec(gid):
     try:
         session = get_session()
         ok, user = _is_admin_or_professor(session)
-        if not ok: return jsonify({'error': 'Accès non autorisé'}), 403
+        if not ok: session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
         group = session.query(ProctorGroup).filter_by(id=gid).first()
         if not group: session.close(); return jsonify({'error': 'Groupe non trouvé'}), 404
         if not _can_manage_proctor_group(user, group):
@@ -1615,26 +1705,57 @@ def link_proctor_group_ec(gid):
             session.close(); return jsonify({'error': 'Ce groupe est déjà rattaché à cet EC'}), 400
         session.add(ProctorGroupEC(group_id=gid, ec_id=ec_id))
         session.commit()
+        # Récupérer membres et préparer notifications, puis fermer session
+        members = session.query(ProctorGroupMember).filter_by(group_id=gid).all()
+        ec_label = f'{ec.code} — {ec.name}'
+        notify_payloads = []
+        email_payloads = []
+        for m in members:
+            notify_payloads.append((m.proctor_id, 'proctor_group_ec_added', 'Nouvel EC couvert par votre groupe',
+                                    f'Le groupe « {group.name} » (dont vous faites partie) surveille désormais l\'EC « {ec_label} ».',
+                                    {'priority': 'default', 'tags': ['bookmark']}))
+            try:
+                if m.proctor and m.proctor.email:
+                    email_payloads.append((m.proctor.email, m.proctor.full_name, group.name, ec_label))
+            except Exception:
+                pass
+
+        from services.proctor_service import sync_ec_proctors
+        to_notify = sync_ec_proctors(session, ec_id)
+        session.commit()
+        result = group.to_dict()  # capturé avant la fermeture de session
+        session.close()
+
+        # Envoyer notifications hors transaction
         try:
             from notif_bus import notify_user
-            members = session.query(ProctorGroupMember).filter_by(group_id=gid).all()
-            ec_label = f'{ec.code} — {ec.name}'
-            for m in members:
-                notify_user(m.proctor_id, 'proctor_group_ec_added', 'Nouvel EC couvert par votre groupe',
-                             f'Le groupe « {group.name} » (dont vous faites partie) surveille désormais l\'EC « {ec_label} ».',
-                             priority='default', tags=['bookmark'])
+            for p in notify_payloads:
                 try:
-                    from utils import send_proctor_group_ec_added_email
-                    if m.proctor and m.proctor.email:
-                        send_proctor_group_ec_added_email(m.proctor.email, m.proctor.full_name, group.name, ec_label)
+                    notify_user(p[0], p[1], p[2], p[3], priority=p[4].get('priority'), tags=p[4].get('tags'))
                 except Exception:
                     pass
         except Exception:
             pass
-        from services.proctor_service import sync_ec_proctors
-        sync_ec_proctors(session, ec_id)
-        result = group.to_dict()
-        session.close()
+        try:
+            from utils import send_proctor_group_ec_added_email
+            for e in email_payloads:
+                try:
+                    send_proctor_group_ec_added_email(e[0], e[1], e[2], e[3])
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # Envoyer les notifications collectées par sync_ec_proctors
+        try:
+            from notif_bus import notify_user
+            for n in (to_notify or []):
+                try:
+                    notify_user(n.get('user_id'), n.get('event'), n.get('title'), n.get('message'), priority=n.get('priority'), tags=n.get('tags'))
+                except Exception:
+                    pass
+        except Exception:
+            pass
         return jsonify(result), 201
     except Exception as e:
         try: session.rollback(); session.close()
@@ -1648,7 +1769,7 @@ def unlink_proctor_group_ec(gid, ec_id):
     try:
         session = get_session()
         ok, user = _is_admin_or_professor(session)
-        if not ok: return jsonify({'error': 'Accès non autorisé'}), 403
+        if not ok: session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
         group = session.query(ProctorGroup).filter_by(id=gid).first()
         if not group: session.close(); return jsonify({'error': 'Groupe non trouvé'}), 404
         if not _can_manage_proctor_group(user, group):
@@ -1657,8 +1778,25 @@ def unlink_proctor_group_ec(gid, ec_id):
         if not link: session.close(); return jsonify({'error': 'Rattachement non trouvé'}), 404
         session.delete(link); session.commit()
         from services.proctor_service import sync_ec_proctors
-        sync_ec_proctors(session, ec_id)
+        to_notify = []
+        try:
+            res = sync_ec_proctors(session, ec_id) or []
+            to_notify.extend(res)
+        except Exception:
+            pass
         session.close()
+
+        if to_notify:
+            try:
+                from notif_bus import notify_user
+                for n in to_notify:
+                    try:
+                        notify_user(n.get('user_id'), n.get('event'), n.get('title'), n.get('message'), priority=n.get('priority'), tags=n.get('tags'))
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
         return jsonify({'success': True, 'message': 'Rattachement retiré'})
     except Exception as e:
         try: session.rollback(); session.close()

@@ -10,6 +10,7 @@ import uuid
 from flask import Flask, g, jsonify, request, send_file
 from flask_cors import CORS
 from flask_compress import Compress
+from werkzeug.middleware.proxy_fix import ProxyFix
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -34,6 +35,15 @@ logger = logging.getLogger('cei.api')
 
 # ── Application Flask ─────────────────────────────────────────────────────────
 app = Flask(__name__)
+
+# Derrière nginx (proxy_pass 127.0.0.1) : sans ceci, request.remote_addr vaut
+# TOUJOURS 127.0.0.1 pour toutes les requêtes, quel que soit le vrai client —
+# ce qui fait que le rate limiter (get_remote_address, extensions.py) traite
+# TOUS les utilisateurs comme une seule et même IP, partageant un seul quota
+# de 300/h · 60/min pour toute la plateforme. Avec ProxyFix, chaque client
+# est limité individuellement sur sa propre IP réelle (X-Forwarded-For/
+# X-Real-IP, un seul niveau de proxy — nginx est le seul devant l'app).
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 
 # CORS — origines lues depuis ALLOWED_ORIGINS dans .env
 _raw_origins = os.getenv('ALLOWED_ORIGINS', 'https://dev-cei.ddns.net,http://localhost:5173,http://localhost:3000')

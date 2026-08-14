@@ -40,31 +40,27 @@ def sync_ec_proctors(session, ec_id):
                 seen.add(m.proctor_id)
                 target_ids.append(m.proctor_id)
     target_set = set(target_ids)
-    users_by_id = {u.id: u for u in session.query(User).filter(User.id.in_(target_set)).all()} if target_set else {}
 
     exams = session.query(OnlineExam).join(Subject, OnlineExam.subject_id == Subject.id).filter(
         Subject.ec_id == ec_id,
         OnlineExam.status.in_(_SYNCABLE_STATUSES),
     ).all()
 
+    to_notify = []
+
     for exam in exams:
         current = {ep.proctor_id: ep for ep in session.query(ExamProctor).filter_by(exam_id=exam.id).all()}
 
         for pid in target_set - current.keys():
             session.add(ExamProctor(exam_id=exam.id, proctor_id=pid, assigned_by_id=exam.created_by_id))
-            try:
-                from notif_bus import notify_user
-                notify_user(pid, 'proctor_assigned', 'Nouvel examen à surveiller',
-                             f'Vous surveillez « {exam.title} » (groupe).', priority='default', tags=['eyes'])
-            except Exception:
-                pass
-            try:
-                from utils import send_proctor_assigned_email
-                u = users_by_id.get(pid)
-                if u and u.email:
-                    send_proctor_assigned_email(u.email, u.full_name, exam.title)
-            except Exception:
-                pass
+            to_notify.append({
+                'user_id': pid,
+                'event': 'proctor_assigned',
+                'title': 'Nouvel examen à surveiller',
+                'message': f'Vous surveillez « {exam.title} » (groupe).',
+                'priority': 'default',
+                'tags': ['eyes'],
+            })
 
         for pid in current.keys() - target_set:
             session.query(ProctorAssignment).filter_by(exam_id=exam.id, proctor_id=pid).delete()
@@ -72,6 +68,9 @@ def sync_ec_proctors(session, ec_id):
 
         session.commit()
         _redistribute_students(session, exam, target_ids)
+
+    # Retourner la liste des notifications préparées pour envoi hors transaction
+    return to_notify
 
 
 def _redistribute_students(session, exam, proctor_ids):

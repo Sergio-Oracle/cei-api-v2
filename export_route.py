@@ -122,4 +122,9 @@ def register_export_route(app):
             print(f"Erreur export_paper_pdf: {e}")
             import traceback
             traceback.print_exc()
+            try:
+                session.rollback()
+                session.close()
+            except Exception:
+                pass
             return jsonify({'error': str(e)}), 500

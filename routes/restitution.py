@@ -145,22 +145,47 @@ def create_restitution_example():
             f"###COPIE_DEBUT###\n{raw_content}\n###COPIE_FIN###\n\n"
             f"###FEEDBACK_DEBUT###\n{raw_feedback or ''}\n###FEEDBACK_FIN###"
         )
+
+        # Fermer la session avant l'appel IA long
+        try:
+            session.expunge_all()
+        except Exception:
+            pass
+        try:
+            session.close()
+        except Exception:
+            pass
+
         ai_result = call_claude(_ANONYMIZE_SYSTEM_PROMPT, user_message, temperature=0.1)
         anon_content, anon_feedback = _split_anonymized(ai_result)
         if not anon_content:
-            session.close(); return jsonify({'error': "L'anonymisation a échoué — réponse IA invalide"}), 500
+            return jsonify({'error': "L'anonymisation a échoué — réponse IA invalide"}), 500
 
-        example = RestitutionExample(
-            paper_id=paper_id, attempt_id=attempt_id,
-            subject_id=subject.id if subject else None,
-            label=ExampleLabel(label_str),
-            anonymized_content=anon_content,
-            anonymized_feedback=anon_feedback,
-            score=score, max_score=20.0,
-            created_by_id=user_id,
-        )
-        session.add(example); session.commit()
-        result = example.to_dict(); session.close()
+        # Persister l'exemple dans une session courte
+        from models import get_session as _get_session
+        s2 = _get_session()
+        try:
+            example = RestitutionExample(
+                paper_id=paper_id, attempt_id=attempt_id,
+                subject_id=subject.id if subject else None,
+                label=ExampleLabel(label_str),
+                anonymized_content=anon_content,
+                anonymized_feedback=anon_feedback,
+                score=score, max_score=20.0,
+                created_by_id=user_id,
+            )
+            s2.add(example); s2.commit()
+            result = example.to_dict()
+        except Exception as _e:
+            try: s2.rollback()
+            except Exception: pass
+            try: s2.close()
+            except Exception: pass
+            return jsonify({'error': str(_e)}), 500
+        finally:
+            try: s2.close()
+            except Exception: pass
+
         return jsonify({'success': True, 'example': result}), 201
     except Exception as e:
         try: session.rollback(); session.close()

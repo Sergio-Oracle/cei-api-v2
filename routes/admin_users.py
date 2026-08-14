@@ -70,6 +70,7 @@ def admin_dashboard():
     try:
         session = get_session()
         if not _require_admin(session):
+            session.close()
             return jsonify({'error': 'Accès non autorisé'}), 403
 
         data = {
@@ -101,6 +102,7 @@ def admin_corrected_papers():
         from sqlalchemy.orm import joinedload
         session = get_session()
         if not _require_admin(session):
+            session.close()
             return jsonify({'error': 'Accès non autorisé'}), 403
 
         papers = (
@@ -163,6 +165,7 @@ def get_all_users():
     try:
         session = get_session()
         if not _require_admin(session):
+            session.close()
             return jsonify({'error': 'Accès non autorisé'}), 403
 
         search      = request.args.get('search', '').strip()
@@ -201,6 +204,7 @@ def create_user():
     session = get_session()
     try:
         if not _require_admin(session):
+            session.close()
             return jsonify({'error': 'Accès non autorisé'}), 403
 
         data     = request.get_json(silent=True) or {}
@@ -268,6 +272,7 @@ def update_user(target_id):
     session = get_session()
     try:
         if not _require_admin(session):
+            session.close()
             return jsonify({'error': 'Accès non autorisé'}), 403
 
         user = session.query(User).filter_by(id=target_id).first()
@@ -323,6 +328,7 @@ def delete_user(target_id):
         me      = get_current_user_id()
         session = get_session()
         if not _require_admin(session):
+            session.close()
             return jsonify({'error': 'Accès non autorisé'}), 403
         if me == target_id:
             session.close()
@@ -473,6 +479,7 @@ def create_student_no_email():
     try:
         session = get_session()
         if not _require_admin(session):
+            session.close()
             return jsonify({'error': 'Accès non autorisé'}), 403
 
         data      = request.json or {}

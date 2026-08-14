@@ -9,6 +9,7 @@ import os, json, time, logging
 from datetime import datetime, timezone
 from flask import Blueprint, jsonify
 from auth_paseto import paseto_required, get_current_user_id
+from extensions import limiter
 from helpers     import utcnow
 from models      import (
     get_session, User, UserRole,
@@ -116,6 +117,7 @@ def mark_notifications_read():
 
 @notifications_bp.route('/api/notifications/poll', methods=['GET'])
 @paseto_required
+@limiter.exempt
 def notification_poll():
     """
     Long-polling Redis Pub/Sub — attend au plus 25 s un événement.

@@ -134,26 +134,45 @@ def upload_paper():
             f"###COPIE_ETUDIANT_DEBUT###\n{paper_content}\n###COPIE_ETUDIANT_FIN###\n\n"
             "RAPPEL: Tu DOIS finir par \"Note totale: XX.XX/20\" "
         )
+        # Fermer la session avant l'appel IA (long) pour ne pas garder une
+        # connexion DB tenue pendant potentiellement plusieurs dizaines de
+        # secondes voire minutes.
+        try:
+            session.close()
+        except Exception:
+            pass
+
         result = call_claude(system_prompt, user_message, temperature=0.15)
         score  = extract_score_from_correction(result)
 
         corrected_at = utcnow()
-        new_paper = StudentPaper(
-            subject_id=subject_id, student_id=student_id,
-            content=paper_content, grade=result, score=score, filename=filename,
-            file_hash=file_hash, extracted_student_name=extracted_name,
-            corrected_by_id=user_id if user.role in [UserRole.PROFESSOR, UserRole.ADMIN] else None,
-            corrected_at=corrected_at,
-            reclamation_window_end=corrected_at + timedelta(days=7),
-        )
-        session.add(new_paper); session.commit()
+
+        # Persister la nouvelle copie dans une courte session dédiée
+        s2 = get_session()
+        try:
+            new_paper = StudentPaper(
+                subject_id=subject_id, student_id=student_id,
+                content=paper_content, grade=result, score=score, filename=filename,
+                file_hash=file_hash, extracted_student_name=extracted_name,
+                corrected_by_id=user_id if user.role in [UserRole.PROFESSOR, UserRole.ADMIN] else None,
+                corrected_at=corrected_at,
+                reclamation_window_end=corrected_at + timedelta(days=7),
+            )
+            s2.add(new_paper)
+            s2.commit()
+            result_dict = new_paper.to_dict()
+        except Exception as e:
+            try: s2.rollback()
+            except Exception: pass
+            return jsonify({'error': str(e)}), 500
+        finally:
+            try: s2.close()
+            except Exception: pass
 
         # Pas d'email/notification ici : la copie reste non publiée
         # (is_published=False) tant que le professeur ne l'a pas vérifiée et
         # explicitement publiée via /api/papers/<id>/publish — voir cette
         # route pour l'envoi de l'email + PDF, différé jusqu'à publication.
-
-        result_dict = new_paper.to_dict(); session.close()
         return jsonify({
             'success': True, 'paper': result_dict,
             'duplicate_check': 'passed', 'extracted_name': extracted_name,
@@ -247,6 +266,15 @@ def upload_papers_batch():
                         full_name=student_name, role=UserRole.STUDENT,
                     )
                     session.add(student); session.flush()
+                    # Committer immédiatement le nouvel étudiant : la session
+                    # va être fermée avant l'appel IA ci-dessous, un flush
+                    # seul ne suffit pas à le faire survivre à cette fermeture.
+                    try:
+                        session.commit()
+                    except Exception:
+                        try: session.rollback()
+                        except Exception: pass
+                        session = get_session()
 
                 user_message = (
                     f"SUJET: {subject.content}\nBARÈME: {subject.rubric}\n"
@@ -254,26 +282,51 @@ def upload_papers_batch():
                     f"###COPIE_ETUDIANT_DEBUT###\n{paper_content}\n###COPIE_ETUDIANT_FIN###\n\n"
                     "RAPPEL: Termine par \"Note totale: XX.XX/20\" "
                 )
+
+                # Fermer la session principale avant l'appel IA (long)
+                try:
+                    session.close()
+                except Exception:
+                    pass
+
                 correction = call_claude(system_prompt, user_message, temperature=0.15)
                 score      = extract_score_from_correction(correction)
 
                 corrected_at = utcnow()
-                new_paper = StudentPaper(
-                    subject_id=subject_id, student_id=student.id,
-                    content=paper_content, grade=correction, score=score,
-                    filename=fname_saved, file_hash=file_hash,
-                    corrected_by_id=user_id, corrected_at=corrected_at,
-                    reclamation_window_end=corrected_at + timedelta(days=7),
-                )
-                session.add(new_paper); session.flush()
+
+                # Persister la copie dans une courte session dédiée
+                s2 = get_session()
+                try:
+                    new_paper = StudentPaper(
+                        subject_id=subject_id, student_id=student.id,
+                        content=paper_content, grade=correction, score=score,
+                        filename=fname_saved, file_hash=file_hash,
+                        corrected_by_id=user_id, corrected_at=corrected_at,
+                        reclamation_window_end=corrected_at + timedelta(days=7),
+                    )
+                    s2.add(new_paper)
+                    s2.commit()
+                    results.append({'filename': file.filename, 'student_name': student_name, 'score': score, 'success': True})
+                except Exception as e:
+                    try: s2.rollback()
+                    except Exception: pass
+                    errors.append(f"Fichier {idx+1}: {str(e)}")
+                finally:
+                    try: s2.close()
+                    except Exception: pass
 
                 # Pas d'email/notification ici : la copie reste non publiée
                 # tant que le professeur ne l'a pas vérifiée et publiée via
                 # /api/papers/publish-bulk ou /api/papers/<id>/publish.
 
-                results.append({'filename': file.filename, 'student_name': student_name, 'score': score, 'success': True})
+                # Rouvrir une session principale pour poursuivre la boucle
+                # (match_student_by_name, requêtes de doublon, etc.)
+                session = get_session()
             except Exception as e:
-                session.rollback()  # sans ça, une erreur sur un fichier invalide la session pour tous les suivants
+                try:
+                    session.rollback()  # sans ça, une erreur sur un fichier invalide la session pour tous les suivants
+                except Exception:
+                    session = get_session()
                 errors.append(f"Fichier {idx+1}: {str(e)}")
 
         session.commit(); session.close()
@@ -372,42 +425,83 @@ def get_paper_detail(paper_id):
 # ── publication ───────────────────────────────────────────────────────────────
 
 def _send_paper_result(session, paper, subject):
-    """Génère le PDF + envoie l'email de copie corrigée. Appelé uniquement à
-    la publication (jamais à la correction), pour ne pas divulguer la note
-    avant vérification du professeur."""
-    student_obj = paper.student
-    if not (student_obj and student_obj.email and '@temp.edu' not in student_obj.email
-            and '@noemail.local' not in student_obj.email):
-        return
-    pdf_path = f"exports/copie_{paper.id}.pdf"
+    """Extrait les données nécessaires puis ferme la session, et délègue le
+    travail lourd (génération PDF, email, notification) à la version
+    hors-session ci-dessous — pour ne pas tenir une transaction/connexion DB
+    ouverte pendant ces I/O (génération PDF + envoi email notamment).
+    Appelé uniquement à la publication (jamais à la correction), pour ne pas
+    divulguer la note avant vérification du professeur."""
+    try:
+        student_obj = paper.student
+        if not (student_obj and student_obj.email and '@temp.edu' not in student_obj.email
+                and '@noemail.local' not in student_obj.email):
+            return
+        student_id = student_obj.id
+        student_email = student_obj.email
+        student_name = student_obj.full_name
+        subject_title = subject.title if subject else ''
+        score = paper.score
+        grade = paper.grade
+        corrected_at = paper.corrected_at.isoformat() if paper.corrected_at else None
+        paper_id = paper.id
+    finally:
+        try: session.close()
+        except Exception: pass
+
+    try:
+        _send_paper_result_off_session(
+            student_id, student_email, student_name, subject_title,
+            score, grade, corrected_at, paper_id,
+        )
+    except Exception as e:
+        print(f"WARNING delegated send_paper_result {paper_id}: {e}")
+
+
+def _send_paper_result_off_session(student_id, student_email, student_name, subject_title,
+                                    score, grade, corrected_at, paper_id):
+    """Effectue la génération du PDF, l'envoi d'email et la notification SANS
+    session DB ouverte. Ouvre une courte session uniquement pour marquer
+    `email_sent`."""
+    pdf_path = f"exports/copie_{paper_id}.pdf"
     try:
         paper_data = {
-            'student_name': student_obj.full_name, 'subject_title': subject.title,
-            'score': paper.score, 'grade': paper.grade,
-            'corrected_at': paper.corrected_at.isoformat() if paper.corrected_at else None,
+            'student_name': student_name, 'subject_title': subject_title,
+            'score': score, 'grade': grade,
+            'corrected_at': corrected_at,
         }
         generate_corrected_paper_pdf(paper_data, pdf_path)
         email_sent = send_paper_corrected_email(
-            student_email=student_obj.email, student_name=student_obj.full_name,
-            subject_title=subject.title, score=paper.score, paper_id=paper.id,
-            attachments=[{'filename': f'copie_{paper.id}.pdf', 'path': pdf_path}],
+            student_email=student_email, student_name=student_name,
+            subject_title=subject_title, score=score, paper_id=paper_id,
+            attachments=[{'filename': f'copie_{paper_id}.pdf', 'path': pdf_path}],
         )
         if email_sent:
-            paper.email_sent = True
+            s2 = get_session()
+            try:
+                p = s2.query(StudentPaper).filter_by(id=paper_id).first()
+                if p:
+                    p.email_sent = True
+                    s2.commit()
+            except Exception:
+                try: s2.rollback()
+                except Exception: pass
+            finally:
+                try: s2.close()
+                except Exception: pass
     except Exception as email_error:
-        print(f"WARNING email publish paper {paper.id}: {email_error}")
+        print(f"WARNING email publish paper (off-session) {paper_id}: {email_error}")
     finally:
         try: os.remove(pdf_path)
         except Exception: pass
     try:
         from notif_bus import notify_user
         notify_user(
-            student_obj.id, 'correction_done', 'Copie corrigée',
-            f'Note : {paper.score:.2f}/20 — {subject.title}' if paper.score is not None else f'Copie corrigée — {subject.title}',
+            student_id, 'correction_done', 'Copie corrigée',
+            f'Note : {score:.2f}/20 — {subject_title}' if score is not None else f'Copie corrigée — {subject_title}',
             priority='high', tags=['white_check_mark'],
         )
     except Exception as _nb_err:
-        print(f"WARNING notif_bus publish paper {paper.id}: {_nb_err}")
+        print(f"WARNING notif_bus publish paper (off-session) {paper_id}: {_nb_err}")
 
 
 @papers_bp.route('/api/papers/<int:paper_id>/publish', methods=['PUT'])
@@ -435,12 +529,13 @@ def publish_paper(paper_id):
         was_published = bool(paper.is_published)
         paper.is_published = bool(data.get('published', True))
         session.commit()
+        published = paper.is_published
 
-        if paper.is_published and not was_published:
-            _send_paper_result(session, paper, paper.subject)
-            session.commit()
+        if published and not was_published:
+            _send_paper_result(session, paper, paper.subject)  # ferme session lui-même
+        else:
+            session.close()
 
-        published = paper.is_published; session.close()
         return jsonify({'success': True, 'is_published': published})
     except Exception as e:
         print(f"ERROR publish_paper {paper_id}: {e}")
@@ -470,18 +565,55 @@ def publish_papers_bulk():
         ).filter(StudentPaper.id.in_(paper_ids)).all()
 
         published_count = 0
+        to_notify = []
         for paper in papers:
             if user.role == UserRole.PROFESSOR and paper.subject.creator_id != user_id:
                 continue
             if paper.is_published:
                 continue
             paper.is_published = True
-            session.commit()
-            _send_paper_result(session, paper, paper.subject)
-            session.commit()
+            to_notify.append(paper.id)
             published_count += 1
 
+        # Un seul commit pour toutes les publications plutôt qu'un par copie
+        session.commit()
         session.close()
+
+        # Envois lourds (PDF/email/notification) hors session, un par copie
+        for pid in to_notify:
+            s2 = get_session()
+            try:
+                p = s2.query(StudentPaper).options(
+                    joinedload(StudentPaper.subject), joinedload(StudentPaper.student)
+                ).filter_by(id=pid).first()
+                if not p:
+                    continue
+                student_obj = p.student
+                if not (student_obj and student_obj.email and '@temp.edu' not in student_obj.email
+                        and '@noemail.local' not in student_obj.email):
+                    continue
+                student_id = student_obj.id
+                student_email = student_obj.email
+                student_name = student_obj.full_name
+                subject_title = p.subject.title if p.subject else ''
+                score = p.score
+                grade = p.grade
+                corrected_at = p.corrected_at.isoformat() if p.corrected_at else None
+            except Exception as _e:
+                print(f"WARNING publish_papers_bulk fetch {pid}: {_e}")
+                continue
+            finally:
+                try: s2.close()
+                except Exception: pass
+
+            try:
+                _send_paper_result_off_session(
+                    student_id, student_email, student_name, subject_title,
+                    score, grade, corrected_at, pid,
+                )
+            except Exception as _e:
+                print(f"WARNING publish_papers_bulk send {pid}: {_e}")
+
         return jsonify({'success': True, 'published': published_count})
     except Exception as e:
         print(f"ERROR publish_papers_bulk: {e}")

@@ -1144,25 +1144,27 @@ class CameraLog(Base):
     attempt = relationship('ExamAttempt', back_populates='camera_logs')
 
     def to_dict(self):
-        from s3_client import get_snapshot_url
+        # Ne pas résoudre d'URL présignée ici (appels réseau) — renvoyer la
+        # clé/les données brutes. Les routes doivent appeler `get_snapshot_url`
+        # après avoir fermé la session pour éviter de tenir une connexion DB
+        # pendant des I/O externes.
         if self.image_filename and (
             self.image_filename.startswith('snapshots/') or self.image_filename.startswith('local:')
         ):
-            # 'snapshots/...' = MinIO (URL pré-signée) ; 'local:...' = fallback disque (route locale)
-            image_url  = get_snapshot_url(self.image_filename)
+            image_filename = self.image_filename
             image_data = None
         else:
-            image_url  = None
+            image_filename = None
             image_data = self.image_data  # base64 legacy
         return {
-            'id':           self.id,
-            'attempt_id':   self.attempt_id,
-            'timestamp':    self.timestamp.isoformat() if self.timestamp else None,
-            'event_type':   self.event_type or self.violation_type,
-            'face_detected': self.face_detected,
-            'faces_count':  self.faces_count,
-            'image_url':    image_url,
-            'image_data':   image_data,
+            'id':             self.id,
+            'attempt_id':     self.attempt_id,
+            'timestamp':      self.timestamp.isoformat() if self.timestamp else None,
+            'event_type':     self.event_type or self.violation_type,
+            'face_detected':  self.face_detected,
+            'faces_count':    self.faces_count,
+            'image_filename': image_filename,
+            'image_data':     image_data,
             'frame_analysis': self.frame_analysis,
         }
 

@@ -11,6 +11,7 @@ fournisseurs — elles appellent uniquement `call_ai` ou `call_ai_simple`.
 from __future__ import annotations
 import os
 import re
+from threading import BoundedSemaphore
 
 
 # ── Configuration ─────────────────────────────────────────────────────────────
@@ -46,6 +47,14 @@ _ollama_url     = os.getenv("OLLAMA_API_URL", "").rstrip("/")
 _ollama_key     = os.getenv("OLLAMA_API_KEY")
 OLLAMA_MODEL      = os.getenv("OLLAMA_MODEL",      "qwen3.6:latest")
 OLLAMA_MODEL_FAST = os.getenv("OLLAMA_MODEL_FAST", "gemma3:12b")
+
+# Limitation concurrency IA par worker/processus (configurable) — évite que
+# des dizaines de requêtes concurrentes (suggestions, correction auto...)
+# n'ouvrent chacune un appel IA de plusieurs secondes/minutes en parallèle
+# dans le même worker, saturant threads/mémoire sous charge.
+_ai_concurrency = max(1, int(os.getenv('AI_CONCURRENCY', '2')))
+_ai_acquire_timeout = float(os.getenv('AI_ACQUIRE_TIMEOUT', '1.0'))
+_ai_semaphore = BoundedSemaphore(_ai_concurrency)
 
 
 def _next_groq_key():
@@ -385,74 +394,89 @@ def call_ai(system_prompt: str, user_message: str,
     sont indiscernables l'un de l'autre dans error.log.
     """
     import time
+    # Limiter le nombre d'appels IA simultanés par worker/processus — échoue
+    # vite (1s) plutôt que d'empiler des threads bloqués sur un appel externe
+    # potentiellement long si trop de requêtes IA arrivent en même temps.
+    acquired = _ai_semaphore.acquire(timeout=_ai_acquire_timeout)
+    if not acquired:
+        msg = f"AI busy: max concurrency {_ai_concurrency} reached (timeout {_ai_acquire_timeout}s)"
+        print(f"WARNING {label and '['+label+'] ' or ''}{msg}")
+        raise Exception("Service IA surchargé — réessayez dans un instant")
+
     _tag = f"[{label}] " if label else ""
     anthropic_err = gemini_err = deepseek_err = None
 
-    if _anthropic_client:
-        _t0 = time.monotonic()
-        try:
-            result = _call_anthropic(system_prompt, user_message, temperature, max_tokens)
-            print(f"INFO {_tag}Anthropic OK — {time.monotonic()-_t0:.1f}s")
-            return result
-        except Exception as e:
-            anthropic_err = str(e)
-            print(f"WARNING {_tag}Anthropic échec ({time.monotonic()-_t0:.1f}s) → Gemini : {_describe_error(e)}")
+    try:
+        if _anthropic_client:
+            _t0 = time.monotonic()
+            try:
+                result = _call_anthropic(system_prompt, user_message, temperature, max_tokens)
+                print(f"INFO {_tag}Anthropic OK — {time.monotonic()-_t0:.1f}s")
+                return result
+            except Exception as e:
+                anthropic_err = str(e)
+                print(f"WARNING {_tag}Anthropic échec ({time.monotonic()-_t0:.1f}s) → Gemini : {_describe_error(e)}")
 
-    if _gemini_clients:
-        _t0 = time.monotonic()
-        try:
-            result = _call_gemini(system_prompt, user_message, temperature)
-            print(f"INFO {_tag}Gemini OK — {time.monotonic()-_t0:.1f}s")
-            return result
-        except Exception as e:
-            gemini_err = str(e)
-            print(f"WARNING {_tag}Gemini échec ({time.monotonic()-_t0:.1f}s) → Groq : {_describe_error(e)}")
+        if _gemini_clients:
+            _t0 = time.monotonic()
+            try:
+                result = _call_gemini(system_prompt, user_message, temperature)
+                print(f"INFO {_tag}Gemini OK — {time.monotonic()-_t0:.1f}s")
+                return result
+            except Exception as e:
+                gemini_err = str(e)
+                print(f"WARNING {_tag}Gemini échec ({time.monotonic()-_t0:.1f}s) → Groq : {_describe_error(e)}")
 
-    if _groq_keys:
-        _t0 = time.monotonic()
-        try:
-            result = _call_groq(system_prompt, user_message, temperature, max_tokens)
-            print(f"INFO {_tag}Groq OK — {time.monotonic()-_t0:.1f}s")
-            return result
-        except Exception as e:
-            print(f"WARNING {_tag}Groq échec ({time.monotonic()-_t0:.1f}s) → Cerebras : {_describe_error(e)}")
+        if _groq_keys:
+            _t0 = time.monotonic()
+            try:
+                result = _call_groq(system_prompt, user_message, temperature, max_tokens)
+                print(f"INFO {_tag}Groq OK — {time.monotonic()-_t0:.1f}s")
+                return result
+            except Exception as e:
+                print(f"WARNING {_tag}Groq échec ({time.monotonic()-_t0:.1f}s) → Cerebras : {_describe_error(e)}")
 
-    if _cerebras_keys:
-        _t0 = time.monotonic()
-        try:
-            result = _call_cerebras(system_prompt, user_message, temperature, max_tokens)
-            print(f"INFO {_tag}Cerebras OK — {time.monotonic()-_t0:.1f}s")
-            return result
-        except Exception as e:
-            print(f"WARNING {_tag}Cerebras échec ({time.monotonic()-_t0:.1f}s) → OpenRouter : {_describe_error(e)}")
+        if _cerebras_keys:
+            _t0 = time.monotonic()
+            try:
+                result = _call_cerebras(system_prompt, user_message, temperature, max_tokens)
+                print(f"INFO {_tag}Cerebras OK — {time.monotonic()-_t0:.1f}s")
+                return result
+            except Exception as e:
+                print(f"WARNING {_tag}Cerebras échec ({time.monotonic()-_t0:.1f}s) → OpenRouter : {_describe_error(e)}")
 
-    if _openrouter_keys:
-        _t0 = time.monotonic()
-        try:
-            result = _call_openrouter(system_prompt, user_message, temperature, max_tokens)
-            print(f"INFO {_tag}OpenRouter OK — {time.monotonic()-_t0:.1f}s")
-            return result
-        except Exception as e:
-            print(f"WARNING {_tag}OpenRouter échec ({time.monotonic()-_t0:.1f}s) → DeepSeek : {_describe_error(e)}")
+        if _openrouter_keys:
+            _t0 = time.monotonic()
+            try:
+                result = _call_openrouter(system_prompt, user_message, temperature, max_tokens)
+                print(f"INFO {_tag}OpenRouter OK — {time.monotonic()-_t0:.1f}s")
+                return result
+            except Exception as e:
+                print(f"WARNING {_tag}OpenRouter échec ({time.monotonic()-_t0:.1f}s) → DeepSeek : {_describe_error(e)}")
 
-    if _deepseek_key:
-        _t0 = time.monotonic()
-        try:
-            result = _call_deepseek(system_prompt, user_message, temperature, max_tokens)
-            print(f"INFO {_tag}DeepSeek OK — {time.monotonic()-_t0:.1f}s")
-            return result
-        except Exception as e:
-            deepseek_err = str(e)
-            print(f"WARNING {_tag}DeepSeek échec ({time.monotonic()-_t0:.1f}s) → Ollama : {_describe_error(e)}")
+        if _deepseek_key:
+            _t0 = time.monotonic()
+            try:
+                result = _call_deepseek(system_prompt, user_message, temperature, max_tokens)
+                print(f"INFO {_tag}DeepSeek OK — {time.monotonic()-_t0:.1f}s")
+                return result
+            except Exception as e:
+                deepseek_err = str(e)
+                print(f"WARNING {_tag}DeepSeek échec ({time.monotonic()-_t0:.1f}s) → Ollama : {_describe_error(e)}")
 
-    if _ollama_key and _ollama_url:
-        _t0 = time.monotonic()
+        if _ollama_key and _ollama_url:
+            _t0 = time.monotonic()
+            try:
+                result = _call_ollama(system_prompt, user_message, temperature, max_tokens, fast=fast)
+                print(f"INFO {_tag}Ollama OK — {time.monotonic()-_t0:.1f}s")
+                return result
+            except Exception as e:
+                print(f"WARNING {_tag}Ollama indisponible ({time.monotonic()-_t0:.1f}s) : {_describe_error(e)}")
+    finally:
         try:
-            result = _call_ollama(system_prompt, user_message, temperature, max_tokens, fast=fast)
-            print(f"INFO {_tag}Ollama OK — {time.monotonic()-_t0:.1f}s")
-            return result
-        except Exception as e:
-            print(f"WARNING {_tag}Ollama indisponible ({time.monotonic()-_t0:.1f}s) : {_describe_error(e)}")
+            _ai_semaphore.release()
+        except Exception:
+            pass
 
     print(f"ERROR {_tag}tous les fournisseurs IA ont échoué")
     if 'credit balance' in (anthropic_err or '').lower():

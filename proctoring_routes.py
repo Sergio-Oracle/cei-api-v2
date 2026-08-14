@@ -335,21 +335,32 @@ def log_proctoring_event(attempt_id):
 def save_camera_snapshot(attempt_id):
     """Sauvegarder un snapshot caméra (base64 JPEG) depuis la page étudiant."""
     user_id = get_current_user_id()
+    # Vérifier la tentative et récupérer exam_id, puis fermer la session
+    # AVANT l'upload S3 (I/O réseau qui n'a rien à faire avec une connexion
+    # DB tenue ouverte pendant potentiellement plusieurs centaines de ms).
     session = get_session()
     try:
         attempt = session.query(ExamAttempt).filter_by(id=attempt_id, student_id=user_id).first()
         if not attempt or attempt.status != AttemptStatus.IN_PROGRESS:
             return jsonify({'error': 'Tentative non active'}), 400
+        exam_id = attempt.exam_id
+    finally:
+        session.close()
 
-        data       = request.get_json() or {}
-        image_b64  = data.get('image_data', '')
-        exam_id    = attempt.exam_id
+    data      = request.get_json() or {}
+    image_b64 = data.get('image_data', '')
 
-        # Upload vers MinIO — stocker la clé S3 dans image_filename
-        # image_data reste NULL pour les nouvelles entrées (rétrocompat : anciens = base64)
-        from s3_client import upload_snapshot
+    # Upload vers MinIO — stocker la clé S3 dans image_filename
+    # image_data reste NULL pour les nouvelles entrées (rétrocompat : anciens = base64)
+    from s3_client import upload_snapshot
+    try:
         s3_key = upload_snapshot(exam_id, attempt_id, image_b64) if image_b64 else None
+    except Exception:
+        s3_key = None
 
+    # Insertion via une courte session dédiée, ouverte seulement pour l'écriture
+    s2 = get_session()
+    try:
         snap = CameraLog(
             attempt_id=attempt_id,
             event_type=data.get('event_type', 'periodic'),
@@ -360,8 +371,8 @@ def save_camera_snapshot(attempt_id):
             confidence_score=data.get('confidence_score'),
             frame_analysis=data.get('frame_analysis'),
         )
-        session.add(snap)
-        session.commit()
+        s2.add(snap)
+        s2.commit()
         if s3_key and s3_key.startswith('local:'):
             stored = 'local_fallback'
         elif s3_key:
@@ -370,7 +381,7 @@ def save_camera_snapshot(attempt_id):
             stored = 'none'
         return jsonify({'success': True, 'snapshot_id': snap.id, 'stored': stored})
     finally:
-        session.close()
+        s2.close()
 
 
 # ============================================================================
@@ -2035,9 +2046,12 @@ def toggle_group_recording(exam_id):
 
     lk_http = config['api_url']
 
+    # Étape 1 — vérifications + collecte des ids, dans une session à durée de
+    # vie strictement bornée (finally garantit la fermeture sur TOUTE sortie,
+    # y compris les `return` anticipés ci-dessous — un `try/except` seul sans
+    # `finally` ne les couvre pas et fuit une connexion à chaque appel).
     session = get_session()
     try:
-        # Vérifier affectation
         if role == 'surveillant':
             ep_check = session.query(ExamProctor).filter_by(
                 exam_id=exam_id, proctor_id=user_id
@@ -2072,58 +2086,59 @@ def toggle_group_recording(exam_id):
         if not active_attempts:
             return jsonify({'error': 'Aucun étudiant actif dans votre groupe'}), 400
 
-        room_name = f'exam-{exam_id}'
+        # Capturer uniquement les données nécessaires — la session ferme juste
+        # après, AVANT les appels réseau LiveKit potentiellement longs.
+        active_ids  = [a.id for a in active_attempts]
+        student_ids = {a.id: a.student_id for a in active_attempts}
+    finally:
+        session.close()
 
-        # Token d'administration LiveKit pour lire les pistes
-        now = int(time.time())
-        admin_payload = {
-            'exp': now + 3600, 'iss': config['api_key'], 'nbf': now,
-            'sub': 'room-recorder',
-            'video': {'room': room_name, 'roomRecord': True}
-        }
-        egress_token = pyjwt.encode(admin_payload, config['api_secret'], algorithm='HS256')
-        headers = {
-            'Authorization': f'Bearer {egress_token}',
-            'Content-Type': 'application/json'
-        }
+    room_name = f'exam-{exam_id}'
 
-        s3_cfg = {
-            'access_key': os.environ.get('S3_KEY_ID', ''),
-            'secret':     os.environ.get('S3_KEY_SECRET', ''),
-            'region':     os.environ.get('S3_REGION', 'us-east-1'),
-            'endpoint':   os.environ.get('S3_PUBLIC_ENDPOINT', os.environ.get('S3_ENDPOINT', '')),
-            'bucket':     os.environ.get('S3_BUCKET', 'livekit-recordings'),
-            'force_path_style': True
-        }
+    # Token d'administration LiveKit pour lire les pistes
+    now = int(time.time())
+    admin_payload = {
+        'exp': now + 3600, 'iss': config['api_key'], 'nbf': now,
+        'sub': 'room-recorder',
+        'video': {'room': room_name, 'roomRecord': True}
+    }
+    egress_token = pyjwt.encode(admin_payload, config['api_secret'], algorithm='HS256')
+    headers = {
+        'Authorization': f'Bearer {egress_token}',
+        'Content-Type': 'application/json'
+    }
 
+    s3_cfg = {
+        'access_key': os.environ.get('S3_KEY_ID', ''),
+        'secret':     os.environ.get('S3_KEY_SECRET', ''),
+        'region':     os.environ.get('S3_REGION', 'us-east-1'),
+        'endpoint':   os.environ.get('S3_PUBLIC_ENDPOINT', os.environ.get('S3_ENDPOINT', '')),
+        'bucket':     os.environ.get('S3_BUCKET', 'livekit-recordings'),
+        'force_path_style': True
+    }
+
+    try:
         results = []
         errors = []
+        all_egress_ids = []
 
         if action == 'start':
             # Récupérer les participants LiveKit pour avoir les track IDs
-            now2 = int(time.time())
-            admin_token2 = pyjwt.encode(
-                {'exp': now2+300, 'iss': config['api_key'], 'nbf': now2,
-                 'sub': 'admin', 'video': {'roomAdmin': True, 'room': room_name}},
-                config['api_secret'], algorithm='HS256'
-            )
-            admin_h2 = {'Authorization': f'Bearer {admin_token2}', 'Content-Type': 'application/json'}
             try:
                 r = urlreq.Request(f'{lk_http}/twirp/livekit.RoomService/ListParticipants',
-                    data=json.dumps({'room': room_name}).encode(), headers=admin_h2)
+                    data=json.dumps({'room': room_name}).encode(), headers=headers)
                 with urlreq.urlopen(r, timeout=5) as resp:
                     parts = {p['identity']: p for p in json.loads(resp.read()).get('participants', [])}
             except Exception:
                 parts = {}
 
-            all_egress_ids = []  # tous les egress_id démarrés (caméra + écran)
-
-            for attempt in active_attempts:
-                if attempt.current_egress_id:
-                    results.append({'attempt_id': attempt.id, 'skipped': True, 'reason': 'déjà en cours'})
+            for aid in active_ids:
+                sid = student_ids.get(aid)
+                if sid is None:
+                    errors.append({'attempt_id': aid, 'error': 'student id missing'})
                     continue
 
-                identity = f'student-{attempt.student_id}'
+                identity = f'student-{sid}'
                 participant = parts.get(identity, {})
                 tracks = participant.get('tracks', [])
 
@@ -2140,7 +2155,7 @@ def toggle_group_recording(exam_id):
                     and not t.get('muted', False)), None)
 
                 if not cam_track:
-                    errors.append({'attempt_id': attempt.id, 'error': 'caméra non active dans LiveKit'})
+                    errors.append({'attempt_id': aid, 'error': 'caméra non active dans LiveKit'})
                     continue
 
                 ts = datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')
@@ -2149,7 +2164,7 @@ def toggle_group_recording(exam_id):
                 student_egress_ids = []
 
                 # — Enregistrement caméra (prefixe "groupe-cam-" pour le distinguer du REC individuel)
-                cam_path = f'{base}/groupe-cam-{attempt.student_id}-{ts}.mp4'
+                cam_path = f'{base}/groupe-cam-{sid}-{ts}.mp4'
                 cam_body = {'room_name': room_name, 'video_track_id': cam_track,
                             'file_outputs': [{'filepath': cam_path, 's3': s3_cfg}]}
                 if audio_track:
@@ -2160,13 +2175,14 @@ def toggle_group_recording(exam_id):
                     with urlreq.urlopen(req, timeout=8) as resp:
                         eid = json.loads(resp.read()).get('egress_id')
                         student_egress_ids.append(eid)
-                        attempt.current_egress_id = eid
+                        all_egress_ids.append(eid)
                 except Exception as e:
-                    errors.append({'attempt_id': attempt.id, 'track': 'cam', 'error': str(e)})
+                    errors.append({'attempt_id': aid, 'track': 'cam', 'error': str(e)})
+                    continue
 
                 # — Enregistrement écran partagé (si présent, prefixe "groupe-ecran-")
                 if screen_track:
-                    scr_path = f'{base}/groupe-ecran-{attempt.student_id}-{ts}.mp4'
+                    scr_path = f'{base}/groupe-ecran-{sid}-{ts}.mp4'
                     scr_body = {'room_name': room_name, 'video_track_id': screen_track,
                                 'file_outputs': [{'filepath': scr_path, 's3': s3_cfg}]}
                     if audio_track:
@@ -2177,15 +2193,28 @@ def toggle_group_recording(exam_id):
                         with urlreq.urlopen(req, timeout=8) as resp:
                             eid = json.loads(resp.read()).get('egress_id')
                             student_egress_ids.append(eid)
+                            all_egress_ids.append(eid)
                     except Exception:
                         pass  # écran optionnel — pas d'erreur bloquante
 
                 if student_egress_ids:
-                    all_egress_ids.extend(student_egress_ids)
-                    results.append({'attempt_id': attempt.id, 'egress_ids': student_egress_ids,
+                    results.append({'attempt_id': aid, 'egress_ids': student_egress_ids,
                                     'has_screen': screen_track is not None})
 
-            session.commit()
+            # Persister current_egress_id — courte session dédiée, ouverte
+            # seulement pour l'écriture, après tous les appels LiveKit.
+            s2 = get_session()
+            try:
+                for r in results:
+                    first_eid = r['egress_ids'][0] if r['egress_ids'] else None
+                    if first_eid:
+                        a = s2.query(ExamAttempt).filter_by(id=r['attempt_id']).first()
+                        if a:
+                            a.current_egress_id = first_eid
+                s2.commit()
+            finally:
+                s2.close()
+
             if len(results) == 0:
                 return jsonify({
                     'success': False,
@@ -2210,7 +2239,16 @@ def toggle_group_recording(exam_id):
             # all_egress_ids envoyé par le frontend (contient caméra + écran)
             egress_ids_raw = data.get('egress_ids', [])
             if not egress_ids_raw:
-                egress_ids_raw = [(a.id, a.current_egress_id) for a in active_attempts if a.current_egress_id]
+                s2 = get_session()
+                try:
+                    pairs = []
+                    for aid in active_ids:
+                        a = s2.query(ExamAttempt).filter_by(id=aid).first()
+                        if a and a.current_egress_id:
+                            pairs.append((aid, a.current_egress_id))
+                finally:
+                    s2.close()
+                egress_ids_raw = pairs
 
             # Aplatir : accepte strings, [att_id, eid] et egress_ids simples
             flat_ids = []
@@ -2230,18 +2268,22 @@ def toggle_group_recording(exam_id):
                     with urlreq.urlopen(req, timeout=5):
                         stopped += 1
                         if att_id:
-                            a = next((x for x in active_attempts if x.id == att_id), None)
-                            if a:
-                                a.current_egress_id = None
+                            s2 = get_session()
+                            try:
+                                a = s2.query(ExamAttempt).filter_by(id=att_id).first()
+                                if a:
+                                    a.current_egress_id = None
+                                    s2.commit()
+                            finally:
+                                s2.close()
                 except Exception:
                     pass
 
-            session.commit()
             return jsonify({'success': True, 'stopped': stopped})
 
         return jsonify({'error': 'action invalide (start|stop)'}), 400
-    finally:
-        session.close()
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 
 # ============================================================================
@@ -2308,7 +2350,6 @@ def get_exam_recordings(exam_id):
                 attempt_id=attempt.id
             ).order_by(CameraLog.timestamp.asc()).all()
 
-            from s3_client import get_snapshot_url
             snaps_list = []
             for snap in snapshots:
                 # Nouvelles entrées : image_filename = clé S3
@@ -2316,17 +2357,23 @@ def get_exam_recordings(exam_id):
                 if snap.image_filename and (
                     snap.image_filename.startswith('snapshots/') or snap.image_filename.startswith('local:')
                 ):
-                    img = get_snapshot_url(snap.image_filename)
-                    img_type = 'url'
+                    # Ne pas appeler get_snapshot_url ici (I/O réseau S3) tant
+                    # que la session DB est ouverte — juste garder la clé, les
+                    # URLs pré-signées sont générées après session.close() ci-dessous.
+                    img_url = None
+                    img_data = None
+                    s3_key = snap.image_filename
                 else:
-                    img = snap.image_data  # base64 legacy
-                    img_type = 'base64' if snap.image_data else 'none'
+                    img_url = None
+                    img_data = snap.image_data  # base64 legacy
+                    s3_key = None
                 snaps_list.append({
                     'id':           snap.id,
                     'timestamp':    snap.timestamp.isoformat() if snap.timestamp else None,
                     'event_type':   snap.event_type or snap.violation_type,
-                    'image_url':    img if img_type == 'url' else None,
-                    'image_data':   img if img_type == 'base64' else None,
+                    'image_url':    img_url,
+                    'image_data':   img_data,
+                    's3_key':       s3_key,
                     'face_detected': snap.face_detected,
                     'faces_count':  snap.faces_count,
                     'frame_analysis': snap.frame_analysis,
@@ -2344,6 +2391,18 @@ def get_exam_recordings(exam_id):
             })
 
         session.close()
+
+        # Générer les URLs pré-signées S3 hors session DB (I/O réseau)
+        from s3_client import get_snapshot_url
+        for r in result:
+            for s in r.get('snapshots', []):
+                key = s.pop('s3_key', None)
+                if key:
+                    try:
+                        s['image_url'] = get_snapshot_url(key)
+                    except Exception:
+                        s['image_url'] = None
+
         return jsonify({'exam_id': exam_id, 'students': result})
 
     except Exception as e:

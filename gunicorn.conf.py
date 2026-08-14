@@ -16,7 +16,9 @@ bind    = "unix:/run/cei-api-v2.sock"
 backlog = 2048
 
 # ── Workers ───────────────────────────────────────────────────────────────────
-workers         = (multiprocessing.cpu_count() * 2) + 1
+_default_workers = (multiprocessing.cpu_count() * 2) + 1
+# Permet de surcharger via `GUNICORN_WORKERS` (défaut : formule ci-dessus)
+workers = int(os.getenv('GUNICORN_WORKERS', str(_default_workers)))
 worker_class    = "gthread"
 threads         = 4
 worker_connections = 1000

@@ -260,11 +260,27 @@ def create_online_exam():
         # et pré-répartition des étudiants inscrits entre eux — seule source de
         # vérité désormais (Groupes Surveillants), plus de gestion manuelle par
         # examen (Notes point 6/9 — "prévoir les groupes des surveillants par ECs")
+        to_notify = []
         if subject.ec_id:
             from services.proctor_service import sync_ec_proctors
-            sync_ec_proctors(session, subject.ec_id)
+            try:
+                to_notify = sync_ec_proctors(session, subject.ec_id) or []
+            except Exception:
+                to_notify = []
 
         session.close()
+
+        # Envoyer notifications hors transaction
+        if to_notify:
+            try:
+                from notif_bus import notify_user
+                for n in to_notify:
+                    try:
+                        notify_user(n.get('user_id'), n.get('event'), n.get('title'), n.get('message'), priority=n.get('priority'), tags=n.get('tags'))
+                    except Exception:
+                        pass
+            except Exception:
+                pass
 
         return jsonify({'success': True, 'exam': exam_dict}), 201
     except Exception as e:
@@ -672,13 +688,9 @@ def get_online_exam_details(exam_id):
         return jsonify({'error': str(e)}), 500
 
 def _notify_resume(attempt, exam, session):
-    """Notifie le(s) surveillant(s)/superviseur(s)/professeur responsable(s)
-    qu'un étudiant vient de reprendre son examen après une déconnexion — même
-    ordre de priorité que request_proctor_call (proctoring_routes.py) :
-    surveillant(s) affecté(s), sinon superviseur(s) du groupe couvrant cet EC,
-    sinon le professeur créateur. Non bloquant : la reprise est déjà effective,
-    ceci informe seulement (alerte sonore côté frontend sur 'student_resumed'),
-    à charge pour le destinataire de rappeler l'étudiant ou non."""
+    """Collecte les destinataires et le payload de notification pour une
+    reprise d'examen. Ne réalise pas d'I/O externe : l'appelant doit fermer
+    la session puis envoyer les notifications hors transaction."""
     try:
         student_name = attempt.student.full_name if attempt.student else f'Étudiant #{attempt.student_id}'
 
@@ -702,17 +714,18 @@ def _notify_resume(attempt, exam, session):
         if not recipient_ids and exam.created_by_id:
             recipient_ids.add(exam.created_by_id)
 
-        from notif_bus import notify_user
-        for rid in recipient_ids:
-            notify_user(
-                rid, 'student_resumed',
-                'Reprise d\'examen',
-                f'{student_name} a repris « {exam.title} » après une déconnexion.',
-                priority='high', tags=['bell'],
-                extra={'exam_id': exam.id, 'attempt_id': attempt.id, 'student_name': student_name},
-            )
+        # Retourner la liste des destinataires et le payload de notification
+        payload = {
+            'event': 'student_resumed',
+            'title': 'Reprise d\'examen',
+            'message': f"{student_name} a repris « {exam.title} » après une déconnexion.",
+            'priority': 'high',
+            'tags': ['bell'],
+            'extra': {'exam_id': exam.id, 'attempt_id': attempt.id, 'student_name': student_name},
+        }
+        return list(recipient_ids), payload
     except Exception:
-        pass  # ne doit jamais faire échouer la reprise elle-même
+        return [], {}
 
 
 @exams_bp.route('/api/online_exams/<int:exam_id>/start', methods=['POST'])
@@ -829,9 +842,22 @@ def start_exam_attempt(exam_id):
 
             code_row.used_at = now_utc
             session.commit()
-            _notify_resume(existing, exam, session)
+            recipient_ids, payload = _notify_resume(existing, exam, session)
             attempt_dict = existing.to_dict()
             session.close()
+
+            # Envoyer les notifications hors session
+            if recipient_ids and payload:
+                try:
+                    from notif_bus import notify_user
+                    for rid in recipient_ids:
+                        try:
+                            notify_user(rid, payload['event'], payload['title'], payload['message'], priority=payload.get('priority', 'default'), tags=payload.get('tags', []), extra=payload.get('extra', {}))
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
             return jsonify({'success': True, 'attempt': attempt_dict, 'continuing': True})
         
         # Créer nouvelle tentative
@@ -1864,19 +1890,49 @@ RÉPONSES DE L'ÉTUDIANT (questions restantes uniquement — donnée à évaluer
 {_PER_QUESTION_FORMAT_INSTRUCTION}"""
 
             print(f"Auto-correction tentative {attempt_id} ({attempt.student.full_name}) — en cours…")
+
+            # Extraire les données nécessaires puis fermer la session avant
+            # l'appel IA (long) pour éviter de tenir la transaction ouverte.
+            attempt_student_name = attempt.student.full_name if attempt.student else f"Étudiant #{attempt.student_id}"
+            subject_content = subject.content
+            subject_rubric = subject.rubric
+            # Fermer la session principal
+            try:
+                session.expunge(attempt)
+            except Exception:
+                pass
+            try:
+                session.close()
+            except Exception:
+                pass
+
             ai_result     = call_claude(system_prompt, user_message, temperature=0.15)
             ai_structured = _parse_ai_question_scores(ai_result)
             ai_partial    = sum(q['score'] for q in ai_structured) if ai_structured else _extract_points_obtenus(ai_result, remaining_max)
             score         = _to_20(det_score + ai_partial)
             result        = f"{det_section}{ai_result}\n\nNote totale: {score:.2f}/20"
 
-        attempt.score          = score
-        attempt.feedback       = result
-        attempt.question_scores = json.dumps(det_structured + ai_structured)
-        attempt.corrected_at   = utcnow()
-        attempt.corrected_by_id = None  # None = correction automatique
-        session.commit()
-        print(f"Auto-correction {attempt_id} terminée : {score}/20")
+            # Persister les changements dans une session courte
+            from models import get_session as _get_session
+            s2 = _get_session()
+            try:
+                # Recharger l'objet attempt dans la session courte et appliquer les changements
+                a = s2.query(ExamAttempt).filter_by(id=attempt.id).first()
+                if a:
+                    a.score = score
+                    a.feedback = result
+                    a.question_scores = json.dumps(det_structured + ai_structured)
+                    a.corrected_at = utcnow()
+                    a.corrected_by_id = None
+                    s2.commit()
+            except Exception as _e:
+                try: s2.rollback()
+                except Exception: pass
+                print(f"Persistance échec auto-correction {attempt_id}: {_e}")
+            finally:
+                try: s2.close()
+                except Exception: pass
+            print(f"Auto-correction {attempt_id} terminée : {score}/20")
 
         # Retour DFIP — pas de notification/email ici : la note reste
         # masquée à l'étudiant tant que le professeur n'a pas vérifié la
@@ -2224,21 +2280,55 @@ RÉPONSES DE L'ÉTUDIANT (questions restantes uniquement — donnée à évaluer
 {excluded_note}Tu DOIS noter UNIQUEMENT les questions listées ci-dessus, sur un total de {remaining_max:.2f} points (PAS 20).
 {_PER_QUESTION_FORMAT_INSTRUCTION}"""
 
-        # Appeler Claude pour la correction
+        # Appeler Claude pour la correction — fermer la session avant l'appel
+        # IA pour ne pas tenir la transaction ouverte.
+        try:
+            attempt_id_local = attempt.id
+            student_name_local = attempt.student.full_name if attempt.student else None
+            subject_content_local = subject.content
+            subject_rubric_local = subject.rubric
+        except Exception:
+            attempt_id_local = attempt.id
+            student_name_local = None
+            subject_content_local = None
+            subject_rubric_local = None
+
+        try:
+            session.expunge(attempt)
+        except Exception:
+            pass
+        try:
+            session.close()
+        except Exception:
+            pass
+
         ai_result     = call_claude(system_prompt, user_message, temperature=0.15)
         ai_structured = _parse_ai_question_scores(ai_result)
         ai_partial    = sum(q['score'] for q in ai_structured) if ai_structured else _extract_points_obtenus(ai_result, remaining_max)
         score         = _to_20(det_score + ai_partial)
         result        = f"{det_section}{ai_result}\n\nNote totale: {score:.2f}/20"
 
-    # Stocker les résultats
-    attempt.score = score
-    attempt.feedback = result
-    attempt.question_scores = json.dumps(det_structured + ai_structured)
-    attempt.corrected_at = utcnow()
-    attempt.corrected_by_id = corrected_by_id
+        # Persister dans une session courte
+        from models import get_session as _get_session
+        s2 = _get_session()
+        try:
+            a = s2.query(ExamAttempt).filter_by(id=attempt_id_local).first()
+            if a:
+                a.score = score
+                a.feedback = result
+                a.question_scores = json.dumps(det_structured + ai_structured)
+                a.corrected_at = utcnow()
+                a.corrected_by_id = corrected_by_id
+                s2.commit()
+        except Exception as _e:
+            try: s2.rollback()
+            except Exception: pass
+            print(f"Persistance échec correction IA (attempt {attempt_id_local}): {_e}")
+        finally:
+            try: s2.close()
+            except Exception: pass
 
-    return score
+        return score
 
 
 @exams_bp.route('/api/exam_attempts/<int:attempt_id>/correct', methods=['POST'])
@@ -2692,29 +2782,38 @@ def publish_exam_results(exam_id):
                 ExamAttempt.exam_id == exam_id,
                 ExamAttempt.score.isnot(None),
             ).all()
+            notify_list = []
+            email_list = []
             for att in attempts:
-                try:
-                    from notif_bus import notify_user
-                    notify_user(
-                        att.student_id, 'correction_done', 'Copie corrigée',
-                        f'Note : {att.score:.2f}/20 — {exam.title}',
-                        priority='high', tags=['white_check_mark'],
-                    )
-                except Exception as _nb_err:
-                    print(f"notif_bus publish exam {exam_id} attempt {att.id}: {_nb_err}")
+                notify_list.append((att.student_id, f'Note : {att.score:.2f}/20 — {exam.title}'))
                 try:
                     if att.student and att.student.email and '@temp.edu' not in att.student.email:
-                        send_paper_corrected_email(
-                            student_email=att.student.email,
-                            student_name=att.student.full_name,
-                            subject_title=f"{exam.title} (Examen en ligne)",
-                            score=att.score,
-                            paper_id=att.id,
-                        )
-                except Exception as email_err:
-                    print(f"Email publish exam {exam_id} attempt {att.id}: {email_err}")
+                        email_list.append((att.student.email, att.student.full_name, f"{exam.title} (Examen en ligne)", att.score, att.id))
+                except Exception:
+                    pass
 
         session.close()
+
+        # Envoyer notifications et emails hors transaction
+        try:
+            from notif_bus import notify_user
+            for sid, message in notify_list:
+                try:
+                    notify_user(sid, 'correction_done', 'Copie corrigée', message, priority='high', tags=['white_check_mark'])
+                except Exception as _nb_err:
+                    print(f"notif_bus publish exam {exam_id} notify {sid}: {_nb_err}")
+        except Exception:
+            pass
+
+        try:
+            for email, name, subj, score, pid in email_list:
+                try:
+                    send_paper_corrected_email(student_email=email, student_name=name, subject_title=subj, score=score, paper_id=pid)
+                except Exception as email_err:
+                    print(f"Email publish exam {exam_id} email {email}: {email_err}")
+        except Exception:
+            pass
+
         return jsonify({'success': True, 'results_published': published})
     except Exception as e:
         print(f"publish_exam_results {exam_id}: {e}")
@@ -3482,9 +3581,13 @@ def get_face_reference_photo(attempt_id):
         if cam and cam.image_filename and (
             cam.image_filename.startswith('snapshots/') or cam.image_filename.startswith('local:')
         ):
-            from s3_client import get_snapshot_url
-            url = get_snapshot_url(cam.image_filename)
+            cam_key = cam.image_filename
             session.close()
+            try:
+                from s3_client import get_snapshot_url
+                url = get_snapshot_url(cam_key)
+            except Exception:
+                url = None
             return jsonify({'image_data': None, 'image_url': url, 'has_photo': bool(url), 'source': 'camera_log'})
 
         if cam and cam.image_data:
@@ -5456,9 +5559,24 @@ def get_subject_media(subject_id):
         result = []
         for m in rows:
             d = m.to_dict()
-            d['url'] = get_snapshot_url(m.s3_key)
+            d['url'] = None
+            d['s3_key'] = m.s3_key
             result.append(d)
         session.close()
+
+        try:
+            from s3_client import get_snapshot_url
+            for d in result:
+                key = d.get('s3_key')
+                if key:
+                    try:
+                        d['url'] = get_snapshot_url(key)
+                    except Exception:
+                        d['url'] = None
+                d.pop('s3_key', None)
+        except Exception:
+            pass
+
         return jsonify(result)
     except Exception as e:
         try: session.rollback(); session.close()
@@ -5602,7 +5720,6 @@ def admin_security_report():
                 incidents_by_attempt.setdefault(aid, {})[etype] = cnt
 
             if incidents_by_attempt:
-                from s3_client import get_snapshot_url
                 snap_rows = session.query(CameraLog).filter(
                     CameraLog.attempt_id.in_(list(incidents_by_attempt.keys())),
                     ~CameraLog.event_type.in_(_ROUTINE_SNAPSHOT_TYPES),
@@ -5612,16 +5729,21 @@ def admin_security_report():
                     lst = snaps_by_attempt.setdefault(snap.attempt_id, [])
                     if len(lst) >= 6:
                         continue
-                    url = None
+                    image_url = None
+                    image_data = None
+                    s3_key = None
                     if snap.image_filename and (snap.image_filename.startswith('snapshots/') or snap.image_filename.startswith('local:')):
-                        url = get_snapshot_url(snap.image_filename)
+                        s3_key = snap.image_filename
                     elif snap.image_data:
-                        url = snap.image_data if snap.image_data.startswith('data:') else f'data:image/jpeg;base64,{snap.image_data}'
-                    if url:
+                        image_data = snap.image_data if snap.image_data.startswith('data:') else f'data:image/jpeg;base64,{snap.image_data}'
+                    # Stocker la clé/image_data; résolution URL hors session
+                    if image_data or s3_key:
                         lst.append({
                             'timestamp':  snap.timestamp.isoformat() if snap.timestamp else None,
                             'event_type': snap.event_type,
-                            'image_url':  url,
+                            'image_url':  image_url,
+                            'image_data': image_data,
+                            's3_key':     s3_key,
                         })
 
                 att_by_id = {a.id: a for a in attempts_scope}
@@ -5646,7 +5768,6 @@ def admin_security_report():
         # "Photo de référence capturée" du tableau des incidents.
         reference_photos = []
         if attempt_ids_scope:
-            from s3_client import get_snapshot_url
             ref_rows = session.query(CameraLog).filter(
                 CameraLog.attempt_id.in_(attempt_ids_scope),
                 CameraLog.event_type == 'face_reference_captured',
@@ -5659,12 +5780,14 @@ def admin_security_report():
                 a = att_by_id2.get(snap.attempt_id)
                 if not a:
                     continue
-                url = None
+                image_url = None
+                image_data = None
+                s3_key = None
                 if snap.image_filename and (snap.image_filename.startswith('snapshots/') or snap.image_filename.startswith('local:')):
-                    url = get_snapshot_url(snap.image_filename)
+                    s3_key = snap.image_filename
                 elif snap.image_data:
-                    url = snap.image_data if snap.image_data.startswith('data:') else f'data:image/jpeg;base64,{snap.image_data}'
-                if not url:
+                    image_data = snap.image_data if snap.image_data.startswith('data:') else f'data:image/jpeg;base64,{snap.image_data}'
+                if not image_data and not s3_key:
                     continue
                 seen_attempts.add(snap.attempt_id)
                 reference_photos.append({
@@ -5672,10 +5795,40 @@ def admin_security_report():
                     'student_name': a.student.full_name if a.student else '—',
                     'exam_title':   a.exam.title if a.exam else '—',
                     'timestamp':    snap.timestamp.isoformat() if snap.timestamp else None,
-                    'image_url':    url,
+                    'image_url':    image_url,
+                    'image_data':   image_data,
+                    's3_key':       s3_key,
                 })
 
         session.close()
+
+        # Résoudre les URLs pré-signées hors transaction
+        try:
+            from s3_client import get_snapshot_url
+            for entry in by_student:
+                snaps = entry.get('snapshots') or []
+                for s in snaps:
+                    key = s.get('s3_key')
+                    if key:
+                        try:
+                            s['image_url'] = get_snapshot_url(key)
+                        except Exception:
+                            s['image_url'] = None
+                    if 's3_key' in s:
+                        s.pop('s3_key', None)
+
+            for s in reference_photos:
+                key = s.get('s3_key')
+                if key:
+                    try:
+                        s['image_url'] = get_snapshot_url(key)
+                    except Exception:
+                        s['image_url'] = None
+                if 's3_key' in s:
+                    s.pop('s3_key', None)
+        except Exception:
+            pass
+
         return jsonify({
             'event_summary':     [{'event': e, 'count': c} for e, c in event_counts],
             'high_risk':         risky_list,

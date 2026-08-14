@@ -14,6 +14,7 @@ from sqlalchemy import desc, func as sa_func, update as sql_update
 from sqlalchemy.orm import joinedload
 
 from auth_paseto import paseto_required, get_current_user_id, get_current_user_role
+from extensions import limiter
 from helpers     import utcnow, strip_bareme_from_content as _strip_bareme_from_content
 from models      import (
     get_session, User, UserRole,
@@ -892,6 +893,7 @@ def start_exam_attempt(exam_id):
 
 @exams_bp.route('/api/exam_attempts/<int:attempt_id>/save', methods=['POST'])
 @paseto_required
+@limiter.exempt
 def save_exam_answers(attempt_id):
     """Sauvegarder les réponses en temps réel"""
     try:
@@ -949,6 +951,7 @@ def exam_heartbeat(attempt_id):
 
 @exams_bp.route('/api/exam_attempts/<int:attempt_id>/log_activity', methods=['POST'])
 @paseto_required
+@limiter.exempt
 def log_exam_activity(attempt_id):
     """Logger une activité suspecte avec gestion améliorée des violations"""
     try:

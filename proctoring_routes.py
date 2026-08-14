@@ -4,6 +4,7 @@ Surveillance en temps réel des examens en ligne
 """
 from flask import Blueprint, jsonify, request, current_app
 from auth_paseto import paseto_required, get_current_user_id, get_current_user_role
+from extensions import limiter
 import jwt as pyjwt
 import time
 import json
@@ -332,6 +333,7 @@ def log_proctoring_event(attempt_id):
 
 @proctoring_bp.route('/api/exam_attempts/<int:attempt_id>/camera_snapshot', methods=['POST'])
 @paseto_required
+@limiter.exempt
 def save_camera_snapshot(attempt_id):
     """Sauvegarder un snapshot caméra (base64 JPEG) depuis la page étudiant."""
     user_id = get_current_user_id()

@@ -21,10 +21,10 @@ def _send(to_emails: list[str], subject: str, html: str) -> bool:
             s.starttls()
             s.login(SMTP_USERNAME, SMTP_PASSWORD)
             s.sendmail(FROM_EMAIL, to_emails, msg.as_string())
-        print(f"Email envoyé → {to_emails}")
+        print(f" Email envoyé → {to_emails}")
         return True
     except Exception as e:
-        print(f"Erreur email : {e}")
+        print(f"❌ Erreur email : {e}")
         return False
 
 
@@ -49,9 +49,9 @@ def send_alert_email(to_emails: list[str], alerts: list[dict], exam_title: str) 
     alert_count   = len(alerts)
 
     subject = (
-        f"🔴 URGENT — {urgent_count} étudiant(s) suspect(s) | {exam_title}"
+        f" URGENT — {urgent_count} étudiant(s) suspect(s) | {exam_title}"
         if urgent_count
-        else f"⚠️ ALERTE SURVEILLANCE — {alert_count} étudiant(s) | {exam_title}"
+        else f" ALERTE SURVEILLANCE — {alert_count} étudiant(s) | {exam_title}"
     )
 
     rows = ""
@@ -90,7 +90,7 @@ def send_alert_email(to_emails: list[str], alerts: list[dict], exam_title: str) 
     <!-- En-tête -->
     <div style="background:{'#dc2626' if urgent_count else '#d97706'};padding:24px 32px;">
         <div style="color:#fff;font-size:22px;font-weight:700;">
-            {'🔴 Intervention urgente requise' if urgent_count else '⚠️ Alerte de surveillance'}
+            {' Intervention urgente requise' if urgent_count else ' Alerte de surveillance'}
         </div>
         <div style="color:rgba(255,255,255,.85);margin-top:4px;font-size:14px;">
             Examen : <strong>{exam_title}</strong> · Détecté le {now}
@@ -141,7 +141,7 @@ def send_alert_email(to_emails: list[str], alerts: list[dict], exam_title: str) 
 def send_summary_email(to_emails: list[str], exam_title: str, stats: dict) -> bool:
     """Email de rapport périodique (toutes les 15 min) envoyé à l'enseignant."""
     now = datetime.now().strftime("%d/%m/%Y à %H:%M")
-    subject = f"📊 Rapport surveillance — {exam_title} ({now})"
+    subject = f" Rapport surveillance — {exam_title} ({now})"
 
     html = f"""
 <!DOCTYPE html>
@@ -151,7 +151,7 @@ def send_summary_email(to_emails: list[str], exam_title: str, stats: dict) -> bo
 <div style="max-width:600px;margin:32px auto;background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,.08);">
 
     <div style="background:#1e293b;padding:24px 32px;">
-        <div style="color:#fff;font-size:20px;font-weight:700;">📊 Rapport de surveillance</div>
+        <div style="color:#fff;font-size:20px;font-weight:700;"> Rapport de surveillance</div>
         <div style="color:#94a3b8;margin-top:4px;font-size:14px;">{exam_title} · {now}</div>
     </div>
 

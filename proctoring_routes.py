@@ -289,14 +289,22 @@ def log_proctoring_event(attempt_id):
             )
             session.refresh(attempt)
 
-        session.commit()
+        # Déterminer si l'on doit notifier, récupérer les données utiles
+        notify_high_risk = (event_type != 'session_end' and attempt.risk_score >= 75)
+        if notify_high_risk:
+            try:
+                _student = attempt.student if hasattr(attempt, 'student') and attempt.student else None
+                _sname = _student.full_name if _student else f'Étudiant #{attempt.student_id}'
+            except Exception:
+                _sname = f'Étudiant #{attempt.student_id}'
 
-        # Alerte fraude si le score de risque vient de franchir 75
-        if event_type != 'session_end' and attempt.risk_score >= 75:
+        session.commit()
+        session.close()
+
+        # Alerte fraude si nécessaire (hors transaction)
+        if notify_high_risk:
             try:
                 from notif_bus import notify_exam
-                _student = attempt.student if hasattr(attempt, 'student') and attempt.student else None
-                _sname   = _student.full_name if _student else f'Étudiant #{attempt.student_id}'
                 notify_exam(
                     attempt.exam_id,
                     'high_risk',
@@ -522,12 +530,17 @@ def proctor_ban_student(attempt_id):
             )
             session.add(notify_log)
 
-        session.commit()
-
-        # Notification temps réel : Redis + ntfy
+        # Préparer la notification puis committer et notifier hors session
         try:
             student_obj = session.query(User).filter_by(id=attempt.student_id).first()
             student_name = student_obj.full_name if student_obj else f'Étudiant #{attempt.student_id}'
+        except Exception:
+            student_name = f'Étudiant #{attempt.student_id}'
+
+        session.commit()
+        session.close()
+
+        try:
             from notif_bus import notify_exam
             notify_exam(
                 attempt.exam_id,
@@ -953,12 +966,9 @@ def request_proctor_call(attempt_id):
             })
         )
         session.add(log)
-        session.commit()
 
-        # Destinataires, par ordre de priorité : surveillant(s) affecté(s) à cet
-        # étudiant ; à défaut, le(s) superviseur(s) du groupe couvrant cet EC
-        # (il supervise déjà les surveillants, c'est le relais naturel en leur
-        # absence) ; à défaut seulement, le professeur créateur de l'examen.
+        # Destinataires — déterminer AVANT le commit pour pouvoir fermer la
+        # session ensuite et effectuer les notifications hors transaction.
         assignments = session.query(ProctorAssignment).filter_by(
             exam_id=exam.id
         ).filter(
@@ -971,16 +981,22 @@ def request_proctor_call(attempt_id):
         if not recipient_ids and exam.created_by_id:
             recipient_ids.add(exam.created_by_id)
 
+        session.commit()
+        session.close()
+
         try:
             from notif_bus import notify_user
             for rid in recipient_ids:
-                notify_user(
-                    rid, 'call_request',
-                    'Appel entrant — reprise après déconnexion',
-                    f'{student_name} demande un appel pour reprendre « {exam.title} »',
-                    priority='urgent', tags=['phone'],
-                    extra={'exam_id': exam.id, 'attempt_id': attempt_id},
-                )
+                try:
+                    notify_user(
+                        rid, 'call_request',
+                        'Appel entrant — reprise après déconnexion',
+                        f'{student_name} demande un appel pour reprendre « {exam.title} »',
+                        priority='urgent', tags=['phone'],
+                        extra={'exam_id': exam.id, 'attempt_id': attempt_id},
+                    )
+                except Exception:
+                    pass
         except Exception:
             pass
 
@@ -1162,13 +1178,26 @@ def add_exam_proctor(exam_id):
             assigned_by_id=user_id
         )
         session.add(ep)
+
+        # Préparer message puis committer et notifier hors session
+        try:
+            exam_title = exam.title if exam and hasattr(exam, 'title') else ''
+        except Exception:
+            exam_title = ''
+
         session.commit()
+        session.close()
+
         try:
             from notif_bus import notify_user
-            notify_user(proctor_id, 'proctor_assigned', 'Nouvel examen à surveiller',
-                         f'Vous surveillez « {exam.title} ».', priority='default', tags=['eyes'])
+            try:
+                notify_user(proctor_id, 'proctor_assigned', 'Nouvel examen à surveiller',
+                             f'Vous surveillez « {exam_title} ».', priority='default', tags=['eyes'])
+            except Exception:
+                pass
         except Exception:
             pass
+
         return jsonify({'success': True, 'proctor': ep.to_dict()}), 201
     finally:
         session.close()
@@ -1347,6 +1376,7 @@ def _check_disconnected_proctors(exam_id, session):
     heartbeat a expiré alors qu'ils avaient déjà été vus en ligne, et
     déclenche automatiquement la redistribution de leurs étudiants."""
     proctors = session.query(ExamProctor).filter_by(exam_id=exam_id).all()
+    notifications = []
     for p in proctors:
         seen_key     = f'cei:proctor_seen:{exam_id}:{p.proctor_id}'
         live_key     = f'cei:proctor_live:{exam_id}:{p.proctor_id}'
@@ -1355,14 +1385,14 @@ def _check_disconnected_proctors(exam_id, session):
             cache_set(cooldown_key, '1', ttl=REDISTRIBUTE_COOLDOWN)
             redistributed = _redistribute_attempts_excluding(exam_id, session, {p.proctor_id})
             if redistributed:
-                try:
-                    from notif_bus import notify_exam
-                    notify_exam(exam_id, 'proctor_disconnected',
-                                'Surveillant déconnecté',
-                                f'{p.proctor.full_name if p.proctor else "Un surveillant"} semble déconnecté — ses étudiants ont été réaffectés automatiquement.',
-                                priority='high', tags=['warning'])
-                except Exception:
-                    pass
+                notifications.append({
+                    'exam_id': exam_id,
+                    'title': 'Surveillant déconnecté',
+                    'message': f"{p.proctor.full_name if p.proctor else 'Un surveillant'} semble déconnecté — ses étudiants ont été réaffectés automatiquement.",
+                    'priority': 'high',
+                    'tags': ['warning'],
+                })
+    return notifications
 
 
 @proctoring_bp.route('/api/online_exams/<int:exam_id>/proctor_heartbeat', methods=['POST'])
@@ -1392,9 +1422,21 @@ def proctor_heartbeat(exam_id):
         session = get_session()
         try:
             level = get_vigilance_level(exam_id, proctor_id, session)
-            _check_disconnected_proctors(exam_id, session)
+            notifications = _check_disconnected_proctors(exam_id, session)
         finally:
             session.close()
+
+        # Envoyer les notifications hors session
+        try:
+            from notif_bus import notify_exam
+            for n in notifications:
+                try:
+                    notify_exam(n['exam_id'], 'proctor_disconnected', n['title'], n['message'], priority=n.get('priority', 'default'), tags=n.get('tags', []))
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
         return jsonify({'success': True, 'vigilance_level': level})
     except Exception as e:
         try: session.rollback(); session.close()
@@ -1613,6 +1655,8 @@ def toggle_recording(attempt_id):
 
     lk_http = config['api_url']
 
+    # Charger la tentative et vérifier les droits, puis fermer la session avant
+    # d'effectuer les appels réseau avec LiveKit (réduit la tenue de connexions DB)
     session = get_session()
     try:
         attempt = session.query(ExamAttempt).filter_by(id=attempt_id).first()
@@ -1623,7 +1667,6 @@ def toggle_recording(attempt_id):
             return jsonify({'error': 'Vous ne pouvez agir que sur vos propres examens'}), 403
 
         if role == 'surveillant':
-            # Vérifier affectation par attempt_id ou student_id (pré-affectation)
             assigned = session.query(ProctorAssignment).filter_by(
                 proctor_id=user_id, exam_id=attempt.exam_id
             ).filter(
@@ -1633,170 +1676,157 @@ def toggle_recording(attempt_id):
             if not assigned:
                 return jsonify({'error': 'Cet étudiant ne vous est pas affecté'}), 403
 
-        # Token Egress
-        now = int(time.time())
-        egress_payload = {
-            'exp': now + 3600, 'iss': config['api_key'], 'nbf': now,
-            'sub': f'recorder-{attempt_id}',
-            'video': {'room': f'exam-{attempt.exam_id}', 'roomRecord': True}
-        }
-        egress_token = pyjwt.encode(egress_payload, config['api_secret'], algorithm='HS256')
-
-        headers = {
-            'Authorization': f'Bearer {egress_token}',
-            'Content-Type': 'application/json'
-        }
-
-        if action == 'start':
-            if attempt.status != AttemptStatus.IN_PROGRESS:
-                return jsonify({'error': 'Enregistrement impossible : cet étudiant n\'est pas en cours d\'examen.'}), 400
-
-            room_name = f'exam-{attempt.exam_id}'
-            student_identity = f'student-{attempt.student_id}'
-
-            # ── Vérifier présence ET caméra active via ListParticipants ──
-            now2 = int(time.time())
-            admin_token = pyjwt.encode(
-                {'exp': now2+300,'iss': config['api_key'],'nbf': now2,
-                 'sub': 'admin','video': {'roomAdmin': True, 'room': room_name}},
-                config['api_secret'], algorithm='HS256'
-            )
-            admin_headers = {
-                'Authorization': f'Bearer {admin_token}',
-                'Content-Type': 'application/json'
-            }
-            has_video = False
-            # ── Récupérer les track SIDs du participant ──────────────────────
-            video_track_id = None
-            audio_track_id = None
-            try:
-                parts_req = urlreq.Request(
-                    f'{lk_http}/twirp/livekit.RoomService/ListParticipants',
-                    data=json.dumps({'room': room_name}).encode(),
-                    headers=admin_headers
-                )
-                with urlreq.urlopen(parts_req, timeout=5) as presp:
-                    parts_data = json.loads(presp.read())
-                    participants = parts_data.get('participants', [])
-                    identities = [p.get('identity') for p in participants]
-                    print(f'[REC] Participants dans {room_name}: {identities}')
-
-                    if student_identity not in identities:
-                        return jsonify({
-                            'error': (
-                                "L'étudiant n'est pas connecté à la salle d'examen en ce moment. "
-                                "L'enregistrement individuel n'est possible que pendant que "
-                                "l'étudiant passe l'examen en direct avec sa caméra activée."
-                            )
-                        }), 400
-
-                    student_part = next(
-                        (p for p in participants if p.get('identity') == student_identity), None
-                    )
-                    if student_part:
-                        tracks = student_part.get('tracks', [])
-                        print(f'[REC] Tracks de {student_identity}: '
-                              f'{[(t.get("sid"), t.get("type"), t.get("source"), t.get("muted")) for t in tracks]}')
-
-                        # Piste vidéo caméra : VIDEO et pas SCREEN_SHARE
-                        for t in tracks:
-                            if (t.get('type') in ('VIDEO', 1)
-                                    and t.get('source') not in ('SCREEN_SHARE', 3)
-                                    and not t.get('muted', False)):
-                                video_track_id = t.get('sid')
-                                break
-                        # Piste audio
-                        for t in tracks:
-                            if t.get('type') in ('AUDIO', 0) and not t.get('muted', False):
-                                audio_track_id = t.get('sid')
-                                break
-
-                        if not video_track_id:
-                            return jsonify({
-                                'error': (
-                                    "La caméra de l'étudiant n'est pas active. "
-                                    "Assurez-vous que sa vidéo est visible dans le tableau de bord "
-                                    "avant de lancer l'enregistrement."
-                                )
-                            }), 400
-
-            except urllib.error.HTTPError as e:
-                print(f'[REC] ListParticipants HTTP error: {e.code} {e.read().decode()}')
-                return jsonify({'error': "Impossible de vérifier l'état de la connexion de l'étudiant."}), 503
-            except (urllib.error.URLError, TimeoutError, OSError) as e:
-                print(f'[REC] ListParticipants network error: {e}')
-                return jsonify({'error': "Le service LiveKit est momentanément indisponible."}), 503
-
-            # ── StartTrackCompositeEgress (plus fiable que StartParticipantEgress) ──
-            s3_cfg = {
-                'access_key': os.environ.get('S3_KEY_ID', ''),
-                'secret':     os.environ.get('S3_KEY_SECRET', ''),
-                'region':     os.environ.get('S3_REGION', 'us-east-1'),
-                'endpoint':   os.environ.get('S3_PUBLIC_ENDPOINT', os.environ.get('S3_ENDPOINT', '')),
-                'bucket':     os.environ.get('S3_BUCKET', 'livekit-recordings'),
-                'force_path_style': True
-            }
-            filepath = (f'recordings/exam-{attempt.exam_id}/'
-                        f'student-{attempt.student_id}-attempt-{attempt_id}.mp4')
-
-            egress_body = {
-                'room_name':      room_name,
-                'video_track_id': video_track_id,
-                'file_outputs':   [{'filepath': filepath, 's3': s3_cfg}]
-            }
-            if audio_track_id:
-                egress_body['audio_track_id'] = audio_track_id
-
-            req = urlreq.Request(
-                f'{lk_http}/twirp/livekit.Egress/StartTrackCompositeEgress',
-                data=json.dumps(egress_body).encode(), headers=headers
-            )
-            try:
-                with urlreq.urlopen(req, timeout=8) as resp:
-                    result = json.loads(resp.read())
-                    egress_id = result.get('egress_id')
-                    print(f'[REC] TrackComposite démarré: {egress_id} | video={video_track_id} audio={audio_track_id}')
-                    attempt.current_egress_id = egress_id
-                    session.commit()
-                    return jsonify({'success': True, 'egress_id': egress_id, 'filepath': filepath})
-            except urllib.error.HTTPError as e:
-                err_body = e.read().decode()
-                print(f'[REC] StartTrackCompositeEgress error: {err_body}')
-                try:
-                    err_json = json.loads(err_body)
-                    if err_json.get('code') == 6:
-                        return jsonify({'error': "Un enregistrement est déjà en cours pour cet étudiant."}), 400
-                except Exception:
-                    pass
-                return jsonify({'error': "Erreur lors du démarrage de l'enregistrement. Réessayez."}), 500
-            except (urllib.error.URLError, TimeoutError, OSError):
-                return jsonify({'error': "Le service d'enregistrement est momentanément indisponible."}), 503
-
-        elif action == 'stop':
-            # Utiliser l'egress_id fourni par le client, sinon récupérer depuis la BDD
-            egress_id = data.get('egress_id') or attempt.current_egress_id
-            if not egress_id:
-                return jsonify({'error': 'Aucun enregistrement actif pour cette tentative'}), 400
-            body = json.dumps({'egress_id': egress_id}).encode()
-            req = urlreq.Request(
-                f'{lk_http}/twirp/livekit.Egress/StopEgress',
-                data=body, headers=headers
-            )
-            try:
-                with urlreq.urlopen(req, timeout=5) as resp:
-                    # Effacer l'egress_id persisté
-                    attempt.current_egress_id = None
-                    session.commit()
-                    return jsonify({'success': True})
-            except urllib.error.HTTPError as e:
-                err_body = e.read().decode()
-                return jsonify({'error': "L'arrêt de l'enregistrement a échoué. Vérifiez que l'enregistrement est bien actif."}), 500
-            except (urllib.error.URLError, TimeoutError, OSError):
-                return jsonify({'error': "Le service d'enregistrement est momentanément indisponible. Veuillez réessayer dans quelques instants."}), 503
-
-        return jsonify({'error': 'action invalide (start|stop)'}), 400
+        # Capturer l'état nécessaire puis fermer
+        attempt_exam_id = attempt.exam_id
+        attempt_student_id = attempt.student_id
+        attempt_status = attempt.status
+        current_egress = attempt.current_egress_id
     finally:
         session.close()
+
+    # Token Egress
+    now = int(time.time())
+    egress_payload = {
+        'exp': now + 3600, 'iss': config['api_key'], 'nbf': now,
+        'sub': f'recorder-{attempt_id}',
+        'video': {'room': f'exam-{attempt_exam_id}', 'roomRecord': True}
+    }
+    egress_token = pyjwt.encode(egress_payload, config['api_secret'], algorithm='HS256')
+
+    headers = {
+        'Authorization': f'Bearer {egress_token}',
+        'Content-Type': 'application/json'
+    }
+
+    if action == 'start':
+        if attempt_status != AttemptStatus.IN_PROGRESS:
+            return jsonify({'error': 'Enregistrement impossible : cet étudiant n\'est pas en cours d\'examen.'}), 400
+
+        room_name = f'exam-{attempt_exam_id}'
+        student_identity = f'student-{attempt_student_id}'
+
+        # Vérifier présence ET caméra active via ListParticipants
+        now2 = int(time.time())
+        admin_token = pyjwt.encode(
+            {'exp': now2+300,'iss': config['api_key'],'nbf': now2,
+             'sub': 'admin','video': {'roomAdmin': True, 'room': room_name}},
+            config['api_secret'], algorithm='HS256'
+        )
+        admin_headers = {
+            'Authorization': f'Bearer {admin_token}',
+            'Content-Type': 'application/json'
+        }
+        video_track_id = None
+        audio_track_id = None
+        try:
+            parts_req = urlreq.Request(
+                f'{lk_http}/twirp/livekit.RoomService/ListParticipants',
+                data=json.dumps({'room': room_name}).encode(),
+                headers=admin_headers
+            )
+            with urlreq.urlopen(parts_req, timeout=5) as presp:
+                parts_data = json.loads(presp.read())
+                participants = parts_data.get('participants', [])
+                identities = [p.get('identity') for p in participants]
+                if student_identity not in identities:
+                    return jsonify({'error': "L'étudiant n'est pas connecté à la salle d'examen en ce moment."}), 400
+
+                student_part = next((p for p in participants if p.get('identity') == student_identity), None)
+                if student_part:
+                    tracks = student_part.get('tracks', [])
+                    for t in tracks:
+                        if (t.get('type') in ('VIDEO', 1) and t.get('source') not in ('SCREEN_SHARE', 3) and not t.get('muted', False)):
+                            video_track_id = t.get('sid')
+                            break
+                    for t in tracks:
+                        if t.get('type') in ('AUDIO', 0) and not t.get('muted', False):
+                            audio_track_id = t.get('sid')
+                            break
+                    if not video_track_id:
+                        return jsonify({'error': "La caméra de l'étudiant n'est pas active."}), 400
+        except urllib.error.HTTPError as e:
+            return jsonify({'error': "Impossible de vérifier l'état de la connexion de l'étudiant."}), 503
+        except (urllib.error.URLError, TimeoutError, OSError) as e:
+            return jsonify({'error': "Le service LiveKit est momentanément indisponible."}), 503
+
+        # StartTrackCompositeEgress
+        s3_cfg = {
+            'access_key': os.environ.get('S3_KEY_ID', ''),
+            'secret':     os.environ.get('S3_KEY_SECRET', ''),
+            'region':     os.environ.get('S3_REGION', 'us-east-1'),
+            'endpoint':   os.environ.get('S3_PUBLIC_ENDPOINT', os.environ.get('S3_ENDPOINT', '')),
+            'bucket':     os.environ.get('S3_BUCKET', 'livekit-recordings'),
+            'force_path_style': True
+        }
+        filepath = (f'recordings/exam-{attempt_exam_id}/'
+                    f'student-{attempt_student_id}-attempt-{attempt_id}.mp4')
+
+        egress_body = {
+            'room_name':      room_name,
+            'video_track_id': video_track_id,
+            'file_outputs':   [{'filepath': filepath, 's3': s3_cfg}]
+        }
+        if audio_track_id:
+            egress_body['audio_track_id'] = audio_track_id
+
+        req = urlreq.Request(
+            f'{lk_http}/twirp/livekit.Egress/StartTrackCompositeEgress',
+            data=json.dumps(egress_body).encode(), headers=headers
+        )
+        try:
+            with urlreq.urlopen(req, timeout=8) as resp:
+                result = json.loads(resp.read())
+                egress_id = result.get('egress_id')
+                # Persister l'egress_id dans une courte session
+                s2 = get_session()
+                try:
+                    a = s2.query(ExamAttempt).filter_by(id=attempt_id).first()
+                    if a:
+                        a.current_egress_id = egress_id
+                        s2.commit()
+                finally:
+                    s2.close()
+                return jsonify({'success': True, 'egress_id': egress_id, 'filepath': filepath})
+        except urllib.error.HTTPError as e:
+            err_body = e.read().decode()
+            try:
+                err_json = json.loads(err_body)
+                if err_json.get('code') == 6:
+                    return jsonify({'error': "Un enregistrement est déjà en cours pour cet étudiant."}), 400
+            except Exception:
+                pass
+            return jsonify({'error': "Erreur lors du démarrage de l'enregistrement. Réessayez."}), 500
+        except (urllib.error.URLError, TimeoutError, OSError):
+            return jsonify({'error': "Le service d'enregistrement est momentanément indisponible."}), 503
+
+    elif action == 'stop':
+        # Utiliser l'egress_id fourni par le client, sinon celui lu plus tôt
+        egress_id = data.get('egress_id') or current_egress
+        if not egress_id:
+            return jsonify({'error': 'Aucun enregistrement actif pour cette tentative'}), 400
+        body = json.dumps({'egress_id': egress_id}).encode()
+        req = urlreq.Request(
+            f'{lk_http}/twirp/livekit.Egress/StopEgress',
+            data=body, headers=headers
+        )
+        try:
+            with urlreq.urlopen(req, timeout=5) as resp:
+                # Effacer l'egress_id persisté dans une courte session
+                s2 = get_session()
+                try:
+                    a = s2.query(ExamAttempt).filter_by(id=attempt_id).first()
+                    if a:
+                        a.current_egress_id = None
+                        s2.commit()
+                finally:
+                    s2.close()
+                return jsonify({'success': True})
+        except urllib.error.HTTPError as e:
+            return jsonify({'error': "L'arrêt de l'enregistrement a échoué. Vérifiez que l'enregistrement est bien actif."}), 500
+        except (urllib.error.URLError, TimeoutError, OSError):
+            return jsonify({'error': "Le service d'enregistrement est momentanément indisponible. Veuillez réessayer dans quelques instants."}), 503
+
+    return jsonify({'error': 'action invalide (start|stop)'}), 400
 
 
 # ============================================================================
@@ -1839,6 +1869,9 @@ def toggle_room_recording(exam_id):
         exam = session.query(OnlineExam).filter_by(id=exam_id).first()
         if not exam:
             return jsonify({'error': 'Examen introuvable'}), 404
+        # Nous n'effectuons plus d'écritures DB ici — fermer la session avant
+        # d'appeler l'API LiveKit (réduit la durée de tenue des connexions).
+        session.close()
 
         if action == 'start':
             # Lister les participants pour obtenir leurs track IDs
@@ -1911,16 +1944,14 @@ def toggle_room_recording(exam_id):
                             'file_outputs': [{'filepath': cam_path, 's3': s3_cfg}]}
                 if audio_track:
                     cam_body['audio_track_id'] = audio_track
-                try:
-                    req = urlreq.Request(f'{lk_http}/twirp/livekit.Egress/StartTrackCompositeEgress',
-                        data=json.dumps(cam_body).encode(), headers=headers)
-                    with urlreq.urlopen(req, timeout=8) as resp:
-                        eid = json.loads(resp.read()).get('egress_id')
-                        all_egress_ids.append(eid)
-                        print(f'[REC-ROOM] TrackComposite cam démarré: {identity} egress={eid}')
-                except Exception as e:
-                    print(f'[REC-ROOM] Erreur cam {identity}: {e}')
-                    errors.append({'identity': identity, 'error': str(e)})
+                    try:
+                        req = urlreq.Request(f'{lk_http}/twirp/livekit.Egress/StartTrackCompositeEgress',
+                            data=json.dumps(cam_body).encode(), headers=headers)
+                        with urlreq.urlopen(req, timeout=8) as resp:
+                            eid = json.loads(resp.read()).get('egress_id')
+                            all_egress_ids.append(eid)
+                    except Exception as e:
+                        errors.append({'identity': identity, 'error': str(e)})
 
                 if screen_track:
                     scr_path = f'recordings/exam-{exam_id}/salle-ecran-{sid}-{ts}.mp4'
@@ -2544,16 +2575,20 @@ def request_supervisor_call(proctor_id):
             return jsonify({'error': "Vous ne supervisez pas ce surveillant"}), 403
         supervisor = session.query(User).filter_by(id=user_id).first()
         supervisor_name = supervisor.full_name if supervisor else 'Votre superviseur'
+        session.close()
 
         try:
             from notif_bus import notify_user
-            notify_user(
-                proctor_id, 'supervisor_call_request',
-                'Appel entrant — votre superviseur',
-                f'{supervisor_name} souhaite vous parler',
-                priority='urgent', tags=['phone'],
-                extra={'supervisor_id': user_id, 'supervisor_name': supervisor_name},
-            )
+            try:
+                notify_user(
+                    proctor_id, 'supervisor_call_request',
+                    'Appel entrant — votre superviseur',
+                    f'{supervisor_name} souhaite vous parler',
+                    priority='urgent', tags=['phone'],
+                    extra={'supervisor_id': user_id, 'supervisor_name': supervisor_name},
+                )
+            except Exception:
+                pass
         except Exception:
             pass
         return jsonify({'success': True})

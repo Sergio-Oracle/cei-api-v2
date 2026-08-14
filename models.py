@@ -1246,8 +1246,10 @@ engine = create_engine(
     echo=False,
     pool_pre_ping=True,
     pool_recycle=1800,
-    pool_size=3,
-    max_overflow=7,
+    # Pool sizing: keep small per-worker pool to avoid exhausting Postgres
+    # Can be tuned via env vars `DB_POOL_SIZE` and `DB_MAX_OVERFLOW`.
+    pool_size=int(os.getenv('DB_POOL_SIZE', '2')),
+    max_overflow=int(os.getenv('DB_MAX_OVERFLOW', '2')),
     pool_timeout=30,
     connect_args={'options': '-c timezone=UTC'},
 )

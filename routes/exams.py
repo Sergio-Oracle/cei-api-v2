@@ -302,7 +302,8 @@ def activate_online_exam(exam_id):
         
         exam_dict = exam.to_dict()
 
-        # Notifier par email tous les étudiants inscrits à la formation de l'examen
+        # Rassembler les contacts étudiants, fermer la session, puis envoyer
+        student_contacts = []
         try:
             app_url  = os.getenv('APP_URL', 'https://dev-cei.ddns.net').rstrip('/')
             exam_url = f"{app_url}/app"
@@ -315,14 +316,17 @@ def activate_online_exam(exam_id):
                 for enr in enrollments:
                     student = enr.student
                     if student and student.email and student.is_active:
-                        try:
-                            send_exam_started_email(student.email, student.full_name, exam.title, exam_url, end_str)
-                        except Exception:
-                            pass
+                        student_contacts.append((student.email, student.full_name))
         except Exception:
             pass
 
         session.close()
+
+        for email, full_name in student_contacts:
+            try:
+                send_exam_started_email(email, full_name, exam.title, exam_url, end_str)
+            except Exception:
+                pass
         return jsonify({'success': True, 'exam': exam_dict})
     except Exception as e:
         try: session.rollback(); session.close()
@@ -1055,6 +1059,7 @@ def log_exam_activity(attempt_id):
         if ban_reason and not exam.auto_ban_enabled:
             session.commit()
             student_name = attempt.student.full_name if attempt.student else f'Étudiant #{attempt.student_id}'
+            session.close()
             try:
                 from proctoring_routes import _push_alert
                 _push_alert({
@@ -1080,7 +1085,6 @@ def log_exam_activity(attempt_id):
                             priority='urgent', tags=['rotating_light'])
             except Exception:
                 pass
-            session.close()
             return jsonify({
                 'success': True,
                 'banned': False,
@@ -2374,14 +2378,33 @@ def agent_run_scheduled_correction(exam_id):
             ExamAttempt.score.is_(None),
         ).all()
 
+        # Détacher les objets et fermer la session avant d'effectuer les appels
+        # IA (longs) : charger en mémoire, puis pour chaque tentative créer
+        # une session courte pour persister le résultat.
+        session.expunge_all()
+        session.close()
+
         corrected, failed = 0, 0
+        from models import get_session as _get_session
         for attempt in attempts:
             try:
+                # Exécuter la correction IA hors transaction
                 _run_ai_correction(attempt, corrected_by_id=exam.created_by_id)
-                session.commit()
-                corrected += 1
+                # Persister les changements dans une session courte
+                s2 = _get_session()
+                try:
+                    s2.merge(attempt)
+                    s2.commit()
+                    corrected += 1
+                except Exception as e:
+                    try: s2.rollback()
+                    except Exception: pass
+                    print(f"Persistance échec tentative {attempt.id} (examen {exam_id}): {e}")
+                    failed += 1
+                finally:
+                    try: s2.close()
+                    except Exception: pass
             except Exception as e:
-                session.rollback()
                 print(f"Correction planifiée — échec tentative {attempt.id} (examen {exam_id}): {e}")
                 failed += 1
 

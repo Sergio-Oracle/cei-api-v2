@@ -46,6 +46,7 @@ _UPLOAD_FOLDER = os.getenv('UPLOAD_FOLDER', 'static/uploads')
 
 @exams_bp.route('/api/online_exams', methods=['GET'])
 @paseto_required
+@limiter.exempt
 def get_online_exams():
     """Liste des examens en ligne"""
     try:
@@ -1181,6 +1182,7 @@ def get_exam_attempt_result(attempt_id):
 
 @exams_bp.route('/api/exam_attempts/<int:attempt_id>/subject', methods=['GET'])
 @paseto_required
+@limiter.exempt
 def get_exam_attempt_subject(attempt_id):
     """Récupérer le contenu du sujet pour une tentative en cours"""
     try:

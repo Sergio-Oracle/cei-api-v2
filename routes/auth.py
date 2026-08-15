@@ -198,6 +198,7 @@ def auth_public_key():
 # ── Profil courant ────────────────────────────────────────────────────────────
 @auth_bp.route('/api/auth/me', methods=['GET'])
 @paseto_required
+@limiter.exempt
 def get_current_user():
     try:
         session = get_session()

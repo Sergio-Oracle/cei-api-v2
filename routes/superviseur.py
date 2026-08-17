@@ -9,6 +9,7 @@ import json
 from flask import Blueprint, jsonify
 
 from auth_paseto import paseto_required, get_current_user_id
+from extensions  import limiter
 from models      import (
     get_session, User, UserRole, ProctorGroup, ProctorGroupEC, ProctorGroupSupervisor,
     OnlineExam, Subject, ExamAttempt, ExamActivityLog, ProctorAssignment,
@@ -19,6 +20,7 @@ superviseur_bp = Blueprint('superviseur', __name__)
 
 @superviseur_bp.route('/api/superviseur/dashboard', methods=['GET'])
 @paseto_required
+@limiter.exempt
 def superviseur_dashboard():
     try:
         user_id = get_current_user_id()
@@ -90,6 +92,7 @@ def superviseur_dashboard():
 
 @superviseur_bp.route('/api/superviseur/call_requests', methods=['GET'])
 @paseto_required
+@limiter.exempt
 def superviseur_call_requests():
     """Demandes d'appel étudiant en attente, pour les examens dont l'EC est
     couvert par un groupe que ce superviseur supervise — uniquement celles où

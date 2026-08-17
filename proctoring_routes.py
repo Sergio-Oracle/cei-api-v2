@@ -578,6 +578,7 @@ def proctor_ban_student(attempt_id):
 
 @proctoring_bp.route('/api/online_exams/<int:exam_id>/active_proctoring', methods=['GET'])
 @paseto_required
+@limiter.exempt
 def get_active_proctoring(exam_id):
     """Liste des tentatives actives — filtrée par groupe si surveillant"""
     user_id = get_current_user_id()
@@ -1553,6 +1554,7 @@ def distribute_proctors(exam_id):
 
 @proctoring_bp.route('/api/surveillant/exams', methods=['GET'])
 @paseto_required
+@limiter.exempt
 def get_surveillant_exams():
     """Retourner les examens auxquels un surveillant est affecté"""
     user_id = get_current_user_id()

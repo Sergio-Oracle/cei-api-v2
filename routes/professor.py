@@ -10,6 +10,7 @@ from sqlalchemy import desc
 from sqlalchemy.orm import joinedload
 
 from auth_paseto import paseto_required, get_current_user_id
+from extensions  import limiter
 from models      import (
     get_session, User, UserRole,
     Subject, StudentPaper, Reclamation,
@@ -24,6 +25,7 @@ professor_bp = Blueprint('professor', __name__)
 
 @professor_bp.route('/api/professor/dashboard', methods=['GET'])
 @paseto_required
+@limiter.exempt
 def professor_dashboard():
     try:
         user_id = get_current_user_id()

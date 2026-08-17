@@ -16,7 +16,7 @@ from flask import Blueprint, request, jsonify
 from sqlalchemy import or_
 from threading import Thread
 
-from extensions import bcrypt
+from extensions import bcrypt, limiter
 from auth_paseto import paseto_required, get_current_user_id, get_current_user_role
 from models import (
     get_session,
@@ -66,6 +66,7 @@ def _link_student_to_formation(session, student, formation_id):
 # ── Dashboard ─────────────────────────────────────────────────────────────────
 @admin_users_bp.route('/api/admin/dashboard', methods=['GET'])
 @paseto_required
+@limiter.exempt
 def admin_dashboard():
     try:
         session = get_session()
@@ -161,6 +162,7 @@ def get_proctor_users():
 # ── Liste tous les utilisateurs ───────────────────────────────────────────────
 @admin_users_bp.route('/api/admin/users', methods=['GET'])
 @paseto_required
+@limiter.exempt
 def get_all_users():
     try:
         session = get_session()

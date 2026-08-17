@@ -872,12 +872,12 @@ def start_exam_attempt(exam_id):
         session.add(attempt)
         session.flush()  # obtenir attempt.id avant commit
 
-        # Lier la pré-affectation surveillant si elle existe
-        pre = session.query(ProctorAssignment).filter_by(
-            exam_id=exam_id, student_id=user_id, attempt_id=None
-        ).first()
-        if pre:
-            pre.attempt_id = attempt.id
+        # Affecter au surveillant le moins chargé si pas déjà pré-affecté —
+        # remplace l'ancienne auto-affectation faite à chaque GET de
+        # /active_proctoring (coûteuse, répétée à chaque rafraîchissement de
+        # tous les surveillants connectés). Voir services/proctor_service.py.
+        from services.proctor_service import assign_single_attempt
+        assign_single_attempt(session, exam_id, user_id, attempt.id)
 
         session.commit()
         attempt_dict = attempt.to_dict()

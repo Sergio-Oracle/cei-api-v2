@@ -1241,12 +1241,19 @@ if not DATABASE_URL:
 
 print(f"Connexion à: {DATABASE_URL.split('@')[1] if '@' in DATABASE_URL else DATABASE_URL}")
 
-# pool_size=3, max_overflow=7 → 10 conns max/worker × 9 workers = 90 total
-# PostgreSQL max_connections=100 → 10 réservées pour admin/monitoring
+# Total de connexions DB = (pool_size + max_overflow) × nombre de workers
+# gunicorn (chaque worker est un processus séparé avec son propre pool — voir
+# post_fork() dans gunicorn.conf.py). Ce nombre de workers dépend du serveur
+# (GUNICORN_WORKERS dans le .env de chaque environnement) : ne pas fixer un
+# nombre de workers en dur ici pour calculer le total, vérifier avec
+# `ps -ef | grep gunicorn` sur le serveur concerné. Mesuré sur production
+# (17 août 2026, load-testing) : pool_pre_ping n'ajoute qu'un coût marginal
+# par rapport au vrai facteur limitant, qui est le CPU sous forte charge —
+# voir DB_POOL_PRE_PING ci-dessous si une mesure différente est nécessaire.
 engine = create_engine(
     DATABASE_URL,
     echo=False,
-    pool_pre_ping=True,
+    pool_pre_ping=os.getenv('DB_POOL_PRE_PING', 'true').lower() != 'false',
     pool_recycle=1800,
     # Pool sizing: keep small per-worker pool to avoid exhausting Postgres
     # Can be tuned via env vars `DB_POOL_SIZE` and `DB_MAX_OVERFLOW`.

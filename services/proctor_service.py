@@ -103,3 +103,60 @@ def _redistribute_students(session, exam, proctor_ids):
         pid = proctor_ids[i % nb]
         session.add(ProctorAssignment(exam_id=exam.id, proctor_id=pid, student_id=student.id, attempt_id=None))
     session.commit()
+
+
+def assign_single_attempt(session, exam_id, student_id, attempt_id):
+    """Affecte une tentative unique au surveillant le moins chargé de l'examen.
+
+    Appelée au DÉMARRAGE de la tentative (start_exam_attempt), pas à chaque
+    lecture du tableau de surveillance — auparavant get_active_proctoring
+    (une route GET) recalculait et écrivait cette affectation à chaque appel,
+    ce qui la rendait coûteuse et la répétait à chaque rafraîchissement de
+    tous les surveillants connectés. Ne fait rien si l'étudiant est déjà
+    affecté (pré-affectation) ou si l'examen n'a pas de surveillant. Ne
+    commit pas — laisse l'appelant gérer la transaction.
+    """
+    already = session.query(ProctorAssignment).filter_by(exam_id=exam_id).filter(
+        (ProctorAssignment.attempt_id == attempt_id) | (ProctorAssignment.student_id == student_id)
+    ).first()
+    if already:
+        if not already.attempt_id:
+            already.attempt_id = attempt_id
+        return
+
+    proctor_ids = [ep.proctor_id for ep in session.query(ExamProctor).filter_by(exam_id=exam_id).all()]
+    if not proctor_ids:
+        return
+
+    counts = {pid: 0 for pid in proctor_ids}
+    for pa in session.query(ProctorAssignment).filter_by(exam_id=exam_id).all():
+        if pa.proctor_id in counts:
+            counts[pa.proctor_id] += 1
+
+    min_pid = min(counts, key=counts.get)
+    session.add(ProctorAssignment(
+        exam_id=exam_id, proctor_id=min_pid, student_id=student_id, attempt_id=attempt_id,
+    ))
+
+
+def backfill_unassigned_attempts(session, exam_id=None):
+    """Filet de sécurité à exécuter UNE FOIS au déploiement de ce correctif :
+    affecte les tentatives IN_PROGRESS déjà démarrées avant que
+    assign_single_attempt() n'existe et qui n'ont donc jamais reçu
+    d'affectation (l'ancien filet — l'auto-affectation dans
+    get_active_proctoring — vient d'être retiré). Idempotent, sans effet sur
+    les tentatives déjà affectées."""
+    from models import ExamAttempt, AttemptStatus
+    q = session.query(ExamAttempt).filter_by(status=AttemptStatus.IN_PROGRESS)
+    if exam_id:
+        q = q.filter_by(exam_id=exam_id)
+    n = 0
+    for attempt in q.all():
+        before = session.query(ProctorAssignment).filter_by(exam_id=attempt.exam_id).filter(
+            (ProctorAssignment.attempt_id == attempt.id) | (ProctorAssignment.student_id == attempt.student_id)
+        ).first()
+        if not before:
+            assign_single_attempt(session, attempt.exam_id, attempt.student_id, attempt.id)
+            n += 1
+    session.commit()
+    return n

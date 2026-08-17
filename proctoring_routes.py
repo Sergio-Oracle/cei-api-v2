@@ -633,51 +633,14 @@ def get_active_proctoring(exam_id):
                 joinedload(ExamAttempt.student)
             ).filter_by(exam_id=exam_id).all()
 
-        # ── Auto-assignation des nouveaux étudiants non encore affectés ──────
-        # Cas : étudiant qui a démarré l'examen sans être dans les pré-affectations
+        # Lecture pure — l'affectation elle-même se fait au démarrage de la
+        # tentative (routes/exams.py::start_exam_attempt →
+        # services.proctor_service.assign_single_attempt), pas ici. Avant ce
+        # correctif, ce GET recalculait et écrivait les affectations à chaque
+        # appel — répété à chaque rafraîchissement de chaque surveillant
+        # connecté, un coût inutile et un anti-pattern (écriture sur un GET).
         all_exam_proctors = session.query(ExamProctor).filter_by(exam_id=exam_id).all()
-        proctor_ids_list  = [ep.proctor_id for ep in all_exam_proctors]
 
-        if proctor_ids_list and attempts:
-            all_pa_now = session.query(ProctorAssignment).filter_by(exam_id=exam_id).all()
-            by_attempt_id_now = {pa.attempt_id for pa in all_pa_now if pa.attempt_id}
-            by_student_id_now = {pa.student_id for pa in all_pa_now if pa.student_id}
-
-            # Compter les étudiants déjà affectés par surveillant
-            proctor_counts = {pid: 0 for pid in proctor_ids_list}
-            for pa in all_pa_now:
-                if pa.proctor_id in proctor_counts:
-                    proctor_counts[pa.proctor_id] += 1
-
-            new_assignments = False
-            for a in attempts:
-                already = (a.id in by_attempt_id_now) or (a.student_id in by_student_id_now)
-                if not already:
-                    # Affecter au surveillant le moins chargé
-                    min_pid = min(proctor_counts, key=proctor_counts.get)
-                    pa_new = ProctorAssignment(
-                        exam_id=exam_id,
-                        proctor_id=min_pid,
-                        student_id=a.student_id,
-                        attempt_id=a.id,
-                    )
-                    session.add(pa_new)
-                    proctor_counts[min_pid] += 1
-                    by_student_id_now.add(a.student_id)
-                    new_assignments = True
-
-            # Mettre à jour les attempt_id manquants dans les pré-affectations
-            for pa in all_pa_now:
-                if pa.student_id and not pa.attempt_id:
-                    found = next((a for a in attempts if a.student_id == pa.student_id), None)
-                    if found:
-                        pa.attempt_id = found.id
-                        new_assignments = True
-
-            if new_assignments:
-                session.commit()
-
-        # ── Reconstruire les maps après auto-assignation ───────────────────
         all_pa = session.query(ProctorAssignment).filter_by(exam_id=exam_id).all()
         by_attempt_id = {pa.attempt_id: pa.proctor_id for pa in all_pa if pa.attempt_id}
         by_student_id = {pa.student_id: pa.proctor_id for pa in all_pa if pa.student_id}

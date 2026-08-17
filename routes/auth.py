@@ -9,6 +9,7 @@ Migré depuis app.py — logique identique, zéro regression.
 from flask import Blueprint, request, jsonify, make_response
 from datetime import datetime, timedelta, timezone
 from threading import Thread
+from flask_limiter.util import get_remote_address
 import os
 
 from extensions import bcrypt, limiter
@@ -79,8 +80,29 @@ def register():
         session.close()
 
 
+def _login_rate_limit_key():
+    """Limite par COMPTE tente (email), pas par IP source.
+
+    Avant ce correctif, le login etait soumis a la limite par defaut du
+    limiter (60/min, 300/h, indexee par IP) : 1000 etudiants derriere une
+    seule IP publique (reseau d'etablissement) se partageaient ce quota,
+    les premiers passaient, les 940 suivants recevaient 429 des la
+    premiere minute. Indexer par email tente protege chaque compte
+    individuellement contre le brute-force (l'objectif reel de cette
+    limite) sans jamais penaliser les utilisateurs legitimes qui partagent
+    juste le meme reseau.
+    """
+    try:
+        data = request.get_json(silent=True) or {}
+        email = (data.get('email') or '').strip().lower()
+    except Exception:
+        email = ''
+    return email or get_remote_address()
+
+
 # ── Connexion ─────────────────────────────────────────────────────────────────
 @auth_bp.route('/api/auth/login', methods=['POST'])
+@limiter.limit("10 per minute; 50 per hour", key_func=_login_rate_limit_key)
 def login():
     try:
         data     = request.json or {}
@@ -186,6 +208,7 @@ def logout():
 
 # ── Clé publique ──────────────────────────────────────────────────────────────
 @auth_bp.route('/api/auth/public-key', methods=['GET'])
+@limiter.exempt
 def auth_public_key():
     return jsonify({
         'public_key':        os.environ.get('PASETO_PUBLIC_KEY', ''),

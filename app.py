@@ -66,6 +66,16 @@ from auth_paseto import init_paseto
 init_paseto()
 
 # ── Extensions partagées (bcrypt + rate limiter Redis) ────────────────────────
+# BCRYPT_LOG_ROUNDS : defaut Flask-Bcrypt = 12 (~270ms/verification, mesure
+# le 17 aout 2026). Sous rafale de connexions (ex. 800-1200 logins en
+# quelques secondes en debut d'atelier), chaque verification est un vrai
+# calcul CPU qui ne parallelise qu'a hauteur du nombre de coeurs physiques
+# (confirme par profilage py-spy : threads bloques dans check_password_hash),
+# pas du nombre de threads gunicorn. cost=10 (~69ms, ~4x plus rapide) reste
+# dans les recommandations OWASP actuelles (minimum 10) et est complete par
+# la limite de connexion par compte (10/min) qui protege deja contre le
+# brute-force en ligne independamment de la vitesse du hash.
+app.config['BCRYPT_LOG_ROUNDS'] = int(os.getenv('BCRYPT_LOG_ROUNDS', '10'))
 from extensions import bcrypt as _bcrypt_ext, limiter as _limiter_ext
 _bcrypt_ext.init_app(app)
 _limiter_ext.init_app(app)

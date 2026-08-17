@@ -118,6 +118,20 @@ def login():
             session.close()
             return jsonify({'error': "Votre compte a été désactivé par l'administrateur. Contactez l'administration de la plateforme pour le réactiver."}), 403
 
+        # Re-hash paresseux : le cout bcrypt est integre au hash stocke, donc
+        # abaisser BCRYPT_LOG_ROUNDS n'accelere jamais retroactivement les
+        # comptes existants (impossible sans connaitre le mot de passe en
+        # clair). Standard de l'industrie : re-hasher au prochain login
+        # reussi, de facon transparente, jusqu'a ce que toute la base soit
+        # migree naturellement vers le nouveau cout au fil des connexions.
+        current_rounds = int(os.getenv('BCRYPT_LOG_ROUNDS', '10'))
+        try:
+            stored_rounds = int(user.password_hash.split('$')[2])
+        except Exception:
+            stored_rounds = None
+        if stored_rounds is not None and stored_rounds != current_rounds:
+            user.password_hash = bcrypt.generate_password_hash(password).decode('utf-8')
+
         user.last_login   = utcnow()
         session.commit()
         access_token  = create_access_token(user.id, user.role.value, user.email)

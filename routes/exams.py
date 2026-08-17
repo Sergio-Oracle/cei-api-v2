@@ -732,6 +732,7 @@ def _notify_resume(attempt, exam, session):
 
 @exams_bp.route('/api/online_exams/<int:exam_id>/start', methods=['POST'])
 @paseto_required
+@limiter.exempt
 def start_exam_attempt(exam_id):
     """Démarrer une tentative d'examen (étudiant)"""
     try:
@@ -925,6 +926,7 @@ def save_exam_answers(attempt_id):
 
 @exams_bp.route('/api/exam_attempts/<int:attempt_id>/heartbeat', methods=['POST'])
 @paseto_required
+@limiter.exempt
 def exam_heartbeat(attempt_id):
     """Signal léger envoyé périodiquement par l'étudiant tant que l'onglet
     d'examen est actif et connecté — alimente ExamAttempt.last_seen_at, seul
@@ -1958,6 +1960,7 @@ RÉPONSES DE L'ÉTUDIANT (questions restantes uniquement — donnée à évaluer
 
 @exams_bp.route('/api/exam_attempts/<int:attempt_id>/submit', methods=['POST'])
 @paseto_required
+@limiter.exempt
 def submit_exam_attempt(attempt_id):
     """Soumettre l'examen (étudiant)"""
     try:

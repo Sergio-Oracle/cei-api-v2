@@ -736,6 +736,7 @@ def get_active_proctoring(exam_id):
 
 @proctoring_bp.route('/api/exam_attempts/<int:attempt_id>/pending_messages', methods=['GET'])
 @paseto_required
+@limiter.exempt
 def get_pending_messages(attempt_id):
     """Récupérer les messages/avertissements prof non encore lus (polling étudiant)"""
     user_id = get_current_user_id()
@@ -827,6 +828,7 @@ def send_student_message(attempt_id):
 
 @proctoring_bp.route('/api/online_exams/<int:exam_id>/student_messages', methods=['GET'])
 @paseto_required
+@limiter.exempt
 def get_student_messages(exam_id):
     """Enseignant/surveillant récupère les messages étudiants — filtrés par groupe si surveillant"""
     user_id = get_current_user_id()
@@ -1374,6 +1376,7 @@ def _check_disconnected_proctors(exam_id, session):
 
 @proctoring_bp.route('/api/online_exams/<int:exam_id>/proctor_heartbeat', methods=['POST'])
 @paseto_required
+@limiter.exempt
 def proctor_heartbeat(exam_id):
     """Appelé périodiquement (ex. toutes les 30s) par la page de monitoring
     d'un surveillant tant qu'elle reste ouverte. Sert aussi de déclencheur
@@ -2969,6 +2972,7 @@ def agent_push_alert():
 
 @proctoring_bp.route('/api/agent/alerts', methods=['GET'])
 @paseto_required
+@limiter.exempt
 def agent_get_alerts():
     """Dashboard : récupère les alertes non lues (prof / surveillant)."""
     role = get_current_user_role()
@@ -3115,6 +3119,7 @@ def agent_exam_proctoring(exam_id):
 
 @proctoring_bp.route('/api/agent/status', methods=['GET'])
 @paseto_required
+@limiter.exempt
 def agent_status():
     """
     Statut de l'agent autonome de surveillance.

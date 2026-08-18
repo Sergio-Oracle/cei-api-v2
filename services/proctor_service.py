@@ -9,6 +9,7 @@ Remplace la gestion manuelle par examen (ex-modal « Gestion de la
 Surveillance ») — un « renfort » s'ajoute désormais au groupe permanent, pas
 à un examen isolé, et se propage à tous ses examens.
 """
+from sqlalchemy.exc import IntegrityError
 from models import (
     EC, Subject, OnlineExam, ExamStatus, ExamProctor, ProctorAssignment,
     ProctorGroupEC, ProctorGroupMember, StudentUEEnrollment, User, UserRole,
@@ -134,9 +135,22 @@ def assign_single_attempt(session, exam_id, student_id, attempt_id):
             counts[pa.proctor_id] += 1
 
     min_pid = min(counts, key=counts.get)
-    session.add(ProctorAssignment(
-        exam_id=exam_id, proctor_id=min_pid, student_id=student_id, attempt_id=attempt_id,
-    ))
+    # Le "already" verifie plus haut n'est pas atomique avec cette insertion :
+    # sous forte concurrence (deux requetes /start quasi simultanees pour le
+    # meme etudiant — double-clic reel, ou double-tentative apres coupure
+    # reseau), les deux peuvent passer la verification avant que l'une des
+    # deux ne committe. Sans filet, la seconde fait echouer TOUTE la
+    # transaction (y compris la creation de la tentative elle-meme) avec un
+    # 500 — vecu en test de charge (contrainte unique_exam_student_proctor).
+    # Un SAVEPOINT isole cette insertion : si elle echoue, seule elle est
+    # annulee, la tentative deja creee par l'appelant reste valide.
+    try:
+        with session.begin_nested():
+            session.add(ProctorAssignment(
+                exam_id=exam_id, proctor_id=min_pid, student_id=student_id, attempt_id=attempt_id,
+            ))
+    except IntegrityError:
+        pass
 
 
 def backfill_unassigned_attempts(session, exam_id=None):

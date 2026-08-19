@@ -2026,6 +2026,7 @@ POST_SUBMIT_LOCK_MINUTES = 15
 
 @exams_bp.route('/api/student/post_submit_lock', methods=['GET'])
 @paseto_required
+@limiter.exempt
 def get_post_submit_lock():
     user_id = get_current_user_id()
     if get_current_user_role() != 'student':

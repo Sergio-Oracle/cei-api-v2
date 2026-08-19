@@ -5,7 +5,7 @@ Scan exhaustif — couvre tous les blueprints : app.py, proctoring_routes.py,
 csv_import_routes.py, export_route.py, routes/{auth,exams,professor,admin_users,
 formations,superviseur,subjects,question_bank,papers,reclamations,transcripts,
 statistics,notifications}.py
-210 endpoints documentés dans la spec OpenAPI 3.0 (ce nombre n'est PAS calculé
+226 endpoints documentés dans la spec OpenAPI 3.0 (ce nombre n'est PAS calculé
 automatiquement — le mettre à jour ici et dans les deux badges HTML plus bas
 à chaque route ajoutée/retirée dans OPENAPI_SPEC["paths"]. Vérifiable avec :
 sum(len([k for k in v if k in ('get','post','put','delete','patch')]) for v in OPENAPI_SPEC['paths'].values()))
@@ -298,6 +298,26 @@ _SCHEMAS = {
             "ia_proposed_status": {"type": "string"},
             "ia_proposed_score":  {"type": "number"},
             "created_at": {"type": "string", "format": "date-time"}
+        }
+    },
+    "RestitutionExample": {
+        "type": "object",
+        "properties": {
+            "id":                  {"type": "integer"},
+            "paper_id":            {"type": "integer", "nullable": True},
+            "attempt_id":          {"type": "integer", "nullable": True},
+            "subject_id":          {"type": "integer", "nullable": True},
+            "subject_title":       {"type": "string", "nullable": True},
+            "label":               {"type": "string", "enum": ["best", "improve"]},
+            "anonymized_content":  {"type": "string"},
+            "anonymized_feedback": {"type": "string", "nullable": True},
+            "score":               {"type": "number", "nullable": True},
+            "max_score":           {"type": "number"},
+            "is_published":        {"type": "boolean"},
+            "created_by_id":       {"type": "integer"},
+            "creator_name":        {"type": "string", "nullable": True},
+            "created_at":          {"type": "string", "format": "date-time", "nullable": True},
+            "published_at":        {"type": "string", "format": "date-time", "nullable": True}
         }
     },
     "GradeTranscript": {
@@ -1502,6 +1522,27 @@ OPENAPI_SPEC = {
                 "404": {"$ref": "#/components/responses/NotFound"}
             }
         }},
+        "/api/papers/{paper_id}/publish": {"put": {
+            "tags": ["Copies"],
+            "summary": "Publier / dépublier la note d'une copie à l'étudiant",
+            "description": "Tant que non publiée, le prof/admin voit toujours la note (correction/gestion) mais l'étudiant reçoit score=null (symétrie avec OnlineExam.results_published).",
+            "parameters": [{"name": "paper_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+            "requestBody": {"content": {"application/json": {"schema": {
+                "type": "object", "properties": {"published": {"type": "boolean", "default": True}}
+            }}}},
+            "responses": {"200": {"description": "Statut de publication mis à jour"}, "404": {"$ref": "#/components/responses/NotFound"}}
+        }},
+        "/api/papers/publish-bulk": {"put": {
+            "tags": ["Copies"],
+            "summary": "Publier plusieurs copies d'un coup (après correction en lot)",
+            "requestBody": {"required": True, "content": {"application/json": {"schema": {
+                "type": "object", "required": ["paper_ids"],
+                "properties": {"paper_ids": {"type": "array", "items": {"type": "integer"}}}
+            }}}},
+            "responses": {"200": {"description": "Copies publiées", "content": {"application/json": {"schema": {
+                "type": "object", "properties": {"success": {"type": "boolean"}, "published_count": {"type": "integer"}}
+            }}}}}
+        }},
         "/api/statistics/{subject_id}": {"get": {
             "tags": ["Copies"], "summary": "Statistiques d'un sujet (moyenne, médiane, distribution)",
             "parameters": [{"name": "subject_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
@@ -2116,6 +2157,29 @@ OPENAPI_SPEC = {
                 }}}}
             }}}}, "403": {"description": "Réservé aux superviseurs"}}
         }},
+        "/api/superviseur/proctor_call/{proctor_id}/token": {"get": {
+            "tags": ["Superviseur"],
+            "summary": "Token LiveKit pour l'appel privé superviseur ↔ surveillant",
+            "description": "Autorisé pour le superviseur qui supervise réellement ce surveillant, et pour le surveillant lui-même (pour répondre).",
+            "parameters": [{"name": "proctor_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+            "responses": {
+                "200": {"description": "Token LiveKit", "content": {"application/json": {"schema": {
+                    "type": "object", "properties": {
+                        "token": {"type": "string"}, "ws_url": {"type": "string"},
+                        "room": {"type": "string"}, "identity": {"type": "string"}
+                    }
+                }}}},
+                "403": {"description": "Ne supervise pas ce surveillant"},
+                "503": {"description": "LiveKit non configuré"}
+            }
+        }},
+        "/api/superviseur/proctor_call/{proctor_id}/request": {"post": {
+            "tags": ["Superviseur"],
+            "summary": "Demander un appel à un surveillant supervisé",
+            "description": "Notifie le surveillant en temps réel où qu'il se trouve dans l'application, même mécanisme que la demande d'appel étudiant → surveillant.",
+            "parameters": [{"name": "proctor_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+            "responses": {"200": {"description": "Demande envoyée"}, "403": {"description": "Ne supervise pas ce surveillant"}}
+        }},
         "/api/exam_attempts/{attempt_id}/recording": {"post": {
             "tags": ["Proctoring"],
             "summary": "Démarrer ou arrêter l'enregistrement vidéo individuel (LiveKit → MinIO)",
@@ -2662,21 +2726,29 @@ OPENAPI_SPEC = {
                 }
             }
         },
-        "/api/reclamations/{rid}": {"put": {
-            "tags": ["Réclamations"],
-            "summary": "Répondre manuellement à une réclamation (prof/admin)",
-            "description": "Le professeur peut accepter (avec ou sans modification de note) ou rejeter la réclamation.",
-            "parameters": [{"name": "rid", "in": "path", "required": True, "schema": {"type": "integer"}}],
-            "requestBody": {"required": True, "content": {"application/json": {"schema": {
-                "type": "object", "required": ["status"],
-                "properties": {
-                    "status":    {"type": "string", "enum": ["resolved","rejected"]},
-                    "response":  {"type": "string", "description": "Explication de la décision"},
-                    "new_score": {"type": "number", "description": "Nouvelle note si acceptée (optionnel)"}
-                }
-            }}}},
-            "responses": {"200": {"description": "Réclamation traitée"}}
-        }},
+        "/api/reclamations/{rid}": {
+            "put": {
+                "tags": ["Réclamations"],
+                "summary": "Répondre manuellement à une réclamation (prof/admin)",
+                "description": "Le professeur peut accepter (avec ou sans modification de note) ou rejeter la réclamation.",
+                "parameters": [{"name": "rid", "in": "path", "required": True, "schema": {"type": "integer"}}],
+                "requestBody": {"required": True, "content": {"application/json": {"schema": {
+                    "type": "object", "required": ["status"],
+                    "properties": {
+                        "status":    {"type": "string", "enum": ["resolved","rejected"]},
+                        "response":  {"type": "string", "description": "Explication de la décision"},
+                        "new_score": {"type": "number", "description": "Nouvelle note si acceptée (optionnel)"}
+                    }
+                }}}},
+                "responses": {"200": {"description": "Réclamation traitée"}}
+            },
+            "delete": {
+                "tags": ["Réclamations"],
+                "summary": "Supprimer une réclamation (prof/admin)",
+                "parameters": [{"name": "rid", "in": "path", "required": True, "schema": {"type": "integer"}}],
+                "responses": {"200": {"description": "Réclamation supprimée"}, "404": {"description": "Réclamation non trouvée"}}
+            }
+        },
         "/api/reclamations/{rid}/process_ia": {"post": {
             "tags": ["Réclamations"],
             "summary": "Traiter une réclamation par IA",
@@ -2708,6 +2780,77 @@ OPENAPI_SPEC = {
                 "properties": {"response": {"type": "string", "default": "Proposition IA rejetée par le professeur"}}
             }}}},
             "responses": {"200": {"description": "Proposition rejetée"}}
+        }},
+        "/api/reclamations/bulk_delete": {"post": {
+            "tags": ["Réclamations"],
+            "summary": "Supprimer plusieurs réclamations en un appel (prof/admin)",
+            "description": "Utilisé notamment pour nettoyer les réclamations orphelines (copie/tentative d'origine supprimée).",
+            "requestBody": {"required": True, "content": {"application/json": {"schema": {
+                "type": "object", "required": ["reclamation_ids"],
+                "properties": {"reclamation_ids": {"type": "array", "items": {"type": "integer"}}}
+            }}}},
+            "responses": {"200": {"description": "Réclamations supprimées"}, "400": {"description": "Aucune réclamation sélectionnée"}}
+        }},
+
+        # ══════════════════════════════════════════════════════════════════════
+        # RESTITUTION — copies-exemples anonymisées (séances de restitution)
+        # ══════════════════════════════════════════════════════════════════════
+
+        "/api/restitution_examples": {
+            "get": {
+                "tags": ["Restitution"], "summary": "Liste des copies-exemples (filtrée par rôle)",
+                "description": "Étudiant : uniquement les exemples publiés. Professeur : les siens. Admin : tous.",
+                "parameters": [{"name": "subject_id", "in": "query", "required": False, "schema": {"type": "integer"}}],
+                "responses": {"200": {"description": "Exemples", "content": {"application/json": {"schema": {
+                    "type": "array", "items": {"$ref": "#/components/schemas/RestitutionExample"}
+                }}}}}
+            },
+            "post": {
+                "tags": ["Restitution"], "summary": "Créer un exemple (anonymisation IA d'une copie déjà corrigée)",
+                "description": "Anonymise via IA le contenu d'une StudentPaper ou d'une ExamAttempt déjà notée (paper_id XOR attempt_id), en brouillon non publié.",
+                "requestBody": {"required": True, "content": {"application/json": {"schema": {
+                    "type": "object", "required": ["label"],
+                    "properties": {
+                        "paper_id":   {"type": "integer", "description": "Copie corrigée d'où extraire le contenu (paper_id ou attempt_id requis)"},
+                        "attempt_id": {"type": "integer", "description": "Tentative d'examen en ligne notée (alternative à paper_id)"},
+                        "label":      {"type": "string", "enum": ["best", "improve"]}
+                    }
+                }}}},
+                "responses": {
+                    "201": {"description": "Exemple créé (brouillon)"},
+                    "400": {"description": "Copie non encore corrigée, ou paper_id/attempt_id manquant"}
+                }
+            }
+        },
+        "/api/restitution_examples/{eid}": {
+            "put": {
+                "tags": ["Restitution"], "summary": "Éditer le texte anonymisé (avant publication)",
+                "parameters": [{"name": "eid", "in": "path", "required": True, "schema": {"type": "integer"}}],
+                "requestBody": {"content": {"application/json": {"schema": {
+                    "type": "object",
+                    "properties": {
+                        "anonymized_content":  {"type": "string"},
+                        "anonymized_feedback": {"type": "string"},
+                        "label":               {"type": "string", "enum": ["best", "improve"]}
+                    }
+                }}}},
+                "responses": {"200": {"description": "Exemple mis à jour"}, "400": {"description": "Contenu anonymisé vide"}}
+            },
+            "delete": {
+                "tags": ["Restitution"], "summary": "Supprimer un exemple",
+                "parameters": [{"name": "eid", "in": "path", "required": True, "schema": {"type": "integer"}}],
+                "responses": {"200": {"description": "Exemple supprimé"}, "404": {"description": "Exemple non trouvé"}}
+            }
+        },
+        "/api/restitution_examples/{eid}/publish": {"put": {
+            "tags": ["Restitution"],
+            "summary": "Publier / dépublier un exemple au groupe",
+            "description": "Rien n'est visible aux étudiants tant que l'enseignant n'a pas explicitement validé le texte anonymisé (même logique que StudentPaper.is_published).",
+            "parameters": [{"name": "eid", "in": "path", "required": True, "schema": {"type": "integer"}}],
+            "requestBody": {"content": {"application/json": {"schema": {
+                "type": "object", "properties": {"published": {"type": "boolean", "default": True}}
+            }}}},
+            "responses": {"200": {"description": "Statut de publication mis à jour"}}
         }},
 
         # ══════════════════════════════════════════════════════════════════════
@@ -2823,6 +2966,19 @@ OPENAPI_SPEC = {
                         "results_published": {"type": "boolean"},
                         "pending_publication": {"type": "boolean", "description": "true si corrigé mais pas encore publié"}
                     }
+                }
+            }}}}}
+        }},
+        "/api/student/post_submit_lock": {"get": {
+            "tags": ["Tableaux de bord"],
+            "summary": "Verrou anti-retour rapide après soumission d'un examen",
+            "description": "Empêche de rouvrir l'examen quelques minutes après l'avoir soumis (ex. pour retenter avec un autre appareil) — le verrou expire au plus tard à la fin réelle de l'examen, s'il survient avant les 15 minutes.",
+            "responses": {"200": {"description": "État du verrou", "content": {"application/json": {"schema": {
+                "type": "object",
+                "properties": {
+                    "locked":     {"type": "boolean"},
+                    "unlock_at":  {"type": "string", "format": "date-time", "nullable": True},
+                    "exam_title": {"type": "string", "nullable": True}
                 }
             }}}}}
         }},
@@ -4191,7 +4347,7 @@ _SWAGGER_HTML = """<!DOCTYPE html>
     <div class="cei-header-meta">
       <span class="cei-badge cei-badge-version">v2.1</span>
       <span class="cei-badge cei-badge-oas">OpenAPI 3.0</span>
-      <span class="cei-badge cei-badge-count">210 endpoints</span>
+      <span class="cei-badge cei-badge-count">226 endpoints</span>
     </div>
     <nav class="cei-header-nav">
       <a class="cei-nav-link active" href="/api/docs">Swagger UI</a>
@@ -4314,7 +4470,7 @@ _REDOC_HTML = """<!DOCTYPE html>
     <div class="cei-meta">
       <span class="cei-badge b-v">v2.1</span>
       <span class="cei-badge b-o">OpenAPI 3.0</span>
-      <span class="cei-badge b-e">210 endpoints</span>
+      <span class="cei-badge b-e">226 endpoints</span>
     </div>
     <nav class="cei-nav">
       <a class="n-link" href="/api/docs">Swagger UI</a>

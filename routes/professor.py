@@ -83,6 +83,7 @@ def professor_dashboard():
 
 @professor_bp.route('/api/student/online_results', methods=['GET'])
 @paseto_required
+@limiter.exempt
 def get_student_online_results():
     try:
         user_id = get_current_user_id()
@@ -136,6 +137,7 @@ def get_student_online_results():
 
 @professor_bp.route('/api/student/papers', methods=['GET'])
 @paseto_required
+@limiter.exempt
 def get_student_papers():
     try:
         user_id = get_current_user_id()

@@ -5,10 +5,9 @@ Scan exhaustif — couvre tous les blueprints : app.py, proctoring_routes.py,
 csv_import_routes.py, export_route.py, routes/{auth,exams,professor,admin_users,
 formations,superviseur,subjects,question_bank,papers,reclamations,transcripts,
 statistics,notifications}.py
-226 endpoints documentés dans la spec OpenAPI 3.0 (ce nombre n'est PAS calculé
-automatiquement — le mettre à jour ici et dans les deux badges HTML plus bas
-à chaque route ajoutée/retirée dans OPENAPI_SPEC["paths"]. Vérifiable avec :
-sum(len([k for k in v if k in ('get','post','put','delete','patch')]) for v in OPENAPI_SPEC['paths'].values()))
+Le nombre d'endpoints documentés (badges Swagger UI / ReDoc) est calculé
+automatiquement depuis OPENAPI_SPEC["paths"] — voir _ENDPOINT_COUNT plus bas.
+Rien à mettre à jour à la main quand une route est ajoutée/retirée.
 """
 import os
 import base64
@@ -3900,6 +3899,13 @@ def _enrich_spec(spec):
 
 OPENAPI_SPEC = _enrich_spec(OPENAPI_SPEC)
 
+# Calculé depuis OPENAPI_SPEC lui-même (jamais à mettre à jour à la main) --
+# affiché dans les badges Swagger UI / ReDoc ci-dessous via {ENDPOINT_COUNT}.
+_ENDPOINT_COUNT = sum(
+    len([k for k in methods if k in ('get', 'post', 'put', 'delete', 'patch')])
+    for methods in OPENAPI_SPEC['paths'].values()
+)
+
 # ─────────────────────────────────────────────────────────────────────────────
 # HTML Swagger UI & ReDoc
 # ─────────────────────────────────────────────────────────────────────────────
@@ -4347,7 +4353,7 @@ _SWAGGER_HTML = """<!DOCTYPE html>
     <div class="cei-header-meta">
       <span class="cei-badge cei-badge-version">v2.1</span>
       <span class="cei-badge cei-badge-oas">OpenAPI 3.0</span>
-      <span class="cei-badge cei-badge-count">226 endpoints</span>
+      <span class="cei-badge cei-badge-count">{ENDPOINT_COUNT} endpoints</span>
     </div>
     <nav class="cei-header-nav">
       <a class="cei-nav-link active" href="/api/docs">Swagger UI</a>
@@ -4470,7 +4476,7 @@ _REDOC_HTML = """<!DOCTYPE html>
     <div class="cei-meta">
       <span class="cei-badge b-v">v2.1</span>
       <span class="cei-badge b-o">OpenAPI 3.0</span>
-      <span class="cei-badge b-e">226 endpoints</span>
+      <span class="cei-badge b-e">{ENDPOINT_COUNT} endpoints</span>
     </div>
     <nav class="cei-nav">
       <a class="n-link" href="/api/docs">Swagger UI</a>
@@ -4582,6 +4588,11 @@ _REDOC_HTML = """<!DOCTYPE html>
 <script src="https://cdn.jsdelivr.net/npm/redoc@latest/bundles/redoc.standalone.js"></script>
 </body>
 </html>"""
+
+# Injecte le compte reel (voir _ENDPOINT_COUNT) dans les deux pages -- seul
+# point a toucher si un jour le format des badges change, jamais le chiffre.
+_SWAGGER_HTML = _SWAGGER_HTML.replace('{ENDPOINT_COUNT}', str(_ENDPOINT_COUNT))
+_REDOC_HTML = _REDOC_HTML.replace('{ENDPOINT_COUNT}', str(_ENDPOINT_COUNT))
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Routes Flask

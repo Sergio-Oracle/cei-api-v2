@@ -68,6 +68,19 @@ def cache_set(key: str, value: Any, ttl: int = _DEFAULT_TTL) -> None:
         pass
 
 
+def cache_set_nx(key: str, ttl: int) -> bool:
+    """Pose un verrou atomique : True si CE call vient de le poser (à agir),
+    False s'il existait déjà (un autre appelant l'a déjà pris) ou si Redis est
+    indisponible (par prudence, on n'agit pas sans verrou fiable)."""
+    client = _get_client()
+    if client is None:
+        return False
+    try:
+        return bool(client.set(key, '1', nx=True, ex=ttl))
+    except Exception:
+        return False
+
+
 def cache_delete(key: str) -> None:
     client = _get_client()
     if client is None:

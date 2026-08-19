@@ -18,6 +18,7 @@ from botocore.config import Config
 
 from sqlalchemy import update as _sa_update
 from sqlalchemy.orm import joinedload
+from sqlalchemy.exc import IntegrityError
 from models import (
     get_session, ExamAttempt, OnlineExam, ExamActivityLog, User,
     AttemptStatus, UserRole, ExamStatus, CameraLog,
@@ -25,7 +26,7 @@ from models import (
     ECAssignment, ProctorGroup, ProctorGroupEC, ProctorGroupMember,
     ExamAccessCode, ProctorGroupSupervisor,
 )
-from cache import cache_get, cache_set
+from cache import cache_get, cache_set, cache_set_nx
 
 proctoring_bp = Blueprint('proctoring', __name__)
 
@@ -1346,7 +1347,17 @@ def _redistribute_attempts_excluding(exam_id, session, exclude_proctor_ids):
     for i, attempt in enumerate(attempts):
         pid = active_ids[i % len(active_ids)]
         session.add(ProctorAssignment(exam_id=exam_id, proctor_id=pid, student_id=attempt.student_id, attempt_id=attempt.id))
-    session.commit()
+    # Défense en profondeur : le verrou NX dans _check_disconnected_proctors
+    # empêche déjà les redistributions concurrentes pour le MÊME surveillant
+    # déconnecté, mais deux surveillants DIFFÉRENTS détectés déconnectés en
+    # même temps déclencheraient encore deux redistributions simultanées sur
+    # le même examen. Isole ce commit pour dégrader proprement (la
+    # redistribution est réessayée au prochain heartbeat) plutôt qu'un 500.
+    try:
+        session.commit()
+    except IntegrityError:
+        session.rollback()
+        return False
     return True
 
 
@@ -1360,8 +1371,16 @@ def _check_disconnected_proctors(exam_id, session):
         seen_key     = f'cei:proctor_seen:{exam_id}:{p.proctor_id}'
         live_key     = f'cei:proctor_live:{exam_id}:{p.proctor_id}'
         cooldown_key = f'cei:proctor_redistributed:{exam_id}:{p.proctor_id}'
-        if cache_get(seen_key) and not cache_get(live_key) and not cache_get(cooldown_key):
-            cache_set(cooldown_key, '1', ttl=REDISTRIBUTE_COOLDOWN)
+        # Verrou atomique (SET NX) : sous charge, plusieurs heartbeats de
+        # surveillants différents arrivent quasi simultanément et détectent
+        # tous le même collègue déconnecté. Un simple get-puis-set laissait
+        # passer plusieurs redistributions concurrentes sur les mêmes lignes
+        # ProctorAssignment, qui se percutaient sur la contrainte unique
+        # (unique_exam_student_proctor) — vécu en test de charge : 500 sur
+        # /proctor_heartbeat corrélés seconde pour seconde avec ces violations
+        # dans les logs Postgres. Seul le premier appelant qui pose le verrou
+        # agit ; les autres le trouvent déjà pris et passent leur tour.
+        if cache_get(seen_key) and not cache_get(live_key) and cache_set_nx(cooldown_key, REDISTRIBUTE_COOLDOWN):
             redistributed = _redistribute_attempts_excluding(exam_id, session, {p.proctor_id})
             if redistributed:
                 notifications.append({

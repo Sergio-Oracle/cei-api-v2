@@ -183,6 +183,58 @@ def upload_snapshot(exam_id: int, attempt_id: int, image_b64: str) -> Optional[s
         return _save_snapshot_locally(exam_id, attempt_id, raw, ts)
 
 
+def _save_biometric_locally(user_id: int, raw: bytes, ts: str) -> Optional[str]:
+    """Repli disque pour une photo d'inscription biométrique, même logique que
+    _save_snapshot_locally mais scopée par utilisateur (pas d'exam/attempt à
+    ce stade — l'inscription se fait hors contexte d'examen)."""
+    try:
+        rel_dir = os.path.join('biometric_fallback', str(user_id))
+        abs_dir = os.path.join(_UPLOAD_FOLDER, rel_dir)
+        Path(abs_dir).mkdir(parents=True, exist_ok=True)
+        filename = f'{ts}.jpg'
+        with open(os.path.join(abs_dir, filename), 'wb') as f:
+            f.write(raw)
+        return f'{_LOCAL_PREFIX}{rel_dir}/{filename}'
+    except Exception as exc:
+        _log.error('local biometric fallback write failed user=%s: %s', user_id, exc)
+        return None
+
+
+def upload_biometric_photo(user_id: int, image_b64: str) -> Optional[str]:
+    """
+    Photo de référence d'inscription biométrique (reconnaissance faciale).
+    Même mécanisme que upload_snapshot (décodage, upload MinIO, repli disque
+    local si MinIO est injoignable) mais scopée par utilisateur — clé au
+    format biometric/{user_id}/{ts}.jpg.
+    """
+    if not _KEY_ID or not image_b64:
+        return None
+    try:
+        if ',' in image_b64:
+            image_b64 = image_b64.split(',', 1)[1]
+        raw = base64.b64decode(image_b64)
+    except Exception as exc:
+        _log.warning('biometric photo decode failed user=%s: %s', user_id, exc)
+        return None
+
+    ts  = datetime.utcnow().strftime('%Y%m%dT%H%M%S')
+    key = f'biometric/{user_id}/{ts}.jpg'
+
+    try:
+        _client().put_object(
+            Bucket=_SNAP_BUCKET,
+            Key=key,
+            Body=raw,
+            ContentType='image/jpeg',
+        )
+        _alert_admins_s3_recovered()
+        return key
+    except Exception as exc:
+        _log.warning('S3 biometric upload failed key=%s: %s — fallback disque local', key, exc)
+        _alert_admins_s3_down(exc)
+        return _save_biometric_locally(user_id, raw, ts)
+
+
 _SUBJECT_MEDIA_EXTS = {
     'image': {'jpg', 'jpeg', 'png', 'webp', 'gif'},
     'audio': {'mp3', 'wav', 'ogg', 'm4a'},

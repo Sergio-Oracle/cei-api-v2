@@ -867,6 +867,68 @@ class ExamAccessCode(Base):
         }
 
 
+class BiometricMethod(enum.Enum):
+    FACE     = "face"
+    WEBAUTHN = "webauthn"
+
+
+class BiometricEnrollment(Base):
+    """Facteur biométrique enregistré par un utilisateur (un seul actif à la
+    fois — le méthode choisie détermine ce qui est vérifié à l'accès examen).
+    Ré-inscription en libre-service : UPSERT de cette même ligne, pas de
+    validation admin requise."""
+    __tablename__ = 'biometric_enrollments'
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=False, unique=True, index=True)
+    method = Column(SQLEnum(BiometricMethod), nullable=False)
+    face_descriptor = Column(Text, nullable=True)       # JSON: liste de 128 floats (face-api.js), NULL si webauthn
+    photo_s3_key = Column(String(255), nullable=True)   # photo de référence, NULL si webauthn
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    user = relationship('User', foreign_keys=[user_id])
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'user_id': self.user_id,
+            'method': self.method.value,
+            'has_photo': bool(self.photo_s3_key),
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'updated_at': self.updated_at.isoformat() if self.updated_at else None,
+        }
+
+
+class WebauthnCredential(Base):
+    """Un appareil (authenticator plateforme) enregistré pour l'authentification
+    biométrique WebAuthn. Un utilisateur peut en avoir plusieurs (téléphone,
+    ordinateur...) même si method bascule ensuite sur FACE — les identifiants
+    restent en base, juste dormants."""
+    __tablename__ = 'webauthn_credentials'
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey('users.id'), nullable=False, index=True)
+    credential_id = Column(String(255), nullable=False, unique=True)
+    public_key = Column(Text, nullable=False)            # clé publique COSE, encodée base64url
+    sign_count = Column(Integer, default=0)
+    device_label = Column(String(100), nullable=True)
+    transports = Column(String(100), nullable=True)      # JSON: ex. ["internal"]
+    created_at = Column(DateTime, default=datetime.utcnow)
+    last_used_at = Column(DateTime, nullable=True)
+
+    user = relationship('User', foreign_keys=[user_id])
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'credential_id': self.credential_id,
+            'device_label': self.device_label,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'last_used_at': self.last_used_at.isoformat() if self.last_used_at else None,
+        }
+
+
 class ExamActivityLog(Base):
     """Log d'activité pendant l'examen (surveillance)"""
     __tablename__ = 'exam_activity_logs'

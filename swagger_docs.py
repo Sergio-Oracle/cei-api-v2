@@ -437,6 +437,7 @@ OPENAPI_SPEC = {
         {"name": "Relevés de notes",         "description": "Génération et téléchargement des relevés PDF"},
         {"name": "Tableaux de bord",         "description": "Dashboards professeur et étudiant"},
         {"name": "Système",                  "description": "Endpoints d'infrastructure (health check pour load balancer / monitoring)"},
+        {"name": "Biométrie",                "description": "Inscription et vérification d'un facteur biométrique (reconnaissance faciale ou WebAuthn) exigé à chaque accès à un examen"},
     ],
     "components": {
         "securitySchemes": {
@@ -3698,6 +3699,112 @@ OPENAPI_SPEC = {
             "tags": ["Relevés de notes"], "summary": "Publier un relevé (le rendre visible à l'étudiant)",
             "parameters": [{"name": "tid", "in": "path", "required": True, "schema": {"type": "integer"}}],
             "responses": {"200": {"description": "Relevé publié"}}
+        }},
+
+        # ══════════════════════════════════════════════════════════════════════
+        # BIOMÉTRIE
+        # ══════════════════════════════════════════════════════════════════════
+
+        "/api/biometric/status": {"get": {
+            "tags": ["Biométrie"], "summary": "Statut d'inscription biométrique de l'utilisateur connecté",
+            "responses": {"200": {"description": "Statut", "content": {"application/json": {"schema": {
+                "type": "object",
+                "properties": {
+                    "enrolled": {"type": "boolean"},
+                    "method": {"type": "string", "enum": ["face", "webauthn"], "nullable": True},
+                    "photo_url": {"type": "string", "nullable": True},
+                    "webauthn_devices": {"type": "array", "items": {"type": "object"}}
+                }
+            }}}}}
+        }},
+        "/api/biometric/enroll/face": {"post": {
+            "tags": ["Biométrie"], "summary": "Inscrire (ou remplacer) sa reconnaissance faciale",
+            "description": "Le descripteur (128 floats face-api.js) est calculé côté client et envoyé au serveur, qui stocke aussi la photo de référence en S3 pour audit.",
+            "requestBody": {"required": True, "content": {"application/json": {"schema": {
+                "type": "object", "required": ["descriptor"],
+                "properties": {
+                    "descriptor": {"type": "array", "items": {"type": "number"}, "description": "128 floats face-api.js"},
+                    "image_data": {"type": "string", "description": "dataURL JPEG — photo de référence"}
+                }
+            }}}},
+            "responses": {"200": {"description": "Inscrit"}, "400": {"description": "Descripteur invalide"}}
+        }},
+        "/api/biometric/verify/face": {"post": {
+            "tags": ["Biométrie"], "summary": "Vérifier son identité par reconnaissance faciale",
+            "description": "Compare le descripteur envoyé à celui enregistré (distance euclidienne, seuil 0.55). En cas de correspondance, pose un flag Redis à usage unique (180s) consommé par POST /api/online_exams/{id}/start.",
+            "requestBody": {"required": True, "content": {"application/json": {"schema": {
+                "type": "object", "required": ["descriptor"],
+                "properties": {"descriptor": {"type": "array", "items": {"type": "number"}}}
+            }}}},
+            "responses": {
+                "200": {"description": "Résultat de la comparaison", "content": {"application/json": {"schema": {
+                    "type": "object", "properties": {"match": {"type": "boolean"}, "distance": {"type": "number"}}
+                }}}},
+                "404": {"description": "Aucune inscription faciale trouvée"}
+            }
+        }},
+        "/api/biometric/enroll/webauthn/options": {"post": {
+            "tags": ["Biométrie"], "summary": "Générer les options d'enregistrement WebAuthn",
+            "description": "authenticatorAttachment=platform + userVerification=required — n'accepte que le capteur biométrique de l'appareil (empreinte/Face ID), pas une clé de sécurité externe.",
+            "responses": {"200": {"description": "PublicKeyCredentialCreationOptions (JSON)"}}
+        }},
+        "/api/biometric/enroll/webauthn/verify": {"post": {
+            "tags": ["Biométrie"], "summary": "Finaliser l'enregistrement d'un appareil WebAuthn",
+            "requestBody": {"required": True, "content": {"application/json": {"schema": {
+                "type": "object", "required": ["credential"],
+                "properties": {
+                    "credential": {"type": "object", "description": "RegistrationResponseJSON du navigateur"},
+                    "device_label": {"type": "string"},
+                    "transports": {"type": "array", "items": {"type": "string"}}
+                }
+            }}}},
+            "responses": {"200": {"description": "Appareil enregistré"}, "400": {"description": "Vérification échouée ou session expirée"}}
+        }},
+        "/api/biometric/webauthn/{credential_id}": {"delete": {
+            "tags": ["Biométrie"], "summary": "Supprimer un appareil WebAuthn enregistré",
+            "parameters": [{"name": "credential_id", "in": "path", "required": True, "schema": {"type": "string"}}],
+            "responses": {
+                "200": {"description": "Supprimé"},
+                "400": {"description": "Dernier appareil actif — enregistrez d'abord une autre méthode"},
+                "404": {"description": "Appareil introuvable"}
+            }
+        }},
+        "/api/biometric/verify/webauthn/options": {"post": {
+            "tags": ["Biométrie"], "summary": "Générer les options d'authentification WebAuthn",
+            "responses": {"200": {"description": "PublicKeyCredentialRequestOptions (JSON)"}, "404": {"description": "Aucun appareil enregistré"}}
+        }},
+        "/api/biometric/verify/webauthn/verify": {"post": {
+            "tags": ["Biométrie"], "summary": "Vérifier son identité par WebAuthn",
+            "description": "Vérifie l'assertion et actualise le compteur anti-clonage (sign_count). En cas de succès, pose le même flag Redis que la vérification faciale.",
+            "requestBody": {"required": True, "content": {"application/json": {"schema": {
+                "type": "object", "required": ["credential"],
+                "properties": {"credential": {"type": "object", "description": "AuthenticationResponseJSON du navigateur"}}
+            }}}},
+            "responses": {"200": {"description": "Résultat"}, "404": {"description": "Appareil non reconnu"}}
+        }},
+        "/api/biometric/fallback/call_request": {"post": {
+            "tags": ["Biométrie"], "summary": "Demander un appel de vérification manuelle (repli après échecs répétés)",
+            "requestBody": {"required": True, "content": {"application/json": {"schema": {
+                "type": "object", "required": ["exam_id"], "properties": {"exam_id": {"type": "integer"}}
+            }}}},
+            "responses": {"200": {"description": "Surveillant(s)/superviseur/professeur notifiés"}}
+        }},
+        "/api/biometric/fallback/private_token": {"get": {
+            "tags": ["Biométrie"], "summary": "Token LiveKit pour la room d'appel de vérification biométrique",
+            "description": "Room dédiée biometric-{student_id}-{exam_id} (aucune tentative d'examen n'existe encore à ce stade).",
+            "parameters": [
+                {"name": "exam_id", "in": "query", "required": True, "schema": {"type": "integer"}},
+                {"name": "student_id", "in": "query", "required": False, "schema": {"type": "integer"}, "description": "Requis pour le staff ; déduit automatiquement pour l'étudiant"}
+            ],
+            "responses": {"200": {"description": "Token LiveKit"}, "503": {"description": "LiveKit non configuré"}}
+        }},
+        "/api/biometric/fallback/manual_verify": {"post": {
+            "tags": ["Biométrie"], "summary": "Valider manuellement l'identité d'un étudiant (staff, pendant l'appel)",
+            "requestBody": {"required": True, "content": {"application/json": {"schema": {
+                "type": "object", "required": ["exam_id", "student_id"],
+                "properties": {"exam_id": {"type": "integer"}, "student_id": {"type": "integer"}}
+            }}}},
+            "responses": {"200": {"description": "Identité validée — l'étudiant peut réessayer d'accéder à l'examen"}, "403": {"description": "Non habilité pour cet examen"}}
         }},
 
         # ══════════════════════════════════════════════════════════════════════

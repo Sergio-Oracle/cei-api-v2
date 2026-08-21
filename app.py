@@ -116,6 +116,7 @@ from routes.exams          import exams_bp;           app.register_blueprint(exa
 from routes.transcripts    import transcripts_bp;     app.register_blueprint(transcripts_bp)
 from routes.superviseur    import superviseur_bp;     app.register_blueprint(superviseur_bp)
 from routes.restitution    import restitution_bp;     app.register_blueprint(restitution_bp)
+from routes.biometric      import biometric_bp;       app.register_blueprint(biometric_bp)
 
 from export_route      import register_export_route
 from csv_import_routes import register_csv_routes

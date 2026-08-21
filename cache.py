@@ -81,6 +81,26 @@ def cache_set_nx(key: str, ttl: int) -> bool:
         return False
 
 
+_POP_SCRIPT = "local v = redis.call('GET', KEYS[1]); redis.call('DEL', KEYS[1]); return v"
+
+
+def cache_pop(key: str) -> Optional[Any]:
+    """Lit puis supprime la clé de façon atomique — évite une race entre
+    cache_get et cache_delete pour une preuve à usage unique (ex. flag de
+    vérification biométrique consommé par start_exam_attempt). Implémenté en
+    Lua (EVAL) plutôt qu'avec la commande GETDEL : ce projet tourne encore sur
+    Redis 6.0, GETDEL n'existe qu'à partir de 6.2 (confirmé — GETDEL échouait
+    silencieusement avec ResponseError, avalé par le except générique)."""
+    client = _get_client()
+    if client is None:
+        return None
+    try:
+        raw = client.eval(_POP_SCRIPT, 1, key)
+        return json.loads(raw) if raw else None
+    except Exception:
+        return None
+
+
 def cache_delete(key: str) -> None:
     client = _get_client()
     if client is None:

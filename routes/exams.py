@@ -23,7 +23,7 @@ from models      import (
     CameraLog, ExamStatus, AttemptStatus, ExamProctor, ProctorAssignment,
     QuestionBank, EC, ECAssignment, StudentUEEnrollment,
     SubjectMedia, IncidentDismissal, ExamAccessCode,
-    ProctorGroup, ProctorGroupEC,
+    ProctorGroup, ProctorGroupEC, BiometricEnrollment,
 )
 from werkzeug.utils import secure_filename
 from werkzeug.exceptions import RequestEntityTooLarge
@@ -773,7 +773,23 @@ def start_exam_attempt(exam_id):
         elif exam.status != ExamStatus.ACTIVE:
             session.close()
             return jsonify({'error': 'Examen non disponible actuellement'}), 400
-        
+
+        # Gate biométrique — précondition avant toute création/reprise de
+        # tentative, obligatoire pour tous les examens. La preuve (posée par
+        # /api/biometric/verify/face ou /verify/webauthn/verify, ou par le
+        # repli manuel /fallback/manual_verify) est consommée atomiquement ici
+        # (GETDEL) : à usage unique, jamais réutilisable pour un accès suivant.
+        from cache import cache_pop
+        bio_proof = cache_pop(f'cei:biometric:verify:{user_id}')
+        if not bio_proof:
+            enrolled = session.query(BiometricEnrollment).filter_by(user_id=user_id).first() is not None
+            session.close()
+            return jsonify({
+                'error': "Vérification biométrique requise avant d'accéder à l'examen.",
+                'biometric_required': True,
+                'enrolled': enrolled,
+            }), 403
+
         # Vérifier tentative existante
         existing = session.query(ExamAttempt).filter_by(
             exam_id=exam_id,

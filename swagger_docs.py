@@ -3406,6 +3406,23 @@ OPENAPI_SPEC = {
                 "400": {"description": "Étudiant déjà terminé ou examen clôturé"}
             }
         }},
+        "/api/exam_attempts/{attempt_id}/pause/start": {"post": {
+            "tags": ["Examens en ligne"], "summary": "Démarrer une pause self-service de 3 minutes (étudiant)",
+            "description": "Une seule pause autorisée par tentative. Crédite immédiatement +3 min à extra_minutes (échéance protégée dès le départ, y compris contre l'auto-clôture par end_time) et notifie le surveillant/superviseur/professeur (informatif, non bloquant).",
+            "parameters": [{"name": "attempt_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+            "responses": {
+                "200": {"description": "Pause démarrée", "content": {"application/json": {"schema": {
+                    "type": "object",
+                    "properties": {
+                        "success": {"type": "boolean"},
+                        "resume_at": {"type": "string", "format": "date-time", "description": "Horodatage UTC de fin de pause (3 min après le démarrage)"},
+                        "total_extra": {"type": "integer", "description": "Total de minutes supplémentaires après crédit de la pause"}
+                    }
+                }}}},
+                "400": {"description": "Pause déjà utilisée, tentative terminée, ou examen clôturé"},
+                "404": {"description": "Tentative introuvable"}
+            }
+        }},
         "/api/exam_attempts/{attempt_id}/proctor-note": {"post": {
             "tags": ["Surveillant"], "summary": "Ajouter une note de surveillance sur une tentative (surveillant\/prof)",
             "parameters": [{"name": "attempt_id", "in": "path", "required": True, "schema": {"type": "integer"}}],

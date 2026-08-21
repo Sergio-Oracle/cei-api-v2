@@ -5934,6 +5934,83 @@ def grant_extra_time(attempt_id):
         return jsonify({'error': str(e)}), 500
 
 
+@exams_bp.route('/api/exam_attempts/<int:attempt_id>/pause/start', methods=['POST'])
+@paseto_required
+def start_break(attempt_id):
+    """Pause self-service de 3 minutes (besoin physiologique) — une seule par
+    tentative. Crédite immédiatement extra_minutes (pas à la fin de la pause)
+    pour que l'échéance soit protégée dès le départ, y compris contre le job
+    d'auto-clôture (ligne ~111 plus haut) qui ne connaît que extra_minutes,
+    pas la notion de pause elle-même."""
+    BREAK_MINUTES = 3
+    try:
+        user_id = get_current_user_id()
+        role = get_current_user_role()
+        if role != 'student':
+            return jsonify({'error': 'Réservé aux étudiants'}), 403
+
+        session = get_session()
+        attempt = session.query(ExamAttempt).filter_by(id=attempt_id, student_id=user_id).first()
+        if not attempt:
+            session.close()
+            return jsonify({'error': 'Tentative introuvable'}), 404
+        if attempt.status != AttemptStatus.IN_PROGRESS:
+            session.close()
+            return jsonify({'error': "Cet examen n'est plus en cours"}), 400
+        exam = attempt.exam
+        if not exam or exam.status != ExamStatus.ACTIVE:
+            session.close()
+            return jsonify({'error': 'Examen non disponible actuellement'}), 400
+        if attempt.pause_used:
+            session.close()
+            return jsonify({'error': 'Vous avez déjà utilisé votre pause pour cet examen'}), 400
+
+        now = datetime.utcnow()
+        attempt.paused_at = now
+        attempt.pause_used = True
+        attempt.extra_minutes = (attempt.extra_minutes or 0) + BREAK_MINUTES
+
+        student_name = attempt.student.full_name if attempt.student else f'Étudiant #{user_id}'
+        recipient_ids, payload = _notify_resume(attempt, exam, session)
+        payload = {
+            'event': 'student_break',
+            'title': 'Pause étudiant',
+            'message': f"{student_name} a démarré une pause de {BREAK_MINUTES} min pendant « {exam.title} ».",
+            'priority': 'default',
+            'tags': ['clock3'],
+            'extra': {'exam_id': exam.id, 'attempt_id': attempt.id, 'student_name': student_name},
+        }
+
+        log = ExamActivityLog(
+            attempt_id=attempt_id,
+            event_type='pause_started',
+            event_data=json.dumps({'message': f'Pause self-service de {BREAK_MINUTES} min démarrée', 'minutes': BREAK_MINUTES})
+        )
+        session.add(log)
+
+        session.commit()
+        total_extra = attempt.extra_minutes
+        session.close()
+
+        try:
+            from notif_bus import notify_user
+            for rid in recipient_ids:
+                try:
+                    notify_user(rid, payload['event'], payload['title'], payload['message'],
+                                priority=payload['priority'], tags=payload['tags'], extra=payload['extra'])
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        resume_at = (now + timedelta(minutes=BREAK_MINUTES)).isoformat() + 'Z'
+        return jsonify({'success': True, 'resume_at': resume_at, 'total_extra': total_extra})
+    except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
+        return jsonify({'error': str(e)}), 500
+
+
 # ============================================================================
 # NOTES DE SURVEILLANT SUR UN ÉTUDIANT
 # ============================================================================

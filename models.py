@@ -764,6 +764,15 @@ class ExamAttempt(Base):
     # Temps supplémentaire accordé individuellement par le prof/surveillant
     extra_minutes = Column(Integer, default=0)
 
+    # Pause self-service (besoin physiologique) — une seule autorisée par
+    # tentative. paused_at est purement informatif (horodatage de la pause en
+    # cours/dernière pause) ; l'échéance réelle est déjà étendue via
+    # extra_minutes dès le démarrage de la pause (voir start_break), donc ce
+    # champ n'est PAS utilisé pour calculer un délai — juste pour l'audit et
+    # pour empêcher côté serveur une deuxième pause tant que pause_used=True.
+    paused_at = Column(DateTime, nullable=True)
+    pause_used = Column(Boolean, default=False)
+
     # Dernier heartbeat reçu de l'étudiant (onglet actif + connecté) — sert à
     # calculer un seuil "hors ligne" côté surveillance, distinct du comptage
     # de fraude (une coupure réseau reste explicitement non pénalisée, voir
@@ -823,6 +832,7 @@ class ExamAttempt(Base):
             'corrected_at': self.corrected_at.isoformat() if self.corrected_at else None,
             'corrector_name': self.corrector.full_name if self.corrector else None,
             'extra_minutes': self.extra_minutes or 0,
+            'pause_used': self.pause_used or False,
             'imported_grade': self.imported_grade or False,
         }
 

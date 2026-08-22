@@ -395,7 +395,7 @@ def biometric_call_request():
                         'Appel entrant — vérification d\'identité',
                         f"{student_name} n'a pas pu être reconnu automatiquement pour « {exam_title} » et demande une vérification manuelle.",
                         priority='urgent', tags=['phone'],
-                        extra={'exam_id': exam_id, 'student_id': user_id},
+                        extra={'exam_id': exam_id, 'student_id': user_id, 'student_name': student_name, 'exam_title': exam_title},
                     )
                 except Exception:
                     pass

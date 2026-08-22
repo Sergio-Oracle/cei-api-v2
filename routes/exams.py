@@ -777,10 +777,15 @@ def start_exam_attempt(exam_id):
         # Gate biométrique — précondition avant toute création/reprise de
         # tentative, obligatoire pour tous les examens. La preuve (posée par
         # /api/biometric/verify/face ou /verify/webauthn/verify, ou par le
-        # repli manuel /fallback/manual_verify) est consommée atomiquement ici
-        # (GETDEL) : à usage unique, jamais réutilisable pour un accès suivant.
-        from cache import cache_pop
-        bio_proof = cache_pop(f'cei:biometric:verify:{user_id}')
+        # repli manuel /fallback/manual_verify) est une simple LECTURE (pas
+        # GETDEL) : la première version consommait la preuve dès ce premier
+        # appel, y compris quand il n'aboutissait qu'à un code_required
+        # (échec) — l'étudiant devait alors se re-vérifier avant même de
+        # pouvoir soumettre son code de reprise, en boucle (retour utilisateur
+        # du 22/08). Le TTL de 180s suffit déjà à borner la fraîcheur de la
+        # preuve ; pas besoin d'un usage unique en plus.
+        from cache import cache_get
+        bio_proof = cache_get(f'cei:biometric:verify:{user_id}')
         if not bio_proof:
             enrolled = session.query(BiometricEnrollment).filter_by(user_id=user_id).first() is not None
             session.close()

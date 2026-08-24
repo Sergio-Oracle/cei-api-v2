@@ -200,8 +200,13 @@ def webauthn_enroll_options():
                 user_verification=UserVerificationRequirement.REQUIRED,
                 resident_key=ResidentKeyRequirement.PREFERRED,
             ),
+            # credential_id est stocké en HEX en base (voir .hex() dans
+            # webauthn_enroll_verify/le modèle WebauthnCredential) — décoder
+            # en base64url ici produisait des octets erronés, envoyés tels
+            # quels au navigateur/OS (bug corrigé le 22/08, voir aussi
+            # allow_credentials plus bas qui avait le même défaut).
             exclude_credentials=[
-                PublicKeyCredentialDescriptor(id=base64url_to_bytes(c.credential_id))
+                PublicKeyCredentialDescriptor(id=bytes.fromhex(c.credential_id))
                 for c in existing
             ],
         )
@@ -302,11 +307,18 @@ def webauthn_verify_options():
         if not creds:
             return jsonify({'error': 'Aucun appareil WebAuthn enregistré'}), 404
 
+        # Même correction que exclude_credentials ci-dessus : credential_id
+        # est stocké en HEX, pas en base64url. Avec base64url_to_bytes(), les
+        # IDs envoyés au navigateur ne correspondaient à AUCUN authenticator
+        # réel de l'appareil — Windows/Chrome ne pouvait alors pas proposer
+        # directement Windows Hello/Touch ID et retombait sur le sélecteur
+        # générique "clé d'accès depuis un téléphone / clé de sécurité"
+        # (retour utilisateur du 22/08 : capteur d'empreinte jamais proposé).
         options = generate_authentication_options(
             rp_id=rp_id,
             user_verification=UserVerificationRequirement.REQUIRED,
             allow_credentials=[
-                PublicKeyCredentialDescriptor(id=base64url_to_bytes(c.credential_id))
+                PublicKeyCredentialDescriptor(id=bytes.fromhex(c.credential_id))
                 for c in creds
             ],
         )

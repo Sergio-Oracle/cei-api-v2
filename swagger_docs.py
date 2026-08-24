@@ -462,13 +462,14 @@ OPENAPI_SPEC = {
 
         "/api/auth/login": {"post": {
             "tags": ["Authentification"], "summary": "Connexion — obtenir un token PASETO v4",
-            "description": "Retourne un **access token PASETO v4.public** (15 min, à stocker en mémoire) et pose un cookie httpOnly `cei_refresh` (7 jours) pour le rafraîchissement.",
+            "description": "Retourne un **access token PASETO v4.public** (15 min, à stocker en mémoire) et pose un cookie httpOnly `cei_refresh` (7 jours) pour le rafraîchissement. **Session unique (étudiants uniquement, 24/08)** : si le compte a déjà une session active sur un autre appareil, la connexion est refusée avec `409` — renvoyer `force: true` pour déconnecter l'autre appareil et se connecter quand même.",
             "security": [],
             "requestBody": {"required": True, "content": {"application/json": {"schema": {
                 "type": "object", "required": ["email","password"],
                 "properties": {
                     "email":    {"type": "string", "example": "serge@rtn.sn"},
-                    "password": {"type": "string", "example": "passer"}
+                    "password": {"type": "string", "example": "passer"},
+                    "force":    {"type": "boolean", "description": "Déconnecte l'autre appareil déjà connecté (étudiants) et procède à la connexion malgré le conflit de session."}
                 }
             }}}},
             "responses": {
@@ -481,7 +482,16 @@ OPENAPI_SPEC = {
                     }
                 }}}},
                 "401": {"description": "Identifiants incorrects"},
-                "403": {"description": "Compte désactivé"}
+                "403": {"description": "Compte désactivé"},
+                "409": {"description": "Session déjà active sur un autre appareil (étudiants) — renvoyer avec force: true pour la déconnecter", "content": {"application/json": {"schema": {
+                    "type": "object",
+                    "properties": {
+                        "error": {"type": "string"},
+                        "session_conflict": {"type": "boolean"},
+                        "device_label": {"type": "string", "example": "Chrome sur Windows"},
+                        "since": {"type": "string", "format": "date-time"}
+                    }
+                }}}}
             }
         }},
         "/api/auth/register": {"post": {

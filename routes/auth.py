@@ -19,7 +19,7 @@ from auth_paseto import (
     create_access_token, create_refresh_token,
     set_refresh_cookie, clear_refresh_cookie,
     get_refresh_token_from_cookie, hash_token,
-    ACCESS_TTL,
+    ACCESS_TTL, REFRESH_TTL,
 )
 from auth_paseto import decode_token as paseto_decode_token
 from models import get_session, User, UserRole, TokenBlocklist, Formation, Semester, UE, StudentUEEnrollment
@@ -27,8 +27,48 @@ from utils  import (
     send_account_created_email, send_password_reset_email,
     send_password_changed_email,
 )
+from cache import cache_get, cache_set, cache_delete
 
 auth_bp = Blueprint('auth', __name__)
+
+# ── Session unique par compte ────────────────────────────────────────────────
+# Retour utilisateur (24/08) : un étudiant peut se connecter sur plusieurs
+# appareils avec le même compte pendant un examen (ex. un tiers répond depuis
+# un autre appareil). Une nouvelle connexion est bloquée tant qu'une session
+# est déjà active ailleurs, sauf si l'appelant confirme explicitement
+# (force=True) vouloir déconnecter l'autre appareil. Stocké en Redis (pas en
+# base) — c'est un état transitoire, pas une donnée à conserver.
+_SESSION_KEY_PREFIX = 'cei:session:active:'
+
+
+def _session_key(user_id: int) -> str:
+    return f'{_SESSION_KEY_PREFIX}{user_id}'
+
+
+def _device_label(req) -> str:
+    """Étiquette lisible dérivée du User-Agent — juste assez pour que
+    l'étudiant reconnaisse SON autre appareil (pas une empreinte précise)."""
+    ua = (req.headers.get('User-Agent') or '').lower()
+    if 'iphone' in ua or 'ipad' in ua: os_label = 'iOS'
+    elif 'android' in ua: os_label = 'Android'
+    elif 'mac os' in ua: os_label = 'Mac'
+    elif 'windows' in ua: os_label = 'Windows'
+    elif 'linux' in ua: os_label = 'Linux'
+    else: os_label = 'Appareil inconnu'
+    if 'edg/' in ua: browser = 'Edge'
+    elif 'chrome' in ua: browser = 'Chrome'
+    elif 'firefox' in ua: browser = 'Firefox'
+    elif 'safari' in ua: browser = 'Safari'
+    else: browser = 'Navigateur'
+    return f'{browser} sur {os_label}'
+
+
+def _set_active_session(user_id: int, refresh_token: str, device_label: str, ttl_seconds: int) -> None:
+    cache_set(_session_key(user_id), {
+        'token_hash': hash_token(refresh_token),
+        'device_label': device_label,
+        'since': utcnow().isoformat(),
+    }, ttl=ttl_seconds)
 
 
 def _link_student_to_formation(session, student, formation_id):
@@ -118,6 +158,28 @@ def login():
             session.close()
             return jsonify({'error': "Votre compte a été désactivé par l'administrateur. Contactez l'administration de la plateforme pour le réactiver."}), 403
 
+        # Session unique — étudiants uniquement (voir _session_key ci-dessus).
+        # Le personnel (professeur/surveillant/superviseur/admin) est
+        # légitimement connecté sur plusieurs appareils sans risque de fraude
+        # associé — restreindre là créerait une gêne sans bénéfice réel.
+        if user.role == UserRole.STUDENT:
+            existing = cache_get(_session_key(user.id))
+            if existing and not data.get('force'):
+                session.close()
+                return jsonify({
+                    'error': 'Vous êtes déjà connecté sur un autre appareil.',
+                    'session_conflict': True,
+                    'device_label': existing.get('device_label', 'un autre appareil'),
+                    'since': existing.get('since'),
+                }), 409
+            if existing and data.get('force'):
+                old_hash = existing.get('token_hash')
+                if old_hash:
+                    session.add(TokenBlocklist(
+                        token_hash=old_hash, user_id=user.id,
+                        expires_at=utcnow() + REFRESH_TTL,
+                    ))
+
         # Re-hash paresseux : le cout bcrypt est integre au hash stocke, donc
         # abaisser BCRYPT_LOG_ROUNDS n'accelere jamais retroactivement les
         # comptes existants (impossible sans connaitre le mot de passe en
@@ -136,6 +198,8 @@ def login():
         session.commit()
         access_token  = create_access_token(user.id, user.role.value, user.email)
         refresh_token = create_refresh_token(user.id)
+        if user.role == UserRole.STUDENT:
+            _set_active_session(user.id, refresh_token, _device_label(request), int(REFRESH_TTL.total_seconds()))
         user_dict     = user.to_dict(); session.close()
 
         resp = make_response(jsonify({
@@ -180,6 +244,13 @@ def refresh_token_endpoint():
         session.add(block); session.commit()
         new_access  = create_access_token(user.id, user.role.value, user.email)
         new_refresh = create_refresh_token(user.id)
+        if user.role == UserRole.STUDENT:
+            # Garde le marqueur de session unique synchronisé avec le token
+            # tout juste renouvelé — sinon une déconnexion forcée ultérieure
+            # blocklisterait un hash déjà obsolète. Toujours réécrit (pas
+            # seulement si un marqueur existait déjà) : auto-guérison si
+            # Redis a été vidé/redémarré entre-temps.
+            _set_active_session(user.id, new_refresh, _device_label(request), int(REFRESH_TTL.total_seconds()))
         session.close()
 
         resp = make_response(jsonify({
@@ -215,6 +286,7 @@ def logout():
             pass
         finally:
             session.close()
+    cache_delete(_session_key(get_current_user_id()))
     resp = make_response(jsonify({'success': True, 'message': 'Déconnecté'}))
     clear_refresh_cookie(resp)
     return resp, 200

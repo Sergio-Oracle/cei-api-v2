@@ -697,6 +697,11 @@ class OnlineExam(Base):
     # examens (maths, sciences, finance...) donc opt-in par le professeur.
     enable_calculator = Column(Boolean, default=False)
 
+    # Deuxième caméra via smartphone (angle latéral, comble l'angle mort
+    # hors écran) — opt-in par le professeur à la création de l'examen, le
+    # bouton de couplage ne s'affiche à l'étudiant que si activé ici.
+    allow_secondary_camera = Column(Boolean, default=False)
+
     status = Column(SQLEnum(ExamStatus), default=ExamStatus.DRAFT)
     created_by_id = Column(Integer, ForeignKey('users.id'), nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -732,6 +737,7 @@ class OnlineExam(Base):
             'correction_triggered_at': self.correction_triggered_at.isoformat() if self.correction_triggered_at else None,
             'results_published': self.results_published or False,
             'enable_calculator': self.enable_calculator or False,
+            'allow_secondary_camera': self.allow_secondary_camera or False,
             'creator_name': self.creator.full_name if self.creator else None,
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'is_active': self.status == ExamStatus.ACTIVE,

@@ -26,7 +26,7 @@ from models import (
     ECAssignment, ProctorGroup, ProctorGroupEC, ProctorGroupMember,
     ExamAccessCode, ProctorGroupSupervisor,
 )
-from cache import cache_get, cache_set, cache_set_nx
+from cache import cache_get, cache_set, cache_set_nx, cache_pop
 
 proctoring_bp = Blueprint('proctoring', __name__)
 
@@ -142,6 +142,125 @@ def get_student_livekit_token(attempt_id):
             'ws_url': config['url'],
             'room': room_name,
             'identity': identity
+        })
+    finally:
+        session.close()
+
+
+# ============================================================================
+# API : DEUXIÈME CAMÉRA VIA SMARTPHONE (angle latéral, opt-in par examen)
+# ============================================================================
+# Le téléphone rejoint la MÊME salle LiveKit que la caméra principale
+# (exam-{exam_id}) sous une identité distincte (student-{user_id}-phone,
+# publication seule — canSubscribe=False, le téléphone n'a besoin de rien
+# recevoir). Couplage en deux temps car le téléphone n'est jamais connecté à
+# CEI (pas de session PASETO) : l'étudiant génère un code à usage unique
+# depuis sa page d'examen, affiché en QR + texte, que le téléphone échange
+# contre un token via un endpoint PUBLIC dédié (pas de version alternative
+# authentifiée possible côté téléphone).
+
+import random as _random
+
+def _phonecam_pair_key(code: str) -> str:
+    return f'cei:phonecam:pair:{code}'
+
+def _phonecam_linked_key(attempt_id: int) -> str:
+    return f'cei:phonecam:linked:{attempt_id}'
+
+
+@proctoring_bp.route('/api/exam_attempts/<int:attempt_id>/phone_camera/pair', methods=['POST'])
+@paseto_required
+def phone_camera_pair(attempt_id):
+    """Génère un code de couplage à usage unique (5 min) pour la caméra secondaire."""
+    user_id = get_current_user_id()
+    session = get_session()
+    try:
+        attempt = session.query(ExamAttempt).filter_by(id=attempt_id, student_id=user_id).first()
+        if not attempt:
+            return jsonify({'error': 'Tentative introuvable'}), 404
+        if attempt.status != AttemptStatus.IN_PROGRESS:
+            return jsonify({'error': 'Tentative non active'}), 400
+        exam = session.query(OnlineExam).filter_by(id=attempt.exam_id).first()
+        if not exam or not exam.allow_secondary_camera:
+            return jsonify({'error': "La caméra secondaire n'est pas activée pour cet examen"}), 403
+
+        code = f'{_random.randint(0, 999999):06d}'
+        cache_set(_phonecam_pair_key(code), {
+            'attempt_id': attempt.id, 'user_id': user_id, 'exam_id': exam.id,
+        }, ttl=300)
+
+        app_url = os.getenv('APP_URL', 'https://dev-cei.ddns.net').rstrip('/')
+        return jsonify({
+            'code': code,
+            'url': f'{app_url}/phone-camera?code={code}',
+            'expires_in': 300,
+        })
+    finally:
+        session.close()
+
+
+@proctoring_bp.route('/api/exam_attempts/<int:attempt_id>/phone_camera/status', methods=['GET'])
+@paseto_required
+def phone_camera_status(attempt_id):
+    """Le téléphone s'est-il déjà couplé avec succès ? (pollé par la page d'examen)"""
+    user_id = get_current_user_id()
+    session = get_session()
+    try:
+        attempt = session.query(ExamAttempt).filter_by(id=attempt_id, student_id=user_id).first()
+        if not attempt:
+            return jsonify({'error': 'Tentative introuvable'}), 404
+        return jsonify({'linked': bool(cache_get(_phonecam_linked_key(attempt_id)))})
+    finally:
+        session.close()
+
+
+@proctoring_bp.route('/api/phone_camera/token', methods=['POST'])
+@limiter.limit("20 per minute")
+def phone_camera_token():
+    """PUBLIC (pas de session CEI côté téléphone) — échange un code de
+    couplage à usage unique contre un token LiveKit publish-only."""
+    data = request.get_json(silent=True) or {}
+    code = (data.get('code') or '').strip()
+    if not code:
+        return jsonify({'error': 'Code requis'}), 400
+
+    pairing = cache_pop(_phonecam_pair_key(code))
+    if not pairing:
+        return jsonify({'error': 'Code invalide ou expiré — régénérez un nouveau code depuis la page d\'examen'}), 404
+
+    config = get_livekit_config()
+    if not all([config['url'], config['api_key'], config['api_secret']]):
+        return jsonify({'error': 'LiveKit non configuré sur le serveur'}), 503
+
+    session = get_session()
+    try:
+        attempt = session.query(ExamAttempt).filter_by(id=pairing['attempt_id']).first()
+        if not attempt or attempt.status != AttemptStatus.IN_PROGRESS:
+            return jsonify({'error': "La tentative n'est plus active"}), 400
+        exam = session.query(OnlineExam).filter_by(id=pairing['exam_id']).first()
+        if not exam:
+            return jsonify({'error': 'Examen introuvable'}), 404
+
+        room_name = f'exam-{exam.id}'
+        identity  = f'student-{pairing["user_id"]}-phone'
+        # TTL généreux mais borné à la fin réelle de l'examen (+ marge),
+        # même calcul que get_student_livekit_token — pas de token qui
+        # survivrait indéfiniment à la fin de la tentative.
+        remaining_min = max(1, exam.duration_minutes + (attempt.extra_minutes or 0))
+        ttl = remaining_min * 60 + 600
+        token = generate_livekit_token(
+            config['api_key'], config['api_secret'],
+            identity, room_name,
+            can_publish=True, can_subscribe=False,
+            ttl=ttl,
+        )
+        cache_set(_phonecam_linked_key(attempt.id), True, ttl=ttl)
+
+        return jsonify({
+            'token': token,
+            'ws_url': config['url'],
+            'room': room_name,
+            'exam_title': exam.title,
         })
     finally:
         session.close()

@@ -137,6 +137,7 @@ _SCHEMAS = {
             "auto_correct":        {"type": "boolean", "default": False},
             "results_published":   {"type": "boolean", "default": False},
             "enable_calculator":   {"type": "boolean", "default": False, "description": "Calculatrice scientifique intégrée à la page de composition"},
+            "allow_secondary_camera": {"type": "boolean", "default": False, "description": "Autorise l'étudiant à coupler une caméra secondaire via smartphone (angle latéral)"},
             "auto_correct":        {"type": "boolean", "default": False, "description": "Correction IA automatique dès qu'un étudiant soumet sa copie"},
             "scheduled_correction_at": {"type": "string", "format": "date-time", "nullable": True, "description": "Heure précise programmée pour corriger en bloc toutes les copies soumises non corrigées — voir /api/agent/run_scheduled_correction/{exam_id}"},
             "correction_triggered_at": {"type": "string", "format": "date-time", "nullable": True, "description": "Renseigné automatiquement une fois la correction planifiée effectivement déclenchée — empêche tout second déclenchement"},
@@ -1619,6 +1620,7 @@ OPENAPI_SPEC = {
                         "auto_ban_enabled":    {"type": "boolean", "default": False, "description": "Si false (défaut), un seuil atteint (onglets/visage/devtools) envoie une alerte (agent autonome + notification) au lieu d'exclure automatiquement l'étudiant — décision manuelle requise."},
                         "enable_file_download": {"type": "boolean", "default": False, "description": "Autoriser le téléchargement des fichiers du sujet (images/vidéos/audios) — si false, bloque notamment le bouton de téléchargement natif des lecteurs vidéo/audio, indépendamment du clic droit"},
                         "enable_calculator":   {"type": "boolean", "default": False, "description": "Active une calculatrice scientifique intégrée à la page de composition (aucun appel réseau) — évite le recours à une calculatrice physique ou un téléphone, non vérifiables par le surveillant"},
+                        "allow_secondary_camera": {"type": "boolean", "default": False, "description": "Autorise l'étudiant à coupler son smartphone comme caméra secondaire (angle latéral, QR code depuis la page d'examen) — voir POST /api/exam_attempts/{id}/phone_camera/pair"},
                         "auto_correct":        {"type": "boolean", "default": False, "description": "Correction IA automatique dès qu'un étudiant soumet sa copie"},
                         "scheduled_correction_at": {"type": "string", "format": "date-time", "nullable": True, "description": "Heure précise (optionnelle) à laquelle corriger EN BLOC toutes les copies soumises et pas encore corrigées de cet examen — indépendant de `auto_correct`. Déclenché par l'agent autonome (voir /api/agent/due_corrections), jamais deux fois pour le même examen."}
                     }
@@ -1996,6 +1998,37 @@ OPENAPI_SPEC = {
                     "livekit_url": {"type": "string"}
                 }
             }}}}}
+        }},
+        "/api/exam_attempts/{attempt_id}/phone_camera/pair": {"post": {
+            "tags": ["Proctoring"], "summary": "Génère un code de couplage pour la caméra secondaire (smartphone)",
+            "description": "Étudiant, tentative en cours, examen avec `allow_secondary_camera` activé. Retourne un code à 6 chiffres (5 min) et une URL `/phone-camera?code=...` à afficher en QR — le téléphone échange ce code contre un token LiveKit via `POST /api/phone_camera/token` (endpoint public, le téléphone n'a pas de session CEI).",
+            "parameters": [{"name": "attempt_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+            "responses": {
+                "200": {"description": "Code généré", "content": {"application/json": {"schema": {
+                    "type": "object", "properties": {"code": {"type": "string", "example": "350064"}, "url": {"type": "string"}, "expires_in": {"type": "integer", "example": 300}}
+                }}}},
+                "403": {"description": "Caméra secondaire non activée pour cet examen"}
+            }
+        }},
+        "/api/exam_attempts/{attempt_id}/phone_camera/status": {"get": {
+            "tags": ["Proctoring"], "summary": "Le téléphone s'est-il couplé avec succès ?",
+            "description": "Pollé par la page d'examen pendant l'affichage du QR code, pour afficher une confirmation dès que le téléphone a rejoint la salle.",
+            "parameters": [{"name": "attempt_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+            "responses": {"200": {"description": "Statut", "content": {"application/json": {"schema": {"type": "object", "properties": {"linked": {"type": "boolean"}}}}}}}
+        }},
+        "/api/phone_camera/token": {"post": {
+            "tags": ["Proctoring"], "summary": "Échange un code de couplage contre un token LiveKit (téléphone, PUBLIC)",
+            "description": "Aucune authentification CEI — appelé depuis la page mobile ouverte en scannant le QR code. Code à usage unique (consommé dès l'appel), identité LiveKit `student-{user_id}-phone` dans la même salle que la caméra principale (`exam-{exam_id}`), publish-only (`canSubscribe: false`).",
+            "security": [],
+            "requestBody": {"required": True, "content": {"application/json": {"schema": {
+                "type": "object", "required": ["code"], "properties": {"code": {"type": "string", "example": "350064"}}
+            }}}},
+            "responses": {
+                "200": {"description": "Token LiveKit publish-only", "content": {"application/json": {"schema": {
+                    "type": "object", "properties": {"token": {"type": "string"}, "ws_url": {"type": "string"}, "room": {"type": "string"}, "exam_title": {"type": "string"}}
+                }}}},
+                "404": {"description": "Code invalide, expiré ou déjà utilisé"}
+            }
         }},
         "/api/exam_attempts/{attempt_id}/private_token": {"get": {
             "tags": ["Surveillant"],

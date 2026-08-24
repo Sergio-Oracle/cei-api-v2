@@ -879,6 +879,11 @@ class ExamAccessCode(Base):
 
 class BiometricMethod(enum.Enum):
     FACE     = "face"
+    # WEBAUTHN retiré le 24/08 (retour utilisateur : trop encombrant pour les
+    # étudiants) — seule la reconnaissance faciale reste proposée à
+    # l'inscription/vérification. Valeur conservée dans l'enum pour ne pas
+    # casser les lignes historiques déjà en base ; aucun code applicatif ne
+    # la produit plus.
     WEBAUTHN = "webauthn"
 
 
@@ -886,7 +891,7 @@ class BiometricEnrollment(Base):
     """Facteur biométrique enregistré par un utilisateur (un seul actif à la
     fois — le méthode choisie détermine ce qui est vérifié à l'accès examen).
     Ré-inscription en libre-service : UPSERT de cette même ligne, pas de
-    validation admin requise."""
+    validation admin requise. Seule FACE est proposée depuis le 24/08."""
     __tablename__ = 'biometric_enrollments'
 
     id = Column(Integer, primary_key=True)
@@ -911,10 +916,10 @@ class BiometricEnrollment(Base):
 
 
 class WebauthnCredential(Base):
-    """Un appareil (authenticator plateforme) enregistré pour l'authentification
-    biométrique WebAuthn. Un utilisateur peut en avoir plusieurs (téléphone,
-    ordinateur...) même si method bascule ensuite sur FACE — les identifiants
-    restent en base, juste dormants."""
+    """Historique de l'authentification WebAuthn, retirée le 24/08 (aucun
+    endpoint applicatif n'écrit plus dans cette table). Conservée pour ne
+    pas perdre les lignes déjà en base plutôt que de faire une migration
+    destructive pour une fonctionnalité désactivée."""
     __tablename__ = 'webauthn_credentials'
 
     id = Column(Integer, primary_key=True)

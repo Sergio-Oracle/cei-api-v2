@@ -3728,9 +3728,8 @@ OPENAPI_SPEC = {
                 "type": "object",
                 "properties": {
                     "enrolled": {"type": "boolean"},
-                    "method": {"type": "string", "enum": ["face", "webauthn"], "nullable": True},
-                    "photo_url": {"type": "string", "nullable": True},
-                    "webauthn_devices": {"type": "array", "items": {"type": "object"}}
+                    "method": {"type": "string", "enum": ["face"], "nullable": True},
+                    "photo_url": {"type": "string", "nullable": True}
                 }
             }}}}}
         }},
@@ -3759,45 +3758,6 @@ OPENAPI_SPEC = {
                 }}}},
                 "404": {"description": "Aucune inscription faciale trouvée"}
             }
-        }},
-        "/api/biometric/enroll/webauthn/options": {"post": {
-            "tags": ["Biométrie"], "summary": "Générer les options d'enregistrement WebAuthn",
-            "description": "authenticatorAttachment=platform + userVerification=required — n'accepte que le capteur biométrique de l'appareil (empreinte/Face ID), pas une clé de sécurité externe.",
-            "responses": {"200": {"description": "PublicKeyCredentialCreationOptions (JSON)"}}
-        }},
-        "/api/biometric/enroll/webauthn/verify": {"post": {
-            "tags": ["Biométrie"], "summary": "Finaliser l'enregistrement d'un appareil WebAuthn",
-            "requestBody": {"required": True, "content": {"application/json": {"schema": {
-                "type": "object", "required": ["credential"],
-                "properties": {
-                    "credential": {"type": "object", "description": "RegistrationResponseJSON du navigateur"},
-                    "device_label": {"type": "string"},
-                    "transports": {"type": "array", "items": {"type": "string"}}
-                }
-            }}}},
-            "responses": {"200": {"description": "Appareil enregistré"}, "400": {"description": "Vérification échouée ou session expirée"}}
-        }},
-        "/api/biometric/webauthn/{credential_id}": {"delete": {
-            "tags": ["Biométrie"], "summary": "Supprimer un appareil WebAuthn enregistré",
-            "parameters": [{"name": "credential_id", "in": "path", "required": True, "schema": {"type": "string"}}],
-            "responses": {
-                "200": {"description": "Supprimé"},
-                "400": {"description": "Dernier appareil actif — enregistrez d'abord une autre méthode"},
-                "404": {"description": "Appareil introuvable"}
-            }
-        }},
-        "/api/biometric/verify/webauthn/options": {"post": {
-            "tags": ["Biométrie"], "summary": "Générer les options d'authentification WebAuthn",
-            "responses": {"200": {"description": "PublicKeyCredentialRequestOptions (JSON)"}, "404": {"description": "Aucun appareil enregistré"}}
-        }},
-        "/api/biometric/verify/webauthn/verify": {"post": {
-            "tags": ["Biométrie"], "summary": "Vérifier son identité par WebAuthn",
-            "description": "Vérifie l'assertion et actualise le compteur anti-clonage (sign_count). En cas de succès, pose le même flag Redis que la vérification faciale.",
-            "requestBody": {"required": True, "content": {"application/json": {"schema": {
-                "type": "object", "required": ["credential"],
-                "properties": {"credential": {"type": "object", "description": "AuthenticationResponseJSON du navigateur"}}
-            }}}},
-            "responses": {"200": {"description": "Résultat"}, "404": {"description": "Appareil non reconnu"}}
         }},
         "/api/biometric/fallback/call_request": {"post": {
             "tags": ["Biométrie"], "summary": "Demander un appel de vérification manuelle (repli après échecs répétés)",

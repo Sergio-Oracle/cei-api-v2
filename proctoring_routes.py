@@ -26,7 +26,7 @@ from models import (
     ECAssignment, ProctorGroup, ProctorGroupEC, ProctorGroupMember,
     ExamAccessCode, ProctorGroupSupervisor,
 )
-from cache import cache_get, cache_set, cache_set_nx, cache_pop
+from cache import cache_get, cache_set, cache_set_nx, cache_pop, cache_delete
 
 proctoring_bp = Blueprint('proctoring', __name__)
 
@@ -202,16 +202,60 @@ def phone_camera_pair(attempt_id):
 @proctoring_bp.route('/api/exam_attempts/<int:attempt_id>/phone_camera/status', methods=['GET'])
 @paseto_required
 def phone_camera_status(attempt_id):
-    """Le téléphone s'est-il déjà couplé avec succès ? (pollé par la page d'examen)"""
+    """Le téléphone est-il RÉELLEMENT connecté maintenant — vérifié en
+    direct auprès de LiveKit (ListParticipants), pas seulement via le flag
+    Redis posé au moment du couplage (retour utilisateur du 24/08 : le
+    badge restait "connecté" alors que le téléphone n'était plus du tout
+    là — page fermée/réseau coupé côté téléphone sans que quoi que ce soit
+    n'en informe CEI autrement que par ce flag, jamais réévalué depuis)."""
     user_id = get_current_user_id()
     session = get_session()
     try:
         attempt = session.query(ExamAttempt).filter_by(id=attempt_id, student_id=user_id).first()
         if not attempt:
             return jsonify({'error': 'Tentative introuvable'}), 404
-        return jsonify({'linked': bool(cache_get(_phonecam_linked_key(attempt_id)))})
+        exam_id = attempt.exam_id
     finally:
         session.close()
+
+    # Filtre rapide : si le couplage initial n'a même jamais réussi, inutile
+    # d'interroger LiveKit.
+    if not cache_get(_phonecam_linked_key(attempt_id)):
+        return jsonify({'linked': False})
+
+    config = get_livekit_config()
+    if not all([config['url'], config['api_key'], config['api_secret']]):
+        return jsonify({'linked': False})
+
+    room_name = f'exam-{exam_id}'
+    phone_identity = f'student-{user_id}-phone'
+    now = int(time.time())
+    admin_token = pyjwt.encode(
+        {'exp': now + 60, 'iss': config['api_key'], 'nbf': now,
+         'sub': 'admin', 'video': {'roomAdmin': True, 'room': room_name}},
+        config['api_secret'], algorithm='HS256',
+    )
+    really_linked = False
+    try:
+        req = urlreq.Request(
+            f"{config['api_url']}/twirp/livekit.RoomService/ListParticipants",
+            data=json.dumps({'room': room_name}).encode(),
+            headers={'Authorization': f'Bearer {admin_token}', 'Content-Type': 'application/json'},
+        )
+        with urlreq.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read())
+            identities = [p.get('identity') for p in data.get('participants', [])]
+            really_linked = phone_identity in identities
+    except Exception:
+        # LiveKit injoignable — on préfère un faux "non connecté" transitoire
+        # (l'étudiant peut réessayer) à un faux "connecté" qui induirait le
+        # surveillant en erreur sur une preuve de surveillance absente.
+        really_linked = False
+
+    if not really_linked:
+        cache_delete(_phonecam_linked_key(attempt_id))
+
+    return jsonify({'linked': really_linked})
 
 
 @proctoring_bp.route('/api/phone_camera/token', methods=['POST'])

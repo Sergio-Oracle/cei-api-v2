@@ -9,6 +9,8 @@ Couvre :
 
 Migré depuis app.py — zéro régression.
 """
+from threading import Thread
+
 from flask import Blueprint, request, jsonify
 from sqlalchemy.orm import joinedload
 
@@ -1737,12 +1739,15 @@ def link_proctor_group_ec(gid):
         except Exception:
             pass
         try:
+            # Envoi en tâche de fond — chaque appel SMTP peut prendre jusqu'à
+            # 15s (+ un éventuel repli MX direct), multiplié par le nombre de
+            # membres du groupe : ça ne doit jamais faire attendre le
+            # professeur qui clique sur "Rattacher" (retour utilisateur du
+            # 22/08 — le bouton semblait bloqué le temps que ces emails
+            # partent, alors que le rattachement lui-même est déjà en base).
             from utils import send_proctor_group_ec_added_email
             for e in email_payloads:
-                try:
-                    send_proctor_group_ec_added_email(e[0], e[1], e[2], e[3])
-                except Exception:
-                    pass
+                Thread(target=send_proctor_group_ec_added_email, args=e, daemon=True).start()
         except Exception:
             pass
 

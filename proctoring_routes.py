@@ -199,6 +199,17 @@ def phone_camera_pair(attempt_id):
         session.close()
 
 
+# Le téléphone met plusieurs secondes à réellement publier après l'échange
+# du token (chargement du script LiveKit UMD depuis un CDN, connexion à la
+# room, négociation WebRTC — d'autant plus long sur un réseau mobile) alors
+# que le flag Redis "linked" est posé, lui, dès l'échange du token (avant
+# toute publication réelle). Sans cette marge, un sondage du frontend qui
+# tombe dans cette fenêtre voit really_linked=False et SUPPRIME le flag —
+# alors que le téléphone finit de se connecter une seconde plus tard,
+# laissant l'écran principal bloqué indéfiniment sur "en attente de
+# connexion" malgré un téléphone réellement connecté (constaté le 25/08).
+_PHONECAM_LINK_GRACE_SECONDS = 20
+
 @proctoring_bp.route('/api/exam_attempts/<int:attempt_id>/phone_camera/status', methods=['GET'])
 @paseto_required
 def phone_camera_status(attempt_id):
@@ -220,8 +231,10 @@ def phone_camera_status(attempt_id):
 
     # Filtre rapide : si le couplage initial n'a même jamais réussi, inutile
     # d'interroger LiveKit.
-    if not cache_get(_phonecam_linked_key(attempt_id)):
+    linked_data = cache_get(_phonecam_linked_key(attempt_id))
+    if not linked_data:
         return jsonify({'linked': False})
+    set_at = linked_data.get('set_at', 0) if isinstance(linked_data, dict) else 0
 
     config = get_livekit_config()
     if not all([config['url'], config['api_key'], config['api_secret']]):
@@ -253,7 +266,10 @@ def phone_camera_status(attempt_id):
         really_linked = False
 
     if not really_linked:
-        cache_delete(_phonecam_linked_key(attempt_id))
+        # Ne supprime le flag que passé le délai de grâce — sinon on
+        # préempte une connexion en cours (voir commentaire au-dessus).
+        if time.time() - set_at > _PHONECAM_LINK_GRACE_SECONDS:
+            cache_delete(_phonecam_linked_key(attempt_id))
 
     return jsonify({'linked': really_linked})
 
@@ -298,7 +314,7 @@ def phone_camera_token():
             can_publish=True, can_subscribe=False,
             ttl=ttl,
         )
-        cache_set(_phonecam_linked_key(attempt.id), True, ttl=ttl)
+        cache_set(_phonecam_linked_key(attempt.id), {'set_at': time.time()}, ttl=ttl)
 
         return jsonify({
             'token': token,

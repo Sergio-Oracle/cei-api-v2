@@ -114,7 +114,7 @@ def get_online_exams():
                     att.status = AttemptStatus.AUTO_SUBMITTED
                     att.submitted_at = now_utc
                 needs_commit = True
-                print(f"⏰ Auto-close examen #{exam.id} '{exam.title}' (end_time dépassé)")
+                print(f"Auto-close examen #{exam.id} '{exam.title}' (end_time dépassé)")
         if needs_commit:
             session.commit()
             # Recharger les tentatives après commit
@@ -1710,10 +1710,10 @@ def _deterministic_grade(content: str, rubric: str, answers_data) -> tuple:
             earned = pts if given == correct_letter else 0.0
             score += earned; max_score += pts; graded_nums.add(num)
             if earned:
-                breakdown.append(f"Question {num} : ✓ Bonne réponse ({given}) — {earned:.2f}/{pts:.2f} pt")
+                breakdown.append(f"Question {num} : Bonne réponse ({given}) — {earned:.2f}/{pts:.2f} pt")
             else:
                 breakdown.append(
-                    f"Question {num} : ✗ Tu as répondu {given or '(aucune réponse)'}, "
+                    f"Question {num} : Tu as répondu {given or '(aucune réponse)'}, "
                     f"la bonne réponse était {correct_letter} — {earned:.2f}/{pts:.2f} pt")
             structured.append({'num': num, 'type': 'qcm', 'max': pts, 'score': earned,
                                 'correct': earned == pts, 'given': given})
@@ -1731,10 +1731,10 @@ def _deterministic_grade(content: str, rubric: str, answers_data) -> tuple:
             earned = round(pts * fraction, 2)
             score += earned; max_score += pts; graded_nums.add(num)
             if given_set == correct_set:
-                breakdown.append(f"Question {num} : ✓ Toutes les bonnes cases cochées ({', '.join(sorted(given_set))}) — {earned:.2f}/{pts:.2f} pt")
+                breakdown.append(f"Question {num} : Toutes les bonnes cases cochées ({', '.join(sorted(given_set))}) — {earned:.2f}/{pts:.2f} pt")
             else:
                 breakdown.append(
-                    f"Question {num} : ✗ Tu as coché {', '.join(sorted(given_set)) or '(aucune case)'}, "
+                    f"Question {num} : Tu as coché {', '.join(sorted(given_set)) or '(aucune case)'}, "
                     f"les bonnes réponses étaient {', '.join(sorted(correct_set))} — {earned:.2f}/{pts:.2f} pt")
             structured.append({'num': num, 'type': 'qcm_multi', 'max': pts, 'score': earned,
                                 'correct': given_set == correct_set, 'given': ', '.join(sorted(given_set))})
@@ -1747,10 +1747,10 @@ def _deterministic_grade(content: str, rubric: str, answers_data) -> tuple:
             earned = pts if given == key['value'] else 0.0
             score += earned; max_score += pts; graded_nums.add(num)
             if earned:
-                breakdown.append(f"Question {num} : ✓ Bonne réponse ({given}) — {earned:.2f}/{pts:.2f} pt")
+                breakdown.append(f"Question {num} : Bonne réponse ({given}) — {earned:.2f}/{pts:.2f} pt")
             else:
                 breakdown.append(
-                    f"Question {num} : ✗ Tu as répondu {given or '(aucune réponse)'}, "
+                    f"Question {num} : Tu as répondu {given or '(aucune réponse)'}, "
                     f"la bonne réponse était {key['value']} — {earned:.2f}/{pts:.2f} pt")
             structured.append({'num': num, 'type': 'vf', 'max': pts, 'score': earned,
                                 'correct': earned == pts, 'given': given})
@@ -1767,9 +1767,8 @@ def _deterministic_grade(content: str, rubric: str, answers_data) -> tuple:
             fraction = n_right / len(pairs)
             earned = round(pts * fraction, 2)
             score += earned; max_score += pts; graded_nums.add(num)
-            symbol = '✓' if n_right == len(pairs) else '✗'
             breakdown.append(
-                f"Question {num} : {symbol} {n_right}/{len(pairs)} association(s) correcte(s) "
+                f"Question {num} : {n_right}/{len(pairs)} association(s) correcte(s) "
                 f"— {earned:.2f}/{pts:.2f} pt")
             structured.append({'num': num, 'type': 'appariement', 'max': pts, 'score': earned,
                                 'correct': n_right == len(pairs), 'given': f'{n_right}/{len(pairs)} correctes'})
@@ -5926,7 +5925,7 @@ def grant_extra_time(attempt_id):
         student_id = attempt.student_id
         exam_title = exam.title if exam else 'votre examen'
         session.close()
-        print(f"⏱ Temps +{minutes}min accordé (tentative {attempt_id}), total extra: {total}min")
+        print(f"Temps +{minutes}min accordé (tentative {attempt_id}), total extra: {total}min")
         try:
             from notif_bus import notify_user
             notify_user(student_id, 'extra_time', 'Temps supplémentaire accordé',

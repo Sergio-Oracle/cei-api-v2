@@ -441,13 +441,13 @@ def register_csv_routes(app):
             return jsonify({'error': str(e)}), 500
 
     # ========================================================================
-    # IMPORT CSV MAQUETTE - ✅ AVEC DÉPARTEMENT
+    # IMPORT CSV MAQUETTE - AVEC DÉPARTEMENT
     # ========================================================================
 
     @app.route('/api/admin/maquette/import-csv', methods=['POST'])
     @paseto_required
     def import_maquette_csv():
-        """Import CSV de la maquette pédagogique - ✅ AVEC DÉPARTEMENT"""
+        """Import CSV de la maquette pédagogique - AVEC DÉPARTEMENT"""
         try:
             current_user_id = get_current_user_id()
             session_db = get_session()
@@ -471,7 +471,7 @@ def register_csv_routes(app):
             # Détecter l'encodage
             encoding = detect_encoding(file)
 
-            # ⭐ LECTURE ROBUSTE AVEC CORRECTION AUTOMATIQUE
+            # LECTURE ROBUSTE AVEC CORRECTION AUTOMATIQUE
             try:
                 df = pd.read_csv(file, encoding=encoding)
                 print(f"Lecture CSV réussie avec {encoding}")
@@ -487,7 +487,7 @@ def register_csv_routes(app):
                     df = pd.read_csv(file, encoding='utf-8', errors='ignore')
                     print(f"Lecture avec UTF-8 errors='ignore'")
 
-            # ⭐ CORRECTION DES CARACTÈRES MAL ENCODÉS
+            # CORRECTION DES CARACTÈRES MAL ENCODÉS
             print("Correction des caractères mal encodés...")
             for col in df.columns:
                 if df[col].dtype == 'object':
@@ -496,7 +496,7 @@ def register_csv_routes(app):
             # Nettoyer les espaces blancs (map remplace applymap qui est déprécié)
             df = df.map(lambda x: x.strip() if isinstance(x, str) else x)
 
-            # ⭐ LOG DE VÉRIFICATION
+            # LOG DE VÉRIFICATION
             print("\nAperçu des données après correction:")
             print(f"   Total lignes: {len(df)}")
 
@@ -516,7 +516,7 @@ def register_csv_routes(app):
             created_ecs = []
             errors = []
 
-            # ⭐ MAPS POUR RÉFÉRENCER LES IDs
+            # MAPS POUR RÉFÉRENCER LES IDs
             formation_map = {}  # {code: formation_id}
             semester_map = {}   # {(formation_id, numero): semester_id}
             ue_map = {}         # {code: ue_id}

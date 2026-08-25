@@ -2480,7 +2480,7 @@ OPENAPI_SPEC = {
                 "tags": ["Agent autonome"],
                 "summary": "Pousser une alerte — SERVICE AGENT UNIQUEMENT",
                 "description": (
-                    "⚠️ **Endpoint interne** — réservé au service `cei-agent-proctor` (PM2).\n\n"
+                    "**Endpoint interne** — réservé au service `cei-agent-proctor` (PM2).\n\n"
                     "Requiert le header `X-Agent-Secret` avec la valeur de `AGENT_SECRET_KEY` "
                     "(configurée dans le `.env` du serveur). **Inaccessible via JWT.**\n\n"
                     "Ne pas appeler depuis le frontend."
@@ -2523,7 +2523,7 @@ OPENAPI_SPEC = {
             "tags": ["Agent autonome"],
             "summary": "Examens actifs — SERVICE AGENT UNIQUEMENT",
             "description": (
-                "⚠️ **Endpoint interne** — réservé au service `cei-agent-proctor` (PM2).\n\n"
+                "**Endpoint interne** — réservé au service `cei-agent-proctor` (PM2).\n\n"
                 "Requiert le header `X-Agent-Secret` avec la valeur de `AGENT_SECRET_KEY`. "
                 "**Inaccessible via JWT.** Ne pas appeler depuis le frontend.\n\n"
                 "Pour tester dans Swagger : cliquer **Authorize** → onglet **AgentSecret** → "
@@ -2545,7 +2545,7 @@ OPENAPI_SPEC = {
             "tags": ["Agent autonome"],
             "summary": "Données de surveillance complètes — SERVICE AGENT UNIQUEMENT",
             "description": (
-                "⚠️ **Endpoint interne** — réservé au service `cei-agent-proctor`.\n\n"
+                "**Endpoint interne** — réservé au service `cei-agent-proctor`.\n\n"
                 "Retourne tentatives + emails des surveillants + email de l'enseignant.\n\n"
                 "Requiert `X-Agent-Secret`. **Inaccessible via JWT.**"
             ),

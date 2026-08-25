@@ -54,7 +54,7 @@ def register_export_route(app):
             )
             
             story = []
-            story.append(Paragraph("📋 COPIE CORRIGÉE", title_style))
+            story.append(Paragraph("COPIE CORRIGÉE", title_style))
             story.append(Spacer(1, 0.3*inch))
             
             data = [
@@ -78,7 +78,7 @@ def register_export_route(app):
             
             story.append(table)
             story.append(Spacer(1, 0.4*inch))
-            story.append(Paragraph("📝 Correction Détaillée", styles['Heading2']))
+            story.append(Paragraph("Correction Détaillée", styles['Heading2']))
             story.append(Spacer(1, 0.2*inch))
             
             correction_lines = paper.grade.split('\n') if paper.grade else ['Pas de correction disponible']

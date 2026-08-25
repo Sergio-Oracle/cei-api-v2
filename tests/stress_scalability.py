@@ -199,7 +199,7 @@ def print_report(report: StressReport, sla_p95_ms: float = 2000, sla_success: fl
     ok  = report.success_rate >= sla_success
     p95_ok = report.p95_ms <= sla_p95_ms
 
-    status = f"{Fore.GREEN}✓ PASS" if (ok and p95_ok) else f"{Fore.RED}✗ FAIL"
+    status = f"{Fore.GREEN}PASS" if (ok and p95_ok) else f"{Fore.RED}FAIL"
     print(f"\n{status}  {Style.BRIGHT}{report.test_name}")
     print(f"  Utilisateurs : {report.users}")
     print(f"  Requêtes     : {report.total} en {report.duration_s:.1f}s → {report.rps:.1f} RPS")
@@ -207,10 +207,10 @@ def print_report(report: StressReport, sla_p95_ms: float = 2000, sla_success: fl
     print(f"  4xx métier   : {report.business_rejects} (rôle/exam fermé — non fatal)")
     print(f"  Err. serveur : {report.server_errors}/{report.total} "
           f"({report.success_rate:.1f}% OK) "
-          f"{'✓' if ok else f'[SLA≥{sla_success}%]'}")
+          f"{'OK' if ok else f'[SLA≥{sla_success}%]'}")
     print(f"  Latence moy  : {report.avg_ms:.0f}ms")
     print(f"  P95          : {report.p95_ms:.0f}ms "
-          f"{'✓' if p95_ok else f'[SLA≤{sla_p95_ms}ms]'}")
+          f"{'OK' if p95_ok else f'[SLA≤{sla_p95_ms}ms]'}")
     print(f"  P99          : {report.p99_ms:.0f}ms")
 
     if report.server_errors > 0:

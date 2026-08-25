@@ -394,7 +394,7 @@ def generate_corrected_paper_pdf(paper_data, output_path):
     )
 
     # En-tête
-    story.append(Paragraph("📋 COPIE CORRIGÉE", title_style))
+    story.append(Paragraph("COPIE CORRIGÉE", title_style))
     story.append(Spacer(1, 0.2*inch))
 
     # Informations
@@ -421,7 +421,7 @@ def generate_corrected_paper_pdf(paper_data, output_path):
     story.append(Spacer(1, 0.3*inch))
 
     # Correction détaillée
-    story.append(Paragraph("📝 Correction Détaillée", header_style))
+    story.append(Paragraph("Correction Détaillée", header_style))
     story.append(Spacer(1, 0.1*inch))
 
     grade_text = paper_data.get('grade', 'Pas de correction disponible')
@@ -1658,9 +1658,9 @@ def generate_transcript_pdf(transcript_data, output_path):
             if note is None:
                 dec, dec_col = "—", C_GRAY_400
             elif note >= 10:
-                dec, dec_col = "✓  Acquis", C_GREEN
+                dec, dec_col = "Acquis", C_GREEN
             else:
-                dec, dec_col = "✗  Ajourné", C_RED
+                dec, dec_col = "Ajourné", C_RED
             ec_data.append([
                 ec.get('ec_code', '?'),
                 ec.get('ec_name', '?')[:52],

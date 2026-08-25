@@ -364,7 +364,7 @@ class Subject(Base):
     papers = relationship('StudentPaper', back_populates='subject', cascade='all, delete-orphan')
     online_exams = relationship('OnlineExam', back_populates='subject', cascade='all, delete-orphan')
 
-    # ✅ FIX: méthode to_dict correctement définie DANS la classe Subject
+    # FIX: méthode to_dict correctement définie DANS la classe Subject
     def to_dict(self):
         return {
             'id': self.id,
@@ -1317,7 +1317,7 @@ DATABASE_URL = os.getenv('DATABASE_URL')
 
 if not DATABASE_URL:
     raise ValueError(
-        "❌ ERREUR: DATABASE_URL non défini dans .env!\n"
+        "ERREUR: DATABASE_URL non défini dans .env!\n"
         "Créez un fichier .env avec:\n"
         "DATABASE_URL=postgresql://<user>:<password>@localhost:5432/<db_name>"
     )

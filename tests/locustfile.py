@@ -13,7 +13,7 @@ from locust import HttpUser, task, between, events
 from locust.env import Environment
 
 BASE = os.getenv("TEST_BASE_URL", "https://dev-cei.ddns.net")
-EXAM_ID = 4
+EXAM_ID = int(os.getenv("TEST_EXAM_ID", "70"))
 
 
 # ─── Utilisateurs simulés ──────────────────────────────────────────────────────

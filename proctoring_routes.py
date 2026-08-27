@@ -69,14 +69,6 @@ def get_livekit_config():
     }
 
 
-def compute_risk_score(attempt):
-    """Calculer le score de risque basé sur les événements de l'attempt (0-100)"""
-    base = 0
-    base += min(attempt.tab_switches * 15, 60)
-    base += min(attempt.warnings_count * 5, 40)
-    return min(base, 100)
-
-
 # ============================================================================
 # API : TOKEN LIVEKIT ÉTUDIANT
 # ============================================================================
@@ -457,6 +449,30 @@ def log_proctoring_event(attempt_id):
             'tab_switch': 10,
             'window_blur': 10,
             'fullscreen_exit': 15,
+            # Chuchotement (seuil audio bas, distinct de sustained_audio_detected)
+            'whisper_detected': 6,
+            # Presse-papiers — journalisés qu'ils soient bloqués ou autorisés
+            # (voir exam/[id]/page.tsx clipEvent). Coller pèse plus lourd que
+            # copier/couper : injecter du contenu externe dans une réponse est
+            # un signal de triche plus direct que simplement copier son propre
+            # texte pour le reformater.
+            'copy_attempt': 8,
+            'cut_attempt': 8,
+            'paste_attempt': 15,
+            # Signal faible et bruyant (un curseur sort de la fenêtre pour
+            # mille raisons anodines) — journalisé comme preuve, jamais noté.
+            'mouse_left_window': 0,
+            # Motifs comportementaux corrélés (voir checkBehaviorPatterns côté
+            # frontend) — plusieurs signaux indépendants réunis dans la même
+            # fenêtre glissante, donc nettement plus fiables qu'un signal
+            # isolé : pondération volontairement plus haute que n'importe quel
+            # événement brut individuel ci-dessus.
+            'pattern_gaze_talk_mouth': 30,
+            'pattern_multi_face_audio': 30,
+            'pattern_object_gaze_away': 25,
+            'pattern_mouth_covered_audio': 25,
+            'pattern_head_turned_talking': 20,
+            'pattern_whisper_gaze': 20,
         }
         risk_increment = proctoring_risk_map.get(event_type, 5)
 
@@ -470,8 +486,20 @@ def log_proctoring_event(attempt_id):
             )
             session.refresh(attempt)
 
-        # Déterminer si l'on doit notifier, récupérer les données utiles
+        # Déterminer si l'on doit notifier, récupérer les données utiles.
+        # IMPORTANT : capturer toutes les valeurs scalaires dont on a besoin
+        # AVANT le commit+close ci-dessous — session.commit() expire par
+        # défaut tous les attributs SQLAlchemy déjà chargés (expire_on_commit),
+        # et re-toucher attempt.xxx après session.close() lève
+        # DetachedInstanceError (l'objet ne peut plus recharger depuis une
+        # session fermée). Bug préexistant qui faisait échouer CET ENDPOINT EN
+        # ENTIER avec un 500 sur absolument tout event_type — trouvé en testant
+        # les nouveaux types d'événements du moteur de corrélation, mais ne
+        # leur est pas spécifique.
         notify_high_risk = (event_type != 'session_end' and attempt.risk_score >= 75)
+        risk_score_val = attempt.risk_score
+        banned_val = (attempt.status == AttemptStatus.BANNED)
+        exam_id_val = attempt.exam_id
         if notify_high_risk:
             try:
                 _student = attempt.student if hasattr(attempt, 'student') and attempt.student else None
@@ -487,10 +515,10 @@ def log_proctoring_event(attempt_id):
             try:
                 from notif_bus import notify_exam
                 notify_exam(
-                    attempt.exam_id,
+                    exam_id_val,
                     'high_risk',
                     'Alerte fraude détectée',
-                    f'{_sname} — score risque : {attempt.risk_score}/100',
+                    f'{_sname} — score risque : {risk_score_val}/100',
                     priority='urgent',
                     tags=['rotating_light'],
                 )
@@ -500,8 +528,8 @@ def log_proctoring_event(attempt_id):
 
         return jsonify({
             'success': True,
-            'risk_score': attempt.risk_score,
-            'banned': attempt.status == AttemptStatus.BANNED
+            'risk_score': risk_score_val,
+            'banned': banned_val
         })
     finally:
         session.close()

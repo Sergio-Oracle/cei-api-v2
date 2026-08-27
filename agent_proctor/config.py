@@ -27,7 +27,10 @@ OLLAMA_URL     = os.getenv("OLLAMA_API_URL", "").rstrip("/")
 OLLAMA_KEY     = os.getenv("OLLAMA_API_KEY", "")
 OLLAMA_MODEL   = os.getenv("OLLAMA_MODEL", "qwen3.6:latest")
 
-# Seuils d'alerte
+# Seuils d'alerte — volontairement distincts des seuils d'affichage du badge
+# UI surveillant (40/70, riskCls dans proctor/monitor/[id]/page.tsx) :
+# l'email part un peu avant que le badge ne passe au rouge (70), pour donner
+# une longueur d'avance au staff. Pas une incohérence à corriger.
 RISK_ALERT       = int(os.getenv("AGENT_RISK_ALERT",       "60"))   # alerte email
 RISK_URGENT       = int(os.getenv("AGENT_RISK_URGENT",      "80"))   # alerte urgente
 CHECK_INTERVAL    = int(os.getenv("AGENT_CHECK_INTERVAL",   "30"))   # secondes entre analyses

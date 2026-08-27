@@ -473,8 +473,37 @@ def log_proctoring_event(attempt_id):
             'pattern_mouth_covered_audio': 25,
             'pattern_head_turned_talking': 20,
             'pattern_whisper_gaze': 20,
+            # Correctif sécurité (27/08) — remplace l'ancien comportement qui
+            # recapturait SILENCIEUSEMENT une nouvelle référence faciale après
+            # 5 échecs de reconnaissance consécutifs (~25s), sans validation
+            # humaine : une substitution de personne en cours d'examen aurait
+            # pu être acceptée automatiquement. Poids volontairement élevé —
+            # un seul signal ici est déjà une confirmation forte (5
+            # vérifications consécutives), cohérent avec les patterns
+            # composites ci-dessus (25-30) mais au-dessus car non un simple
+            # pattern probable, une preuve de mismatch soutenu. Voir
+            # identity_manual_verify ci-dessous pour la levée du signalement.
+            'identity_mismatch_sustained': 38,
         }
         risk_increment = proctoring_risk_map.get(event_type, 5)
+
+        # Garde-fou de plausibilité (hygiène de données, pas anti-triche) —
+        # un doublon du même event_type pour la même tentative reçu à moins
+        # de quelques secondes d'intervalle n'incrémente pas de nouveau le
+        # score (protège contre un flood/bug côté client), mais reste
+        # TOUJOURS journalisé ci-dessus pour l'audit. cache_should_score
+        # (pas cache_set_nx) est fail-open : une panne Redis ne doit jamais
+        # désactiver silencieusement tout le scoring de risque de la
+        # plateforme — voir cache.py pour le détail de cette distinction.
+        from cache import cache_should_score
+        _dedup_window = {
+            'gaze_away': 3, 'head_turned': 5, 'talking_detected': 3,
+            'no_face_detected': 3, 'multiple_faces': 3, 'whisper_detected': 3,
+        }.get(event_type, 2)
+        if event_type not in ('session_end',) and not cache_should_score(
+            f'cei:proctev:dedup:{attempt_id}:{event_type}', _dedup_window
+        ):
+            risk_increment = 0
 
         if event_type != 'session_end':
             # Incrémentation atomique avec plafonnement à 100 via LEAST (évite race condition)
@@ -497,10 +526,15 @@ def log_proctoring_event(attempt_id):
         # les nouveaux types d'événements du moteur de corrélation, mais ne
         # leur est pas spécifique.
         notify_high_risk = (event_type != 'session_end' and attempt.risk_score >= 75)
+        # Signal d'identité soutenue — notifie TOUJOURS immédiatement le
+        # surveillant, indépendamment du score cumulé (qui peut ne pas
+        # encore atteindre 75 malgré un mismatch confirmé) : voir A dans le
+        # plan Phase X, ce signal exige une action humaine sans délai.
+        notify_identity = (event_type == 'identity_mismatch_sustained')
         risk_score_val = attempt.risk_score
         banned_val = (attempt.status == AttemptStatus.BANNED)
         exam_id_val = attempt.exam_id
-        if notify_high_risk:
+        if notify_high_risk or notify_identity:
             try:
                 _student = attempt.student if hasattr(attempt, 'student') and attempt.student else None
                 _sname = _student.full_name if _student else f'Étudiant #{attempt.student_id}'
@@ -525,6 +559,21 @@ def log_proctoring_event(attempt_id):
             except Exception as _nb_err:
                 import logging as _lg
                 _lg.getLogger('cei.proctoring').warning('notif_bus risk error: %s', _nb_err)
+
+        if notify_identity:
+            try:
+                from notif_bus import notify_exam
+                notify_exam(
+                    exam_id_val,
+                    'identity_mismatch',
+                    'Identité non confirmée — action requise',
+                    f'{_sname} — vérification manuelle requise (5 échecs de reconnaissance faciale consécutifs)',
+                    priority='urgent',
+                    tags=['warning'],
+                )
+            except Exception as _nb_err:
+                import logging as _lg
+                _lg.getLogger('cei.proctoring').warning('notif_bus identity error: %s', _nb_err)
 
         return jsonify({
             'success': True,
@@ -781,6 +830,89 @@ def proctor_ban_student(attempt_id):
 
 
 # ============================================================================
+# API : VALIDATION MANUELLE D'IDENTITÉ (prof/surveillant, suite à
+# identity_mismatch_sustained) — correctif sécurité 27/08, voir Phase X du
+# plan : remplace l'ancienne recapture automatique silencieuse. Le frontend
+# gèle refDescRef dès l'événement identity_mismatch_sustained et attend ce
+# verdict avant de reprendre toute reconnaissance faciale (voir
+# identityFrozenRef, exam/[id]/page.tsx).
+# ============================================================================
+
+@proctoring_bp.route('/api/exam_attempts/<int:attempt_id>/identity_manual_verify', methods=['POST'])
+@paseto_required
+def identity_manual_verify(attempt_id):
+    """Prof/surveillant confirme ou infirme l'identité après un signalement
+    identity_mismatch_sustained. 'confirmed' débloque la reconnaissance
+    faciale côté client (nouvelle référence recapturée EXPLICITEMENT, plus
+    jamais silencieusement) ; 'rejected' exclut directement la tentative."""
+    user_id = get_current_user_id()
+    role = get_current_user_role()
+
+    if role not in ['professor', 'admin', 'surveillant']:
+        return jsonify({'error': 'Accès réservé aux enseignants et surveillants'}), 403
+
+    session = get_session()
+    try:
+        attempt = session.query(ExamAttempt).filter_by(id=attempt_id).first()
+        if not attempt:
+            return jsonify({'error': 'Tentative introuvable'}), 404
+
+        if role == 'professor' and attempt.exam.created_by_id != user_id:
+            return jsonify({'error': 'Vous ne pouvez agir que sur vos propres examens'}), 403
+
+        if role == 'surveillant':
+            assigned = session.query(ProctorAssignment).filter_by(
+                proctor_id=user_id, exam_id=attempt.exam_id
+            ).filter(
+                (ProctorAssignment.attempt_id == attempt_id) |
+                (ProctorAssignment.student_id == attempt.student_id)
+            ).first()
+            if not assigned:
+                return jsonify({'error': 'Cet étudiant ne vous est pas affecté'}), 403
+
+        data = request.get_json() or {}
+        verdict = data.get('verdict')
+        if verdict not in ('confirmed', 'rejected'):
+            return jsonify({'error': "verdict requis : 'confirmed' ou 'rejected'"}), 400
+
+        proctor = session.query(User).filter_by(id=user_id).first()
+        proctor_name = proctor.full_name if proctor else f'Surveillant #{user_id}'
+
+        review_log = ExamActivityLog(
+            attempt_id=attempt_id,
+            event_type='identity_manual_review',
+            event_data=json.dumps({
+                'verdict': verdict, 'by_id': user_id, 'by_role': role,
+                'by_name': proctor_name, 'timestamp': datetime.utcnow().isoformat()
+            })
+        )
+        session.add(review_log)
+
+        if verdict == 'rejected':
+            attempt.status = AttemptStatus.BANNED
+            attempt.banned_at = datetime.utcnow()
+            attempt.ban_reason = f'Identité non confirmée par {proctor_name} après signalement soutenu'
+        else:
+            # Message routé par le polling existant (pending_messages) — le
+            # frontend traite 'identity_cleared' comme un débloquage
+            # explicite du gel de reconnaissance (jamais silencieux).
+            clear_log = ExamActivityLog(
+                attempt_id=attempt_id,
+                event_type='teacher_identity_cleared',
+                event_data=json.dumps({
+                    'message': f'Identité confirmée par {proctor_name}',
+                    'timestamp': datetime.utcnow().isoformat()
+                })
+            )
+            session.add(clear_log)
+
+        session.commit()
+        return jsonify({'success': True, 'banned': verdict == 'rejected'})
+    finally:
+        session.close()
+
+
+# ============================================================================
 # API : LISTE DES ÉTUDIANTS ACTIFS (pour dashboard prof)
 # ============================================================================
 
@@ -961,7 +1093,7 @@ def get_pending_messages(attempt_id):
         since_str = request.args.get('since')
         query = session.query(ExamActivityLog).filter(
             ExamActivityLog.attempt_id == attempt_id,
-            ExamActivityLog.event_type.in_(['teacher_warning', 'teacher_message', 'teacher_ban', 'teacher_private_call', 'teacher_end_call'])
+            ExamActivityLog.event_type.in_(['teacher_warning', 'teacher_message', 'teacher_ban', 'teacher_private_call', 'teacher_end_call', 'teacher_identity_cleared'])
         )
         if since_str:
             try:

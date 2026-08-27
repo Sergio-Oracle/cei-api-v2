@@ -1008,6 +1008,21 @@ def log_exam_activity(attempt_id):
         )
         session.add(log)
 
+        # Garde-fou de plausibilité (hygiène de données, pas anti-triche) —
+        # un doublon du même event_type pour la même tentative reçu à moins
+        # de quelques secondes d'intervalle n'incrémente pas de nouveau les
+        # compteurs qui peuvent mener à un bannissement automatique (voir
+        # plus bas), mais reste TOUJOURS journalisé ci-dessus pour l'audit.
+        # cache_should_score (pas cache_set_nx) est fail-open : une panne
+        # Redis ne doit jamais désactiver silencieusement la détection de
+        # fraude — voir cache.py pour le détail.
+        from cache import cache_should_score
+        _dedup_window = {
+            'tab_switch': 3, 'fullscreen_exit': 3, 'window_blur': 3, 'tab_closed': 3,
+            'no_face_detected': 3, 'face_absent': 3, 'multiple_faces': 3,
+        }.get(event_type, 2)
+        should_score = cache_should_score(f'cei:examact:dedup:{attempt_id}:{event_type}', _dedup_window)
+
         exam = attempt.exam
         # Retour DFIP #10 — 'tab_closed' : envoyé via un canal qui survit à la
         # fermeture brutale de l'onglet/navigateur (fetch keepalive côté
@@ -1021,7 +1036,7 @@ def log_exam_activity(attempt_id):
         # ── 1. Outils développeur ─────────────────────────────────────────────
         # Incréments atomiques via UPDATE SQL pour éviter les race conditions multi-thread
         from sqlalchemy import update as _sa_update
-        if event_type == 'devtools_attempt':
+        if event_type == 'devtools_attempt' and should_score:
             ban_on_dev = exam.ban_on_devtools if exam.ban_on_devtools is not None else True
             session.execute(
                 _sa_update(ExamAttempt).where(ExamAttempt.id == attempt_id).values(
@@ -1034,7 +1049,7 @@ def log_exam_activity(attempt_id):
                 ban_reason = "Ouverture des outils développeur détectée"
 
         # ── 2. Changements de fenêtre / onglet / plein écran ──────────────────
-        elif event_type in severity_tab_events:
+        elif event_type in severity_tab_events and should_score:
             session.execute(
                 _sa_update(ExamAttempt).where(ExamAttempt.id == attempt_id).values(
                     tab_switches=ExamAttempt.tab_switches + 1,
@@ -1068,7 +1083,7 @@ def log_exam_activity(attempt_id):
                 session.add(cam_log)
 
         # ── 4. Visage non détecté (face_absent = alias FaceDetector.js) ──────
-        elif event_type in ('no_face_detected', 'face_absent'):
+        elif event_type in ('no_face_detected', 'face_absent') and should_score:
             session.execute(
                 _sa_update(ExamAttempt).where(ExamAttempt.id == attempt_id).values(
                     no_face_count=ExamAttempt.no_face_count + 1,
@@ -1081,7 +1096,7 @@ def log_exam_activity(attempt_id):
                 ban_reason = f"Visage absent trop souvent : {attempt.no_face_count} fois (seuil : {max_nf})"
 
         # ── 3b. Plusieurs visages détectés ────────────────────────────────────
-        elif event_type == 'multiple_faces':
+        elif event_type == 'multiple_faces' and should_score:
             session.execute(
                 _sa_update(ExamAttempt).where(ExamAttempt.id == attempt_id).values(
                     warnings_count=ExamAttempt.warnings_count + 2,
@@ -1091,7 +1106,7 @@ def log_exam_activity(attempt_id):
             session.refresh(attempt)
 
         # ── 4. Violations mineures ────────────────────────────────────────────
-        elif event_type in severity_medium_events:
+        elif event_type in severity_medium_events and should_score:
             session.execute(
                 _sa_update(ExamAttempt).where(ExamAttempt.id == attempt_id).values(
                     warnings_count=ExamAttempt.warnings_count + 1

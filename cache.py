@@ -81,6 +81,26 @@ def cache_set_nx(key: str, ttl: int) -> bool:
         return False
 
 
+def cache_should_score(key: str, ttl: int) -> bool:
+    """Verrou de déduplication pour la notation de risque (proctoring) —
+    PAS le même contrat que cache_set_nx. Ici, contrairement à un verrou de
+    sécurité, on ne veut JAMAIS bloquer la notation à cause d'une panne
+    Redis : cache_set_nx retourne False si Redis est indisponible (bon
+    réflexe pour un verrou fiable, ex. session unique), mais réutilisé tel
+    quel ici cela désactiverait silencieusement TOUT le scoring de risque de
+    la plateforme pendant une panne — inacceptable pour une fonctionnalité
+    de confort (anti-flood/anti-doublon). Donc : Redis down ou erreur ⇒
+    True (on note, comme si de rien n'était) ; Redis dispo ⇒ comportement
+    normal (True seulement si la clé vient d'être posée)."""
+    client = _get_client()
+    if client is None:
+        return True
+    try:
+        return bool(client.set(key, '1', nx=True, ex=ttl))
+    except Exception:
+        return True
+
+
 _POP_SCRIPT = "local v = redis.call('GET', KEYS[1]); redis.call('DEL', KEYS[1]); return v"
 
 

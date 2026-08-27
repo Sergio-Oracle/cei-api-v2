@@ -1860,8 +1860,8 @@ OPENAPI_SPEC = {
                 "properties": {
                     "event_type": {
                         "type": "string",
-                        "enum": ["no_face_detected","no_face_low_light","multiple_faces","tab_switch","camera_disabled","fullscreen_exit","tab_closed","whisper_detected","copy_attempt","paste_attempt","cut_attempt","mouse_left_window","pattern_gaze_talk_mouth","pattern_multi_face_audio","pattern_object_gaze_away","pattern_mouth_covered_audio","pattern_head_turned_talking","pattern_whisper_gaze","face_covered"],
-                        "description": "no_face_detected +10pts | no_face_low_light +0pts (luminosité insuffisante/excessive détectée côté client — détection faciale jugée non fiable, signal informatif seulement, ne pénalise jamais l'étudiant) | multiple_faces +20pts | tab_switch +15pts | tab_closed +10pts (fermeture d'onglet/navigateur pendant l'examen — envoyé via fetch keepalive pour survivre à la fermeture brutale de la page) | whisper_detected +6pts (seuil audio bas, distinct de sustained_audio_detected) | copy_attempt/cut_attempt +8pts, paste_attempt +15pts (journalisés qu'ils soient bloqués ou autorisés) | mouse_left_window +0pts (signal faible, informatif) | face_covered +15pts (heuristique : bas du visage non exploitable par la détection) | pattern_* : événements composites du moteur de corrélation comportementale (plusieurs signaux indépendants réunis dans une même fenêtre glissante de 10s, ex. regard détourné+parole+bouche en mouvement) — pondération +20 à +30pts, nettement plus fiable qu'un signal isolé"
+                        "enum": ["no_face_detected","no_face_low_light","multiple_faces","tab_switch","camera_disabled","fullscreen_exit","tab_closed","whisper_detected","copy_attempt","paste_attempt","cut_attempt","mouse_left_window","pattern_gaze_talk_mouth","pattern_multi_face_audio","pattern_object_gaze_away","pattern_mouth_covered_audio","pattern_head_turned_talking","pattern_whisper_gaze","face_covered","identity_mismatch_sustained"],
+                        "description": "no_face_detected +10pts | no_face_low_light +0pts (luminosité insuffisante/excessive détectée côté client — détection faciale jugée non fiable, signal informatif seulement, ne pénalise jamais l'étudiant) | multiple_faces +20pts | tab_switch +15pts | tab_closed +10pts (fermeture d'onglet/navigateur pendant l'examen — envoyé via fetch keepalive pour survivre à la fermeture brutale de la page) | whisper_detected +6pts (seuil audio bas, distinct de sustained_audio_detected) | copy_attempt/cut_attempt +8pts, paste_attempt +15pts (journalisés qu'ils soient bloqués ou autorisés) | mouse_left_window +0pts (signal faible, informatif) | face_covered +15pts (heuristique : bas du visage non exploitable par la détection) | pattern_* : événements composites du moteur de corrélation comportementale (plusieurs signaux indépendants réunis dans une même fenêtre glissante de 10s, ex. regard détourné+parole+bouche en mouvement) — pondération +20 à +30pts, nettement plus fiable qu'un signal isolé | identity_mismatch_sustained +38pts (5 vérifications de reconnaissance faciale consécutives en échec, ~25s — correctif sécurité 27/08 : gèle la référence côté client et notifie immédiatement le surveillant, ne recapture plus jamais silencieusement ; voir POST .../identity_manual_verify pour la levée du signalement)"
                     }
                 }
             }}}},
@@ -1937,6 +1937,22 @@ OPENAPI_SPEC = {
                 "properties": {"reason": {"type": "string", "example": "Fraude avérée"}}
             }}}},
             "responses": {"200": {"description": "Étudiant exclu"}}
+        }},
+        "/api/exam_attempts/{attempt_id}/identity_manual_verify": {"post": {
+            "tags": ["Surveillant"], "summary": "Trancher un signalement identity_mismatch_sustained (surveillant/prof)",
+            "description": "Correctif sécurité 27/08 — remplace l'ancienne recapture automatique silencieuse après 5 échecs de reconnaissance faciale consécutifs. 'confirmed' débloque la reconnaissance côté étudiant (nouvelle référence recapturée explicitement) ; 'rejected' exclut directement la tentative (AttemptStatus.BANNED).",
+            "parameters": [{"name": "attempt_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+            "requestBody": {"required": True, "content": {"application/json": {"schema": {
+                "type": "object", "required": ["verdict"],
+                "properties": {"verdict": {"type": "string", "enum": ["confirmed", "rejected"]}}
+            }}}},
+            "responses": {
+                "200": {"description": "Verdict enregistré", "content": {"application/json": {"schema": {
+                    "type": "object", "properties": {"success": {"type": "boolean"}, "banned": {"type": "boolean"}}
+                }}}},
+                "400": {"description": "verdict manquant ou invalide"},
+                "403": {"description": "Rôle non autorisé ou étudiant non affecté à ce surveillant"}
+            }
         }},
         "/api/exam_attempts/{attempt_id}/pending_messages": {"get": {
             "tags": ["Proctoring"],

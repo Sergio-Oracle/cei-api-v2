@@ -2258,6 +2258,19 @@ def export_exam_results_csv(exam_id):
             joinedload(ExamAttempt.student)
         ).filter_by(exam_id=exam_id).order_by(ExamAttempt.started_at).all()
 
+        # Correctif montée en charge (29/08, audit) : un COUNT par tentative
+        # dans la boucle ci-dessous devenait 1000+ requêtes séquentielles
+        # pour un examen à 1000 étudiants. Un seul GROUP BY couvre tout.
+        incident_counts = {}
+        if attempts:
+            attempt_ids = [a.id for a in attempts]
+            incident_counts = dict(
+                session.query(ExamActivityLog.attempt_id, sa_func.count(ExamActivityLog.id))
+                .filter(ExamActivityLog.attempt_id.in_(attempt_ids))
+                .group_by(ExamActivityLog.attempt_id)
+                .all()
+            )
+
         output = io.StringIO()
         writer = csv.writer(output, delimiter=';')
         writer.writerow([
@@ -2278,9 +2291,7 @@ def export_exam_results_csv(exam_id):
                 delta = a.submitted_at - a.started_at
                 duration = str(round(delta.total_seconds() / 60, 1))
 
-            incidents = session.query(ExamActivityLog).filter_by(
-                attempt_id=a.id
-            ).count()
+            incidents = incident_counts.get(a.id, 0)
 
             writer.writerow([
                 a.student.full_name if a.student else 'Inconnu',

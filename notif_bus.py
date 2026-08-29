@@ -12,7 +12,7 @@ Usage :
     notify_exam(exam_id, 'student_banned', 'Étudiant exclu', 'Moussa Diallo — fraude', 'urgent')
 """
 import os, json, logging
-from threading import Thread
+from concurrent.futures import ThreadPoolExecutor
 
 import redis as _redis
 
@@ -20,6 +20,15 @@ from ntfy_client import push as _ntfy_push
 
 _log       = logging.getLogger('cei.notif_bus')
 _REDIS_URL = os.getenv('REDIS_URL', 'redis://127.0.0.1:6379/0')
+
+# Correctif montée en charge (29/08, audit) : chaque appel notify_user/
+# notify_exam créait 2 threads OS natifs (Thread(...).start()) sans aucune
+# limite — publier les résultats d'un examen à 300 étudiants (une boucle
+# notify_user par étudiant, voir publish_exam_results) créait ~600 threads
+# d'un coup. Un pool borné absorbe les rafales sans faire exploser le
+# nombre de threads système ; ces publications sont courtes (Redis PUBLISH,
+# appel HTTP ntfy), une file d'attente sur quelques workers suffit largement.
+_executor = ThreadPoolExecutor(max_workers=16, thread_name_prefix='notif_bus')
 
 # Pool dédié aux publications (opérations courtes, max 5 connexions)
 _pool = _redis.ConnectionPool.from_url(
@@ -66,11 +75,11 @@ def notify_user(
     payload = {'type': event_type, 'title': title, 'message': message}
     if extra:
         payload.update(extra)
-    Thread(target=_redis_publish, args=(f'cei:notif:user:{user_id}', payload), daemon=True).start()
+    _executor.submit(_redis_publish, f'cei:notif:user:{user_id}', payload)
     try:
-        Thread(target=_ntfy_push, args=(f'student-{user_id}', title, message, priority, tags), daemon=True).start()
+        _executor.submit(_ntfy_push, f'student-{user_id}', title, message, priority, tags)
     except Exception as exc:
-        _log.warning('Failed to spawn ntfy thread for user %s: %s', user_id, exc)
+        _log.warning('Failed to submit ntfy task for user %s: %s', user_id, exc)
 
 
 def notify_exam(
@@ -87,11 +96,11 @@ def notify_exam(
     Topic ntfy  : exam-{exam_id}
     """
     payload = {'type': event_type, 'title': title, 'message': message}
-    Thread(target=_redis_publish, args=(f'cei:notif:exam:{exam_id}', payload), daemon=True).start()
+    _executor.submit(_redis_publish, f'cei:notif:exam:{exam_id}', payload)
     try:
-        Thread(target=_ntfy_push, args=(f'exam-{exam_id}', title, message, priority, tags), daemon=True).start()
+        _executor.submit(_ntfy_push, f'exam-{exam_id}', title, message, priority, tags)
     except Exception as exc:
-        _log.warning('Failed to spawn ntfy thread for exam %s: %s', exam_id, exc)
+        _log.warning('Failed to submit ntfy task for exam %s: %s', exam_id, exc)
 
 
 def _publish_to_admins(payload: dict) -> None:
@@ -123,8 +132,8 @@ def notify_admins(
     Topic ntfy  : admin-alerts
     """
     payload = {'type': event_type, 'title': title, 'message': message}
-    Thread(target=_publish_to_admins, args=(payload,), daemon=True).start()
+    _executor.submit(_publish_to_admins, payload)
     try:
-        Thread(target=_ntfy_push, args=('admin-alerts', title, message, priority, tags), daemon=True).start()
+        _executor.submit(_ntfy_push, 'admin-alerts', title, message, priority, tags)
     except Exception as exc:
-        _log.warning('Failed to spawn ntfy thread for admins: %s', exc)
+        _log.warning('Failed to submit ntfy task for admins: %s', exc)

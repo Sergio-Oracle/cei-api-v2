@@ -3074,19 +3074,21 @@ def get_video_recordings(exam_id):
             return jsonify({'error': 'Accès non autorisé'}), 403
 
         # Construire index attempt_id → étudiant (surveillant = seulement ses étudiants)
+        # Correctif montée en charge (29/08, audit) : joinedload élimine le
+        # N+1 (une requête User par tentative dans la boucle ci-dessous).
         if user.role == UserRole.SURVEILLANT:
             assigned_ids = {
                 pa.attempt_id for pa in session.query(ProctorAssignment).filter_by(proctor_id=user_id).all()
             }
-            attempts = session.query(ExamAttempt).filter(
+            attempts = session.query(ExamAttempt).options(joinedload(ExamAttempt.student)).filter(
                 ExamAttempt.exam_id == exam_id,
                 ExamAttempt.id.in_(assigned_ids)
             ).all()
         else:
-            attempts = session.query(ExamAttempt).filter_by(exam_id=exam_id).all()
+            attempts = session.query(ExamAttempt).options(joinedload(ExamAttempt.student)).filter_by(exam_id=exam_id).all()
         attempt_map = {}
         for a in attempts:
-            student = session.query(User).filter_by(id=a.student_id).first()
+            student = a.student
             attempt_map[a.id] = {
                 'student_id': a.student_id,
                 'student_name': student.full_name if student else f'Étudiant #{a.student_id}',
@@ -3479,16 +3481,15 @@ def agent_exam_proctoring(exam_id):
         teacher = session.query(User).filter_by(id=exam.created_by_id).first()
         teacher_email = teacher.email if teacher else None
 
-        # Emails des surveillants affectés
-        proctors = session.query(ExamProctor).filter_by(exam_id=exam_id).all()
-        proctor_emails = []
-        for ep in proctors:
-            u = session.query(User).filter_by(id=ep.proctor_id).first()
-            if u and u.email:
-                proctor_emails.append(u.email)
+        # Emails des surveillants affectés — correctif montée en charge
+        # (29/08, audit) : joinedload élimine le N+1 (une requête User par
+        # surveillant).
+        proctors = session.query(ExamProctor).options(joinedload(ExamProctor.proctor)).filter_by(exam_id=exam_id).all()
+        proctor_emails = [ep.proctor.email for ep in proctors if ep.proctor and ep.proctor.email]
 
-        # Tentatives actives
-        attempts = session.query(ExamAttempt).filter_by(exam_id=exam_id).all()
+        # Tentatives actives — même correctif pour attempt.student (utilisé
+        # plus bas dans la boucle attempts_data).
+        attempts = session.query(ExamAttempt).options(joinedload(ExamAttempt.student)).filter_by(exam_id=exam_id).all()
         attempt_ids = [a.id for a in attempts]
 
         # Comptage réel des événements no_face_detected / multiple_faces par
@@ -3511,7 +3512,7 @@ def agent_exam_proctoring(exam_id):
 
         attempts_data = []
         for a in attempts:
-            student = session.query(User).filter_by(id=a.student_id).first()
+            student = a.student
             counts = face_counts.get(a.id, {})
             attempts_data.append({
                 'id':                     a.id,

@@ -74,17 +74,32 @@ def admin_dashboard():
             session.close()
             return jsonify({'error': 'Accès non autorisé'}), 403
 
-        data = {
-            'total_users':            session.query(User).count(),
-            'total_students':         session.query(User).filter_by(role=UserRole.STUDENT).count(),
-            'total_professors':       session.query(User).filter_by(role=UserRole.PROFESSOR).count(),
-            'total_surveillants':     session.query(User).filter_by(role=UserRole.SURVEILLANT).count(),
-            'total_subjects':         session.query(Subject).count(),
-            'total_papers':           session.query(StudentPaper).count(),
-            'pending_reclamations':   session.query(Reclamation).filter_by(status=ReclamationStatus.PENDING).count(),
-            'total_corrected_papers': session.query(StudentPaper).filter(StudentPaper.corrected_at != None).count(),
-        }
+        # Correctif montée en charge (29/08, audit) : 8 COUNT() non mis en
+        # cache sur un endpoint exempté de limite de fréquence, consulté à
+        # chaque affichage/rafraîchissement du dashboard admin. Colonnes
+        # filtrées maintenant indexées (role, status, corrected_at) —
+        # complété par un cache court (30s, partagé entre tous les admins)
+        # pour éviter de recalculer à chaque appel un tableau de bord qui
+        # n'a de toute façon pas besoin d'être seconde-près.
+        from cache import cache_get, cache_set
+        CACHE_KEY = 'cei:admin_dashboard_counts'
+        data = cache_get(CACHE_KEY)
+        if data is None:
+            data = {
+                'total_users':            session.query(User).count(),
+                'total_students':         session.query(User).filter_by(role=UserRole.STUDENT).count(),
+                'total_professors':       session.query(User).filter_by(role=UserRole.PROFESSOR).count(),
+                'total_surveillants':     session.query(User).filter_by(role=UserRole.SURVEILLANT).count(),
+                'total_subjects':         session.query(Subject).count(),
+                'total_papers':           session.query(StudentPaper).count(),
+                'pending_reclamations':   session.query(Reclamation).filter_by(status=ReclamationStatus.PENDING).count(),
+                'total_corrected_papers': session.query(StudentPaper).filter(StudentPaper.corrected_at != None).count(),
+            }
+            cache_set(CACHE_KEY, data, ttl=30)
         from proctoring_routes import get_active_proctor_ids
+        # Toujours calculé en direct (pas de cache) : la présence d'un
+        # surveillant change en quelques secondes, contrairement aux
+        # compteurs ci-dessus.
         data['active_surveillants'] = len(get_active_proctor_ids())
         session.close()
         return jsonify(data)

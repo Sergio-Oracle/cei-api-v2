@@ -100,13 +100,22 @@ def get_student_online_results():
             ExamAttempt.corrected_at != None,
         ).order_by(desc(ExamAttempt.corrected_at)).all()
 
+        # Correctif montée en charge (29/08, audit) : une requête Reclamation
+        # par tentative dans la boucle ci-dessous, sur un endpoint exempté
+        # de limite de fréquence — un seul aller-retour couvre tout.
+        rec_by_attempt = {}
+        if attempts:
+            recs = session.query(Reclamation).filter(
+                Reclamation.attempt_id.in_([a.id for a in attempts]),
+                Reclamation.student_id == user_id,
+            ).all()
+            rec_by_attempt = {r.attempt_id: r for r in recs}
+
         results = []
         for att in attempts:
             exam    = att.exam
             subject = exam.subject if exam else None
-            existing_rec = session.query(Reclamation).filter_by(
-                attempt_id=att.id, student_id=user_id
-            ).first()
+            existing_rec = rec_by_attempt.get(att.id)
             # Retour #29/point 19 — notes masquées à l'étudiant tant que le
             # professeur/admin n'a pas explicitement publié les résultats.
             published = bool(exam.results_published) if exam else True

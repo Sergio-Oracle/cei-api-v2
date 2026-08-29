@@ -874,12 +874,18 @@ def assign_ec_to_professor():
         ec = session.query(EC).filter_by(id=ec_id).first()
         session.add(ECAssignment(ec_id=ec_id, professor_id=prof_id))
         session.commit()
+        # Correctif fiabilité (29/08, audit de montée en charge) : ec.code/
+        # ec.name sont expirés par commit() — capturer avant close(). Avant
+        # ce correctif, cette ligne levait un DetachedInstanceError avalé
+        # silencieusement (except Exception: pass) : la notification
+        # "Affecté à un EC" n'était JAMAIS envoyée, sans aucune trace.
+        ec_label = f'{ec.code} — {ec.name}'
         session.close()
 
         try:
             from notif_bus import notify_user
             notify_user(prof_id, 'ec_assigned', 'Affecté à un EC',
-                         f'Vous avez été affecté à l\'EC « {ec.code} — {ec.name} ».', priority='default', tags=['books'])
+                         f'Vous avez été affecté à l\'EC « {ec_label} ».', priority='default', tags=['books'])
         except Exception:
             pass
         return jsonify({'success': True, 'message': 'EC affecté avec succès'}), 201
@@ -908,11 +914,14 @@ def assign_ec_by_id(eid):
             session.close(); return jsonify({'error': 'Ce professeur est déjà affecté à cet EC'}), 400
         session.add(ECAssignment(ec_id=eid, professor_id=prof_id))
         session.commit()
+        # Correctif fiabilité (29/08, audit de montée en charge) — voir
+        # assign_ec_to_professor ci-dessus pour le détail : capturer avant close().
+        ec_label = f'{ec.code} — {ec.name}'
         session.close()
         try:
             from notif_bus import notify_user
             notify_user(prof_id, 'ec_assigned', 'Affecté à un EC',
-                         f'Vous avez été affecté à l\'EC « {ec.code} — {ec.name} ».', priority='default', tags=['books'])
+                         f'Vous avez été affecté à l\'EC « {ec_label} ».', priority='default', tags=['books'])
         except Exception:
             pass
         return jsonify({'success': True, 'message': 'EC affecté avec succès'}), 201

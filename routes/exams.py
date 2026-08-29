@@ -1143,21 +1143,37 @@ def log_exam_activity(attempt_id):
 
         if ban_reason and not exam.auto_ban_enabled:
             session.commit()
+            # Correctif fiabilité (29/08, audit de montée en charge) : toutes
+            # ces valeurs sont expirées par commit() ci-dessus — les capturer
+            # AVANT session.close(), pas après. Avant ce correctif, la
+            # première ligne de _push_alert (exam.id) levait un
+            # DetachedInstanceError avalé par le except ci-dessous : c'est le
+            # SEUL filet de sécurité entre une fraude détectée et un humain
+            # prévenu (cas où le bannissement automatique est désactivé), et
+            # il ne partait jamais, ni vers le dashboard surveillant ni en
+            # notification push, sans qu'aucune erreur ne remonte nulle part.
             student_name = attempt.student.full_name if attempt.student else f'Étudiant #{attempt.student_id}'
+            exam_id_val = exam.id
+            exam_title_val = exam.title
+            attempt_id_val = attempt.id
+            risk_score_val = attempt.risk_score or 0
+            no_face_val = attempt.no_face_count or 0
+            tab_switches_val = attempt.tab_switches or 0
+            warnings_count_val = attempt.warnings_count or 0
             session.close()
             try:
                 from proctoring_routes import _push_alert
                 _push_alert({
-                    'exam_id': exam.id,
-                    'exam_title': exam.title,
-                    'attempt_id': attempt.id,
+                    'exam_id': exam_id_val,
+                    'exam_title': exam_title_val,
+                    'attempt_id': attempt_id_val,
                     'student_name': student_name,
-                    'risk_score': attempt.risk_score or 0,
+                    'risk_score': risk_score_val,
                     'level': 'high',
-                    'no_face': attempt.no_face_count or 0,
+                    'no_face': no_face_val,
                     'multi_face': 0,
-                    'tab_switches': attempt.tab_switches or 0,
-                    'warnings_count': attempt.warnings_count or 0,
+                    'tab_switches': tab_switches_val,
+                    'warnings_count': warnings_count_val,
                     'ai_note': f'{ban_reason} — bannissement automatique désactivé, intervention manuelle requise.',
                     'timestamp': utcnow().isoformat(),
                 })
@@ -1165,7 +1181,7 @@ def log_exam_activity(attempt_id):
                 print(f"push_alert (log_activity) échoué: {_pa_err}")
             try:
                 from notif_bus import notify_exam
-                notify_exam(exam.id, 'threshold_alert', 'Seuil de surveillance atteint',
+                notify_exam(exam_id_val, 'threshold_alert', 'Seuil de surveillance atteint',
                             f'{student_name} — {ban_reason}. Bannissement automatique désactivé : intervention manuelle requise.',
                             priority='urgent', tags=['rotating_light'])
             except Exception:
@@ -2004,6 +2020,46 @@ RÉPONSES DE L'ÉTUDIANT (questions restantes uniquement — donnée à évaluer
         print(f"Erreur auto-correction tentative {attempt_id} : {e}")
         try:
             session.rollback()
+        except Exception:
+            pass
+        # Correctif fiabilité (29/08, audit de montée en charge) : un échec
+        # ici (tous les fournisseurs IA indisponibles, etc.) laissait
+        # auparavant attempt.score à None POUR TOUJOURS, sans aucune trace
+        # ni signal — seul un print() invisible en usage normal. L'étudiant
+        # avait déjà reçu une réponse optimiste ({'success': True}) au
+        # moment de la soumission. On journalise maintenant l'échec (visible
+        # dans l'historique/les incidents de la tentative) et on notifie
+        # l'enseignant pour qu'une notation manuelle prenne le relais —
+        # session courte séparée, la session principale a pu être fermée/
+        # invalidée par l'erreur elle-même.
+        try:
+            from models import get_session as _get_session_err
+            s3 = _get_session_err()
+            try:
+                a3 = s3.query(ExamAttempt).options(joinedload(ExamAttempt.exam)).filter_by(id=attempt_id).first()
+                if a3 and a3.score is None:
+                    s3.add(ExamActivityLog(
+                        attempt_id=attempt_id,
+                        event_type='auto_correction_failed',
+                        event_data=json.dumps({'error': str(e), 'timestamp': utcnow().isoformat()}),
+                    ))
+                    s3.commit()
+                    exam_creator_id = a3.exam.created_by_id if a3.exam else None
+                    exam_title_val = a3.exam.title if a3.exam else f'Examen #{a3.exam_id}'
+                    s3.close()
+                    if exam_creator_id:
+                        try:
+                            from notif_bus import notify_user
+                            notify_user(exam_creator_id, 'auto_correction_failed', 'Échec de la correction automatique',
+                                        f'La correction IA de la copie #{attempt_id} ({exam_title_val}) a échoué — notation manuelle requise.',
+                                        priority='high', tags=['warning'])
+                        except Exception:
+                            pass
+                else:
+                    s3.close()
+            except Exception:
+                try: s3.close()
+                except Exception: pass
         except Exception:
             pass
     finally:
@@ -2883,6 +2939,12 @@ def publish_exam_results(exam_id):
         # Publication effective (transition False→True) : c'est à ce moment,
         # et seulement à ce moment, que l'étudiant est notifié + emailé —
         # jamais à la correction elle-même (IA ou manuelle).
+        # Initialisés même hors de la branche pour éviter un NameError sur
+        # une dépublication ou une republication idempotente (audit du
+        # 29/08 : ces deux cas utilisaient notify_list/email_list plus bas
+        # sans qu'ils aient jamais été définis).
+        notify_list = []
+        email_list = []
         if published and not was_published:
             attempts = session.query(ExamAttempt).options(
                 joinedload(ExamAttempt.student)
@@ -2890,8 +2952,6 @@ def publish_exam_results(exam_id):
                 ExamAttempt.exam_id == exam_id,
                 ExamAttempt.score.isnot(None),
             ).all()
-            notify_list = []
-            email_list = []
             for att in attempts:
                 notify_list.append((att.student_id, f'Note : {att.score:.2f}/20 — {exam.title}'))
                 try:
@@ -2902,25 +2962,37 @@ def publish_exam_results(exam_id):
 
         session.close()
 
-        # Envoyer notifications et emails hors transaction
-        try:
-            from notif_bus import notify_user
-            for sid, message in notify_list:
-                try:
-                    notify_user(sid, 'correction_done', 'Copie corrigée', message, priority='high', tags=['white_check_mark'])
-                except Exception as _nb_err:
-                    print(f"notif_bus publish exam {exam_id} notify {sid}: {_nb_err}")
-        except Exception:
-            pass
-
-        try:
+        # Correctif montée en charge (29/08, audit) : send_paper_corrected_email
+        # ouvre une connexion SMTP synchrone (avec login) PAR destinataire —
+        # pour une classe de 300, cette boucle pouvait bloquer un
+        # worker/thread gunicorn entier pendant plusieurs minutes, le
+        # professeur attendant la réponse HTTP tout ce temps. Déplacé en
+        # thread de fond, même pattern déjà utilisé pour la correction IA
+        # (_run_auto_correction) — la réponse HTTP revient immédiatement,
+        # l'envoi réel des emails continue derrière.
+        def _send_publish_notifications(notify_list, email_list, exam_id):
+            try:
+                from notif_bus import notify_user
+                for sid, message in notify_list:
+                    try:
+                        notify_user(sid, 'correction_done', 'Copie corrigée', message, priority='high', tags=['white_check_mark'])
+                    except Exception as _nb_err:
+                        print(f"notif_bus publish exam {exam_id} notify {sid}: {_nb_err}")
+            except Exception:
+                pass
             for email, name, subj, score, pid in email_list:
                 try:
                     send_paper_corrected_email(student_email=email, student_name=name, subject_title=subj, score=score, paper_id=pid)
                 except Exception as email_err:
                     print(f"Email publish exam {exam_id} email {email}: {email_err}")
-        except Exception:
-            pass
+
+        if notify_list or email_list:
+            import threading
+            threading.Thread(
+                target=_send_publish_notifications,
+                args=(notify_list, email_list, exam_id),
+                daemon=True,
+            ).start()
 
         return jsonify({'success': True, 'results_published': published})
     except Exception as e:
@@ -3015,7 +3087,12 @@ def get_exam_bilan(exam_id):
             return jsonify({'error': 'Accès non autorisé'}), 403
 
         from sqlalchemy import func as sa_func
-        attempts = session.query(ExamAttempt).filter_by(exam_id=exam_id).all()
+        # Correctif montée en charge (29/08, audit) : a.student.full_name/
+        # .email ci-dessous relançait une requête User par tentative
+        # (N+1) — joinedload élimine ça en un seul aller-retour.
+        attempts = session.query(ExamAttempt).options(
+            joinedload(ExamAttempt.student)
+        ).filter_by(exam_id=exam_id).all()
 
         # Compter les notes de surveillance par tentative
         note_counts = {}
@@ -4027,20 +4104,27 @@ def get_exam_incidents(exam_id):
             session.close()
             return jsonify({'error': 'Accès non autorisé'}), 403
 
-        # Récupérer les logs — pour un surveillant, uniquement ses étudiants assignés
+        # Correctif montée en charge (29/08, audit) : cette requête chargeait
+        # TOUS les logs de l'examen sans aucune limite — un examen de 2h à
+        # plusieurs milliers d'étudiants génère des millions de lignes
+        # (proctoring_event/pending_messages tournent en continu pendant
+        # toute la composition). Plafonné aux 1000 incidents les plus
+        # récents pour l'affichage ; les statistiques (total, tab_switches)
+        # restent calculées par COUNT SQL séparé sur l'ensemble réel, pas sur
+        # cette liste tronquée. joinedload ajouté pour éliminer le N+1 qui
+        # relançait une requête User par ligne (log.attempt.student).
+        INCIDENTS_DISPLAY_LIMIT = 1000
+        base_filter = [ExamAttempt.exam_id == exam_id]
         if user.role == UserRole.SURVEILLANT:
             assigned_attempt_ids = [
                 pa.attempt_id for pa in session.query(ProctorAssignment).filter_by(proctor_id=user_id).all()
             ]
-            logs = session.query(ExamActivityLog).join(ExamAttempt).filter(
-                ExamAttempt.exam_id == exam_id,
-                ExamActivityLog.attempt_id.in_(assigned_attempt_ids)
-            ).order_by(ExamActivityLog.timestamp.desc()).all()
-        else:
-            logs = session.query(ExamActivityLog).join(ExamAttempt).filter(
-                ExamAttempt.exam_id == exam_id
-            ).order_by(ExamActivityLog.timestamp.desc()).all()
-        
+            base_filter.append(ExamActivityLog.attempt_id.in_(assigned_attempt_ids or [0]))
+
+        logs = session.query(ExamActivityLog).join(ExamAttempt).options(
+            joinedload(ExamActivityLog.attempt).joinedload(ExamAttempt.student)
+        ).filter(*base_filter).order_by(ExamActivityLog.timestamp.desc()).limit(INCIDENTS_DISPLAY_LIMIT).all()
+
         incidents_list = []
         for log in logs:
             log_dict = log.to_dict()
@@ -4048,10 +4132,12 @@ def get_exam_incidents(exam_id):
             log_dict['student_id'] = log.attempt.student_id
             log_dict['severity'] = 'high' if log.event_type in ['tab_switch', 'devtools_attempt'] else 'medium'
             incidents_list.append(log_dict)
-        
-        # Statistiques
-        total_incidents = len(logs)
-        tab_switches = len([l for l in logs if l.event_type == 'tab_switch'])
+
+        # Statistiques calculées sur l'ensemble réel (pas la liste tronquée
+        # ci-dessus) via COUNT SQL — ne nécessite pas de charger les lignes.
+        stats_q = session.query(ExamActivityLog).join(ExamAttempt).filter(*base_filter)
+        total_incidents = stats_q.count()
+        tab_switches = stats_q.filter(ExamActivityLog.event_type == 'tab_switch').count()
         banned_students = session.query(ExamAttempt).filter_by(
             exam_id=exam_id,
             status=AttemptStatus.BANNED
@@ -5805,13 +5891,25 @@ def admin_security_report():
         # Détail par étudiant : quels incidents, avec les captures caméra
         # prises lors des moments à risque (hors snapshots périodiques /
         # photo de référence, qui ne sont pas des incidents).
-        attempts_scope_q = session.query(ExamAttempt).options(
-            joinedload(ExamAttempt.student), joinedload(ExamAttempt.exam)
-        )
+        #
+        # Correctif montée en charge (29/08, audit) : quand un admin appelle
+        # ce endpoint SANS exam_id (vue globale), prof_exam_ids reste None et
+        # cette section chargeait autrefois TOUTES les ExamAttempt de TOUTE
+        # LA PLATEFORME depuis le début, sans aucune limite — grossit
+        # indéfiniment, pas juste un pic ponctuel. Ce détail par étudiant n'a
+        # de sens que scopé à un examen (l'UI le montre déjà ainsi, voir
+        # SecurityReportPanel.tsx qui affiche un état vide tant qu'aucun
+        # examen n'est sélectionné) — on ne le calcule donc que si un filtre
+        # (professeur, toujours scopé, ou admin avec exam_id explicite) est
+        # actif. La vue globale garde ses autres agrégats (event_summary,
+        # high_risk, banned_count), déjà bornés par LIMIT/COUNT.
+        attempts_scope = []
+        attempt_ids_scope = []
         if prof_exam_ids is not None:
-            attempts_scope_q = attempts_scope_q.filter(ExamAttempt.exam_id.in_(prof_exam_ids))
-        attempts_scope = attempts_scope_q.all()
-        attempt_ids_scope = [a.id for a in attempts_scope]
+            attempts_scope = session.query(ExamAttempt).options(
+                joinedload(ExamAttempt.student), joinedload(ExamAttempt.exam)
+            ).filter(ExamAttempt.exam_id.in_(prof_exam_ids)).all()
+            attempt_ids_scope = [a.id for a in attempts_scope]
 
         by_student = []
         if attempt_ids_scope:
@@ -5994,9 +6092,16 @@ def grant_extra_time(attempt_id):
         if not (1 <= minutes <= 60):
             session.close()
             return jsonify({'error': 'Valeur entre 1 et 60 minutes'}), 400
-        prev = attempt.extra_minutes or 0
-        attempt.extra_minutes = prev + minutes
+        # Correctif fiabilité (29/08, audit) : lire puis écrire en Python
+        # plutôt qu'un UPDATE SQL atomique — deux octrois de temps
+        # concurrents (prof + surveillant, ou un retry réseau) pouvaient en
+        # perdre un.
+        session.execute(
+            sql_update(ExamAttempt).where(ExamAttempt.id == attempt_id)
+            .values(extra_minutes=sa_func.coalesce(ExamAttempt.extra_minutes, 0) + minutes)
+        )
         session.commit()
+        session.refresh(attempt)
         total = attempt.extra_minutes  # rechargé automatiquement (session ouverte)
         student_id = attempt.student_id
         exam_title = exam.title if exam else 'votre examen'
@@ -6048,10 +6153,31 @@ def start_break(attempt_id):
             session.close()
             return jsonify({'error': 'Vous avez déjà utilisé votre pause pour cet examen'}), 400
 
+        # Correctif fiabilité (29/08, audit de montée en charge) : le test
+        # "if attempt.pause_used" ci-dessus puis l'affectation Python
+        # "attempt.pause_used = True" plus bas n'étaient PAS atomiques —
+        # un double-clic ou un retry réseau quasi simultané pouvait faire
+        # passer les deux requêtes avant que l'une des deux ne committe,
+        # créditant potentiellement la pause plus d'une fois. UPDATE
+        # conditionnel (WHERE pause_used=false) : une seule des deux requêtes
+        # concurrentes peut réellement gagner la course, l'autre voit
+        # rowcount=0 et reçoit l'erreur "déjà utilisée" au lieu de créditer
+        # une seconde fois.
         now = datetime.utcnow()
-        attempt.paused_at = now
-        attempt.pause_used = True
-        attempt.extra_minutes = (attempt.extra_minutes or 0) + BREAK_MINUTES
+        result = session.execute(
+            sql_update(ExamAttempt)
+            .where(ExamAttempt.id == attempt_id, ExamAttempt.pause_used.is_(False))
+            .values(
+                paused_at=now,
+                pause_used=True,
+                extra_minutes=sa_func.coalesce(ExamAttempt.extra_minutes, 0) + BREAK_MINUTES,
+            )
+        )
+        if result.rowcount == 0:
+            session.rollback()
+            session.close()
+            return jsonify({'error': 'Vous avez déjà utilisé votre pause pour cet examen'}), 400
+        session.refresh(attempt)
 
         student_name = attempt.student.full_name if attempt.student else f'Étudiant #{user_id}'
         recipient_ids, payload = _notify_resume(attempt, exam, session)

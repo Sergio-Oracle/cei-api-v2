@@ -721,9 +721,18 @@ def send_proctoring_warning(attempt_id):
                                    'timestamp': datetime.utcnow().isoformat()})
         )
         session.add(log)
-        # N'incrémenter les avertissements que pour les types graves
+        # N'incrémenter les avertissements que pour les types graves.
+        # Correctif fiabilité (29/08, audit) : incrément Python (lire puis
+        # écrire) plutôt qu'un UPDATE SQL atomique — deux avertissements
+        # envoyés à quelques millisecondes d'écart (prof + surveillant, ou
+        # double-clic) pouvaient en perdre un. Même pattern atomique déjà
+        # utilisé ailleurs dans ce fichier pour risk_score.
         if warning_type not in ('message', 'private_call', 'end_call'):
-            attempt.warnings_count += 1
+            from sqlalchemy import update as _sa_update_warn
+            session.execute(
+                _sa_update_warn(ExamAttempt).where(ExamAttempt.id == attempt_id)
+                .values(warnings_count=ExamAttempt.warnings_count + 1)
+            )
         session.commit()
 
         return jsonify({'success': True, 'message': 'Avertissement envoyé'})
@@ -808,12 +817,19 @@ def proctor_ban_student(attempt_id):
             student_name = f'Étudiant #{attempt.student_id}'
 
         session.commit()
+        # Correctif fiabilité (29/08, audit de montée en charge) : attempt.exam_id
+        # est expiré par commit() — capturer avant close(), pas après. Avant ce
+        # correctif, cette ligne levait un DetachedInstanceError avalé
+        # silencieusement par le except ci-dessous : le bannissement
+        # fonctionnait bien, mais la notification "urgent" au professeur
+        # n'était JAMAIS envoyée.
+        exam_id_val = attempt.exam_id
         session.close()
 
         try:
             from notif_bus import notify_exam
             notify_exam(
-                attempt.exam_id,
+                exam_id_val,
                 'student_banned',
                 'Étudiant exclu',
                 f'{student_name} — motif : {reason}',
@@ -1505,6 +1521,14 @@ def add_exam_proctor(exam_id):
             exam_title = ''
 
         session.commit()
+        # Correctif fiabilité (29/08, audit de montée en charge) : ep.to_dict()
+        # accède à des colonnes ET à des relations (proctor, assigned_by) qui
+        # sont toutes expirées par commit() — les calculer ICI, avant
+        # session.close(), pendant que la session est encore vivante pour
+        # recharger ce qui est expiré/lazy. Appeler to_dict() APRÈS close()
+        # (comme avant) levait un DetachedInstanceError à 100% des appels —
+        # l'affectation était bien enregistrée mais l'endpoint renvoyait un 500.
+        ep_dict = ep.to_dict()
         session.close()
 
         try:
@@ -1517,7 +1541,7 @@ def add_exam_proctor(exam_id):
         except Exception:
             pass
 
-        return jsonify({'success': True, 'proctor': ep.to_dict()}), 201
+        return jsonify({'success': True, 'proctor': ep_dict}), 201
     finally:
         session.close()
 
@@ -1628,7 +1652,20 @@ def get_proctor_signals(exam_id, proctor_id, level):
 def get_proctor_status(proctor_id, session):
     """Statut global d'un surveillant, tous examens surveillés en ce moment
     confondus : ('engaged'|'idle'|'disconnected', exam_id le plus favorable ou
-    None). Utilisé par le dashboard superviseur."""
+    None). Utilisé par le dashboard superviseur.
+
+    Correctif montée en charge (29/08, audit) : utilisait auparavant
+    `client.scan_iter('cei:proctor_live:*:{proctor_id}')` — un SCAN de TOUT
+    le keyspace 'cei:proctor_live:*' à chaque appel (le motif met exam_id
+    avant proctor_id, donc aucun lookup direct possible), appelé une fois
+    par surveillant depuis professor_dashboard → amplification N (surveillants)
+    x taille du keyspace, sur un endpoint sans limite de fréquence. Remplacé
+    par un index inversé ('cei:proctor_exams:{proctor_id}', alimenté par
+    proctor_heartbeat) donnant directement les examens candidats de CE
+    surveillant — un GET direct par candidat (typiquement 1-3) au lieu d'un
+    balayage complet. Une entrée obsolète dans l'index (examen quitté depuis)
+    échoue simplement au GET et est nettoyée au passage (SREM), sans
+    conséquence fonctionnelle."""
     from cache import _get_client
     client = _get_client()
     if client is None:
@@ -1636,12 +1673,20 @@ def get_proctor_status(proctor_id, session):
     rank = {'disconnected': 0, 'idle': 1, 'engaged': 2}
     best_status, best_exam = 'disconnected', None
     try:
-        for key in client.scan_iter(f'cei:proctor_live:*:{proctor_id}'):
-            k = key.decode() if isinstance(key, bytes) else key
-            parts = k.split(':')
-            if len(parts) != 4:
+        candidate_ids = client.smembers(f'cei:proctor_exams:{proctor_id}') or set()
+        for raw in candidate_ids:
+            exam_id_str = raw.decode() if isinstance(raw, bytes) else raw
+            try:
+                exam_id = int(exam_id_str)
+            except (TypeError, ValueError):
                 continue
-            exam_id = int(parts[2])
+            if not client.exists(f'cei:proctor_live:{exam_id}:{proctor_id}'):
+                # Entrée obsolète (heartbeat expiré depuis) — nettoyage opportuniste.
+                try:
+                    client.srem(f'cei:proctor_exams:{proctor_id}', raw)
+                except Exception:
+                    pass
+                continue
             level = get_vigilance_level(exam_id, proctor_id, session)
             status = get_proctor_engagement_status(exam_id, proctor_id, level)
             if rank[status] > rank[best_status]:
@@ -1748,6 +1793,23 @@ def proctor_heartbeat(exam_id):
         proctor_id = get_current_user_id()
         cache_set(f'cei:proctor_live:{exam_id}:{proctor_id}', '1', ttl=HEARTBEAT_TTL)
         cache_set(f'cei:proctor_seen:{exam_id}:{proctor_id}', '1', ttl=86400)
+        # Index inversé (29/08, audit montée en charge) : get_proctor_status
+        # faisait un SCAN de tout le keyspace 'cei:proctor_live:*' à CHAQUE
+        # appel pour retrouver les examens d'un surveillant donné (le motif
+        # exam_id:proctor_id met exam_id en premier, donc aucun lookup direct
+        # possible par proctor_id seul) — répété pour chaque surveillant du
+        # dashboard professeur (N surveillants x M examens actifs). Cet
+        # ensemble Redis sert de candidats ; get_proctor_status revérifie
+        # ensuite l'existence réelle de chaque clé individuelle (l'ensemble
+        # peut contenir des entrées expirées, sans conséquence).
+        try:
+            from cache import _get_client
+            _rc = _get_client()
+            if _rc is not None:
+                _rc.sadd(f'cei:proctor_exams:{proctor_id}', exam_id)
+                _rc.expire(f'cei:proctor_exams:{proctor_id}', 86400)
+        except Exception:
+            pass
 
         data = request.get_json(silent=True) or {}
         if data.get('interacting'):

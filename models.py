@@ -299,7 +299,9 @@ class User(Base):
     email = Column(String(120), unique=True, nullable=True)
     password_hash = Column(String(255), nullable=False)
     full_name = Column(String(100), nullable=False)
-    role = Column(SQLEnum(UserRole), default=UserRole.STUDENT)
+    # Audit de montée en charge (29/08) : filtré à chaque chargement du
+    # dashboard admin (comptage par rôle, non mis en cache).
+    role = Column(SQLEnum(UserRole), default=UserRole.STUDENT, index=True)
     niveau = Column(String(5), nullable=True)   # L1, L2, L3, M1, M2
     is_active = Column(Boolean, default=True)
     email_verified = Column(Boolean, default=False)
@@ -435,7 +437,9 @@ class StudentPaper(Base):
     file_hash = Column(String(64), unique=True) # SHA256 pour détecter doublons
     extracted_student_name = Column(String(200)) # Nom extrait par OCR
     corrected_by_id = Column(Integer, ForeignKey('users.id'))
-    corrected_at = Column(DateTime)
+    # Audit de montée en charge (29/08) : filtré (IS NOT NULL) à chaque
+    # chargement du dashboard admin (comptage des copies corrigées).
+    corrected_at = Column(DateTime, index=True)
     reclamation_window_end = Column(DateTime, default=lambda: datetime.utcnow() + timedelta(days=7))  # Fin de la fenêtre de réclamation (corrected_at + 7 jours)
     email_sent = Column(Boolean, default=False) # Email envoyé?
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -481,7 +485,9 @@ class Reclamation(Base):
     attempt_id = Column(Integer, ForeignKey('exam_attempts.id'), nullable=True)
     student_id = Column(Integer, ForeignKey('users.id'), nullable=False)
     reason = Column(Text, nullable=False)
-    status = Column(SQLEnum(ReclamationStatus), default=ReclamationStatus.PENDING)
+    # Audit de montée en charge (29/08) : filtré (status=PENDING) à chaque
+    # chargement du dashboard admin.
+    status = Column(SQLEnum(ReclamationStatus), default=ReclamationStatus.PENDING, index=True)
     response = Column(Text)
 
     ia_decision = Column(Text)
@@ -967,7 +973,10 @@ class ExamActivityLog(Base):
     
     id = Column(Integer, primary_key=True)
     attempt_id = Column(Integer, ForeignKey('exam_attempts.id'), nullable=False, index=True)
-    event_type = Column(String(50), nullable=False)
+    # Audit de montée en charge (29/08) : filtré/agrégé en permanence en
+    # combinaison avec attempt_id (rapports d'incidents, comptage par type)
+    # sans être lui-même indexé.
+    event_type = Column(String(50), nullable=False, index=True)
     event_data = Column(Text)
     timestamp  = Column(DateTime, default=datetime.utcnow, index=True)
 
@@ -1050,7 +1059,9 @@ class ExamProctor(Base):
 
     id = Column(Integer, primary_key=True)
     exam_id = Column(Integer, ForeignKey('online_exams.id'), nullable=False)
-    proctor_id = Column(Integer, ForeignKey('users.id'), nullable=False)
+    # Audit de montée en charge (29/08) : la contrainte unique (exam_id,
+    # proctor_id) ne sert à rien pour un lookup sur proctor_id seul.
+    proctor_id = Column(Integer, ForeignKey('users.id'), nullable=False, index=True)
     assigned_by_id = Column(Integer, ForeignKey('users.id'), nullable=False)
     assigned_at = Column(DateTime, default=datetime.utcnow)
 
@@ -1179,9 +1190,15 @@ class ProctorAssignment(Base):
 
     id = Column(Integer, primary_key=True)
     exam_id = Column(Integer, ForeignKey('online_exams.id'), nullable=False)
-    proctor_id = Column(Integer, ForeignKey('users.id'), nullable=False)
+    # Audit de montée en charge (29/08) : filtré sur proctor_id seul en
+    # permanence (rafraîchissement du dashboard surveillant) et sur
+    # attempt_id/student_id via des OR (résolution d'affectation pendant
+    # l'examen) — la contrainte unique (exam_id, student_id) ne couvre
+    # aucun de ces deux patterns de lookup, d'où un scan complet de table
+    # à chaque appel.
+    proctor_id = Column(Integer, ForeignKey('users.id'), nullable=False, index=True)
     student_id = Column(Integer, ForeignKey('users.id'), nullable=True)
-    attempt_id = Column(Integer, ForeignKey('exam_attempts.id'), nullable=True)
+    attempt_id = Column(Integer, ForeignKey('exam_attempts.id'), nullable=True, index=True)
     assigned_at = Column(DateTime, default=datetime.utcnow)
 
     __table_args__ = (UniqueConstraint('exam_id', 'student_id', name='unique_exam_student_proctor'),)
@@ -1222,8 +1239,14 @@ class CameraLog(Base):
     __tablename__ = 'camera_logs'
 
     id = Column(Integer, primary_key=True)
-    attempt_id = Column(Integer, ForeignKey('exam_attempts.id', ondelete='CASCADE'), nullable=False)
-    timestamp = Column(DateTime, default=datetime.utcnow)
+    # Audit de montée en charge (29/08) : cette table est la plus volumineuse
+    # de la plateforme (un snapshot par tick de caméra x chaque étudiant
+    # pendant toute la durée de l'examen) et n'avait AUCUN index au-delà de
+    # la clé primaire, alors qu'elle est filtrée sur attempt_id/event_type et
+    # triée sur timestamp en permanence (rapports admin/surveillant) — chaque
+    # requête dégénérait en scan complet de table.
+    attempt_id = Column(Integer, ForeignKey('exam_attempts.id', ondelete='CASCADE'), nullable=False, index=True)
+    timestamp = Column(DateTime, default=datetime.utcnow, index=True)
     face_detected = Column(Boolean)
     faces_count = Column(Integer)
     in_frame = Column(Boolean)
@@ -1233,7 +1256,7 @@ class CameraLog(Base):
     image_data = Column(Text)
     confidence_score = Column(Float)
     frame_analysis = Column(Text)
-    event_type = Column(String(50))
+    event_type = Column(String(50), index=True)
 
     attempt = relationship('ExamAttempt', back_populates='camera_logs')
 

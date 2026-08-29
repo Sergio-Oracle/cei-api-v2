@@ -250,7 +250,7 @@ def create_online_exam():
             scheduled_correction_at=scheduled_correction_at,
             enable_calculator=data.get('enable_calculator', False),
             allow_secondary_camera=data.get('allow_secondary_camera', False),
-            require_biometric=data.get('require_biometric', True),
+            require_biometric=data.get('require_biometric', False),
             status=ExamStatus.SCHEDULED,
             created_by_id=user_id
         )
@@ -781,9 +781,11 @@ def start_exam_attempt(exam_id):
             return jsonify({'error': 'Examen non disponible actuellement'}), 400
 
         # Gate biométrique — précondition avant toute création/reprise de
-        # tentative, désormais opt-in par examen (require_biometric, défaut
-        # True — retour utilisateur du 28/08 : certains examens à faible
-        # enjeu n'ont pas besoin de vérifier l'identité). La preuve (posée par
+        # tentative, désormais opt-in par examen (require_biometric, décoché
+        # par défaut pour tout nouvel examen depuis le 29/08 — retour
+        # utilisateur : certains examens à faible enjeu n'ont pas besoin de
+        # vérifier l'identité ; le professeur l'active explicitement quand
+        # il le souhaite). La preuve (posée par
         # /api/biometric/verify/face, ou par le repli manuel
         # /fallback/manual_verify) est une simple LECTURE (pas
         # GETDEL) : la première version consommait la preuve dès ce premier
@@ -799,7 +801,7 @@ def start_exam_attempt(exam_id):
         # fixe et non-devinable (domaine reserve aux comptes de test), aucun
         # risque pour les vrais comptes.
         is_loadtest_account = (user.email or '').endswith('@cei-test.local')
-        exam_requires_biometric = exam.require_biometric if exam.require_biometric is not None else True
+        exam_requires_biometric = exam.require_biometric if exam.require_biometric is not None else False
         bio_proof = (not exam_requires_biometric) or is_loadtest_account or cache_get(f'cei:biometric:verify:{user_id}')
         if not bio_proof:
             enrolled = session.query(BiometricEnrollment).filter_by(user_id=user_id).first() is not None

@@ -702,6 +702,14 @@ class OnlineExam(Base):
     # bouton de couplage ne s'affiche à l'étudiant que si activé ici.
     allow_secondary_camera = Column(Boolean, default=False)
 
+    # Retour utilisateur (28/08) : certains examens (ex. sondages internes,
+    # examens à faible enjeu) n'ont pas besoin de vérifier l'identité par
+    # reconnaissance faciale avant l'accès. Défaut à True (comportement
+    # historique conservé pour tous les examens déjà créés) — le professeur
+    # peut désactiver au cas par cas. Voir routes/exams.py:start_exam_attempt,
+    # le gate biométrique ne s'applique plus que si ce champ est vrai.
+    require_biometric = Column(Boolean, default=True)
+
     status = Column(SQLEnum(ExamStatus), default=ExamStatus.DRAFT)
     created_by_id = Column(Integer, ForeignKey('users.id'), nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -738,6 +746,7 @@ class OnlineExam(Base):
             'results_published': self.results_published or False,
             'enable_calculator': self.enable_calculator or False,
             'allow_secondary_camera': self.allow_secondary_camera or False,
+            'require_biometric': self.require_biometric if self.require_biometric is not None else True,
             'creator_name': self.creator.full_name if self.creator else None,
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'is_active': self.status == ExamStatus.ACTIVE,

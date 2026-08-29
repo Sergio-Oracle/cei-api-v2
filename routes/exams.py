@@ -250,6 +250,7 @@ def create_online_exam():
             scheduled_correction_at=scheduled_correction_at,
             enable_calculator=data.get('enable_calculator', False),
             allow_secondary_camera=data.get('allow_secondary_camera', False),
+            require_biometric=data.get('require_biometric', True),
             status=ExamStatus.SCHEDULED,
             created_by_id=user_id
         )
@@ -510,6 +511,8 @@ def edit_online_exam(exam_id):
             exam.enable_calculator = bool(data['enable_calculator'])
         if 'allow_secondary_camera' in data:
             exam.allow_secondary_camera = bool(data['allow_secondary_camera'])
+        if 'require_biometric' in data:
+            exam.require_biometric = bool(data['require_biometric'])
         if 'randomize_questions' in data:
             exam.randomize_questions = bool(data['randomize_questions'])
         if 'questions_per_page' in data:
@@ -778,7 +781,9 @@ def start_exam_attempt(exam_id):
             return jsonify({'error': 'Examen non disponible actuellement'}), 400
 
         # Gate biométrique — précondition avant toute création/reprise de
-        # tentative, obligatoire pour tous les examens. La preuve (posée par
+        # tentative, désormais opt-in par examen (require_biometric, défaut
+        # True — retour utilisateur du 28/08 : certains examens à faible
+        # enjeu n'ont pas besoin de vérifier l'identité). La preuve (posée par
         # /api/biometric/verify/face, ou par le repli manuel
         # /fallback/manual_verify) est une simple LECTURE (pas
         # GETDEL) : la première version consommait la preuve dès ce premier
@@ -794,7 +799,8 @@ def start_exam_attempt(exam_id):
         # fixe et non-devinable (domaine reserve aux comptes de test), aucun
         # risque pour les vrais comptes.
         is_loadtest_account = (user.email or '').endswith('@cei-test.local')
-        bio_proof = is_loadtest_account or cache_get(f'cei:biometric:verify:{user_id}')
+        exam_requires_biometric = exam.require_biometric if exam.require_biometric is not None else True
+        bio_proof = (not exam_requires_biometric) or is_loadtest_account or cache_get(f'cei:biometric:verify:{user_id}')
         if not bio_proof:
             enrolled = session.query(BiometricEnrollment).filter_by(user_id=user_id).first() is not None
             session.close()

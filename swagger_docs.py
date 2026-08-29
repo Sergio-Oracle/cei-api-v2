@@ -138,6 +138,7 @@ _SCHEMAS = {
             "results_published":   {"type": "boolean", "default": False},
             "enable_calculator":   {"type": "boolean", "default": False, "description": "Calculatrice scientifique intégrée à la page de composition"},
             "allow_secondary_camera": {"type": "boolean", "default": False, "description": "Autorise l'étudiant à coupler une caméra secondaire via smartphone (angle latéral)"},
+            "require_biometric": {"type": "boolean", "default": True, "description": "Exige une vérification d'identité par reconnaissance faciale avant l'accès à cet examen (opt-in par examen depuis le 28/08 — défaut True pour conserver le comportement historique)"},
             "auto_correct":        {"type": "boolean", "default": False, "description": "Correction IA automatique dès qu'un étudiant soumet sa copie"},
             "scheduled_correction_at": {"type": "string", "format": "date-time", "nullable": True, "description": "Heure précise programmée pour corriger en bloc toutes les copies soumises non corrigées — voir /api/agent/run_scheduled_correction/{exam_id}"},
             "correction_triggered_at": {"type": "string", "format": "date-time", "nullable": True, "description": "Renseigné automatiquement une fois la correction planifiée effectivement déclenchée — empêche tout second déclenchement"},
@@ -1621,6 +1622,7 @@ OPENAPI_SPEC = {
                         "enable_file_download": {"type": "boolean", "default": False, "description": "Autoriser le téléchargement des fichiers du sujet (images/vidéos/audios) — si false, bloque notamment le bouton de téléchargement natif des lecteurs vidéo/audio, indépendamment du clic droit"},
                         "enable_calculator":   {"type": "boolean", "default": False, "description": "Active une calculatrice scientifique intégrée à la page de composition (aucun appel réseau) — évite le recours à une calculatrice physique ou un téléphone, non vérifiables par le surveillant"},
                         "allow_secondary_camera": {"type": "boolean", "default": False, "description": "Autorise l'étudiant à coupler son smartphone comme caméra secondaire (angle latéral, QR code depuis la page d'examen) — voir POST /api/exam_attempts/{id}/phone_camera/pair"},
+                        "require_biometric":   {"type": "boolean", "default": True, "description": "Exige une vérification d'identité par reconnaissance faciale avant l'accès à cet examen — opt-in par examen (défaut True) depuis le 28/08, certains examens à faible enjeu peuvent s'en passer"},
                         "auto_correct":        {"type": "boolean", "default": False, "description": "Correction IA automatique dès qu'un étudiant soumet sa copie"},
                         "scheduled_correction_at": {"type": "string", "format": "date-time", "nullable": True, "description": "Heure précise (optionnelle) à laquelle corriger EN BLOC toutes les copies soumises et pas encore corrigées de cet examen — indépendant de `auto_correct`. Déclenché par l'agent autonome (voir /api/agent/due_corrections), jamais deux fois pour le même examen."}
                     }
@@ -3239,7 +3241,8 @@ OPENAPI_SPEC = {
                     "end_time":         {"type": "string", "format": "date-time", "description": "Prioritaire sur duration_minutes si fourni."},
                     "duration_minutes": {"type": "integer", "description": "Ignoré si end_time est fourni — recalculé automatiquement."},
                     "enable_file_download": {"type": "boolean", "description": "Autoriser le téléchargement des fichiers du sujet"},
-                    "enable_calculator":   {"type": "boolean", "description": "Calculatrice scientifique intégrée à la page de composition"}
+                    "enable_calculator":   {"type": "boolean", "description": "Calculatrice scientifique intégrée à la page de composition"},
+                    "require_biometric":   {"type": "boolean", "description": "Exige une vérification d'identité par reconnaissance faciale avant l'accès à cet examen"}
                 }
             }}}},
             "responses": {"200": {"description": "Examen mis à jour", "content": {"application/json": {"schema": {

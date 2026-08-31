@@ -101,7 +101,7 @@ NTFY_TOKEN=                         # Token admin ntfy
 
 | Composant | Amélioration |
 |-----------|-------------|
-| `models.py` | Pool SQLAlchemy : `pool_size=3, max_overflow=7` → 10/worker × 9 workers = 90 connexions (< 100 max PostgreSQL) |
+| `models.py` | Pool SQLAlchemy : `DB_POOL_SIZE`/`DB_MAX_OVERFLOW` (défauts 2/2, configurables par déploiement via `.env`) — toujours vérifier `(pool_size+max_overflow) × nb_workers gunicorn (toutes instances confondues, y compris cei-api-v2-notif) < max_connections PostgreSQL` réel du serveur avant déploiement, pas les valeurs par défaut du code seules (audit du 29/08 : les défauts historiques 3/7 documentés ici ne correspondaient déjà plus au code) |
 | `gunicorn.conf.py` | Hooks `post_fork` + `worker_exit` : `engine.dispose()` pour éviter le partage de connexions DB après fork |
 | `extensions.py` | Rate limiter migré de `memory://` (compteurs indépendants) vers Redis DB 1 (partagé entre workers) |
 | `app.py` | Health check `GET /api/health` (DB + Redis), logging structuré `X-Request-ID`, error handlers 404/405/413/429/500 |
@@ -193,7 +193,7 @@ timeout         = 600     # routes IA
 preload_app     = True
 ```
 
-**Pool PostgreSQL** : `pool_size=3, max_overflow=7` → max 10/worker × 9 = 90 connexions (PostgreSQL max_connections=100).
+**Pool PostgreSQL** : les valeurs réelles dépendent de `DB_POOL_SIZE`/`DB_MAX_OVERFLOW` (`.env`, défauts 2/2 dans `models.py`) et du nombre effectif de workers gunicorn — vérifié directement sur chaque serveur, pas supposé. Audit du 29/08 : sur thieboudiene (production), `cei-api-v2` (21 workers) + `cei-api-v2-notif` (12 workers, `.env` partagé) donnent 33 workers × (pool_size+max_overflow) réels = 231 connexions possibles, contre `max_connections=300` — marge correcte. Toujours recalculer `(pool_size+max_overflow) × nb_workers (toutes instances confondues)` face au `max_connections` réel du serveur avant tout changement de l'un de ces paramètres, plutôt que de se fier à des chiffres documentés ici qui peuvent devenir obsolètes (c'était déjà le cas de cette section avant l'audit).
 
 ---
 

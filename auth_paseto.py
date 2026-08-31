@@ -55,17 +55,39 @@ ACCESS_TTL  = timedelta(minutes=int(os.getenv("PASETO_ACCESS_TTL_MIN",  "15")))
 REFRESH_TTL = timedelta(days   =int(os.getenv("PASETO_REFRESH_TTL_DAYS", "7")))
 COOKIE_NAME = "cei_refresh"
 
+# ─── Session unique par compte (étudiants) ───────────────────────────────────
+# Défini ici (pas dans routes/auth.py, qui l'utilisait auparavant) pour que
+# paseto_required puisse la revérifier à CHAQUE requête, pas seulement au
+# login. Correctif fiabilité (29/08, retour utilisateur) : avant ce
+# correctif, le "force login" (bouton "Se déconnecter de l'autre appareil et
+# continuer ici") blocklistait bien le REFRESH token de l'ancien appareil,
+# mais son ACCESS token déjà émis (stateless, jamais revérifié par requête)
+# restait pleinement valide jusqu'à 15-60 min selon la config — l'ancien
+# appareil restait visiblement connecté et fonctionnel tout ce temps.
+_SESSION_KEY_PREFIX = 'cei:session:active:'
+
+
+def session_key(user_id: int) -> str:
+    return f'{_SESSION_KEY_PREFIX}{user_id}'
+
 # ─── Création de tokens ──────────────────────────────────────────────────────
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
 
-def create_access_token(user_id: int, role: str, email: str = "") -> str:
+def create_access_token(user_id: int, role: str, email: str = "", sid: str | None = None) -> str:
+    """sid (session id) : pour les étudiants uniquement, réutilise le hash du
+    refresh token émis dans la MÊME connexion (même valeur que token_hash
+    stocké dans cei:session:active:{user_id}) — permet à paseto_required de
+    vérifier, à chaque requête, que cet access token appartient toujours à
+    la session active la plus récente. Omis (None) pour le personnel, qui
+    n'est pas soumis à la session unique."""
     now = _now()
     payload = json.dumps({
         "sub":   str(user_id),
         "role":  role,
         "email": email,
+        "sid":   sid,
         "iat":   now.isoformat(),
         "exp":   (now + ACCESS_TTL).isoformat(),
         "type":  "access",
@@ -121,6 +143,30 @@ def paseto_required(f):
             return jsonify({"error": str(e)}), 401
         except Exception:
             return jsonify({"error": "Token invalide ou corrompu"}), 401
+
+        # Session unique (étudiants) — revérifiée à CHAQUE requête, pas
+        # seulement au login. Ne rejette QUE sur une non-correspondance
+        # explicite (quelqu'un d'autre a fait un "force login" depuis, ce
+        # token appartient à une session désormais remplacée) — ne rejette
+        # jamais sur une absence de résultat (clé expirée normalement,
+        # déconnexion explicite ailleurs, ou Redis momentanément
+        # indisponible) : un access token reste une preuve cryptographique
+        # valide de l'identité, et faire échouer TOUS les étudiants sur un
+        # simple accroc Redis serait bien pire que la fenêtre de session
+        # partagée que ce correctif referme. Même logique fail-open que
+        # cache_should_score (cache.py) pour la même raison.
+        if payload.get("role") == "student" and payload.get("sid"):
+            try:
+                from cache import cache_get
+                existing = cache_get(session_key(int(payload["sub"])))
+                if existing and existing.get("token_hash") != payload["sid"]:
+                    return jsonify({
+                        "error": "Session remplacée — vous vous êtes reconnecté depuis un autre appareil.",
+                        "session_superseded": True,
+                    }), 401
+            except Exception:
+                pass  # Redis indisponible ou erreur inattendue — fail-open, voir commentaire ci-dessus
+
         return f(*args, **kwargs)
     return decorated
 

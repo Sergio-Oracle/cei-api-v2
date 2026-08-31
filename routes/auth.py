@@ -19,7 +19,7 @@ from auth_paseto import (
     create_access_token, create_refresh_token,
     set_refresh_cookie, clear_refresh_cookie,
     get_refresh_token_from_cookie, hash_token,
-    ACCESS_TTL, REFRESH_TTL,
+    ACCESS_TTL, REFRESH_TTL, session_key,
 )
 from auth_paseto import decode_token as paseto_decode_token
 from models import get_session, User, UserRole, TokenBlocklist, Formation, Semester, UE, StudentUEEnrollment
@@ -38,11 +38,10 @@ auth_bp = Blueprint('auth', __name__)
 # est déjà active ailleurs, sauf si l'appelant confirme explicitement
 # (force=True) vouloir déconnecter l'autre appareil. Stocké en Redis (pas en
 # base) — c'est un état transitoire, pas une donnée à conserver.
-_SESSION_KEY_PREFIX = 'cei:session:active:'
-
-
-def _session_key(user_id: int) -> str:
-    return f'{_SESSION_KEY_PREFIX}{user_id}'
+# La clé (session_key) vit maintenant dans auth_paseto.py, pas ici — pour que
+# paseto_required puisse la revérifier à chaque requête (correctif 29/08,
+# voir son commentaire pour le détail du bug que ça referme).
+_session_key = session_key  # alias local — évite de toucher tous les appels ci-dessous
 
 
 def _device_label(req) -> str:
@@ -196,8 +195,13 @@ def login():
 
         user.last_login   = utcnow()
         session.commit()
-        access_token  = create_access_token(user.id, user.role.value, user.email)
+        # Correctif 29/08 — refresh_token créé AVANT access_token pour que ce
+        # dernier puisse porter le même sid (hash du refresh) que celui posé
+        # dans cei:session:active ci-dessous ; paseto_required compare les
+        # deux à chaque requête pour détecter une session remplacée ailleurs.
         refresh_token = create_refresh_token(user.id)
+        student_sid = hash_token(refresh_token) if user.role == UserRole.STUDENT else None
+        access_token  = create_access_token(user.id, user.role.value, user.email, sid=student_sid)
         if user.role == UserRole.STUDENT:
             _set_active_session(user.id, refresh_token, _device_label(request), int(REFRESH_TTL.total_seconds()))
         user_dict     = user.to_dict(); session.close()
@@ -242,8 +246,11 @@ def refresh_token_endpoint():
             expires_at=datetime.fromisoformat(payload['exp']),
         )
         session.add(block); session.commit()
-        new_access  = create_access_token(user.id, user.role.value, user.email)
+        # Correctif 29/08 — même raisonnement que login() : sid = hash du
+        # nouveau refresh token, synchronisé avec cei:session:active ci-dessous.
         new_refresh = create_refresh_token(user.id)
+        new_student_sid = hash_token(new_refresh) if user.role == UserRole.STUDENT else None
+        new_access  = create_access_token(user.id, user.role.value, user.email, sid=new_student_sid)
         if user.role == UserRole.STUDENT:
             # Garde le marqueur de session unique synchronisé avec le token
             # tout juste renouvelé — sinon une déconnexion forcée ultérieure

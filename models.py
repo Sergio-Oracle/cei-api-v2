@@ -1283,6 +1283,11 @@ class CameraLog(Base):
             'image_filename': image_filename,
             'image_data':     image_data,
             'frame_analysis': self.frame_analysis,
+            # Correctif (31/08) : colonne déjà écrite à la sauvegarde
+            # (proctoring_routes.py, camera_snapshot) mais jamais renvoyée en
+            # lecture — le personnel ne voyait jamais le niveau de confiance
+            # réel d'une détection (ex. corroboration YOLOv8n/EfficientDet).
+            'confidence_score': self.confidence_score,
         }
 
 

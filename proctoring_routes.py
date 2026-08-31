@@ -426,11 +426,28 @@ def log_proctoring_event(attempt_id):
             'gaze_away': 5,
             'head_turned': 5,
             'talking_detected': 8,
-            # Modèle léger (efficientdet_lite0), sujet à confusion main/objet
+            # EfficientDet-Lite2 (MediaPipe, commentaire précédent mentionnant
+            # lite0 était périmé) seul reste sujet à confusion main/objet
             # (ex. main posée près de la tête classée "téléphone") — ramené de
-            # 25 (le plus haut du barème) à 12 : reste un signal significatif,
-            # sans qu'un faux positif isolé ne pèse plus que tout le reste.
+            # 25 (le plus haut du barème) à 12 en conséquence : reste un
+            # signal significatif, sans qu'un faux positif isolé ne pèse plus
+            # que tout le reste.
             'suspect_object_detected': 12,
+            # Corroboration inter-modèles (31/08, retour utilisateur : "renforcer
+            # les modèles déjà présents") — YOLOv8n (voir cei-next/lib/yolo-detector.ts)
+            # appelé côté client une seule fois, sur l'image courante, au moment
+            # où EfficientDet atteint déjà son propre seuil de 2 vérifications
+            # consécutives (pas un second modèle tournant en continu, coût CPU
+            # inchangé en régime normal). Deux architectures indépendantes
+            # d'accord sur la même catégorie est une preuve nettement plus
+            # fiable qu'EfficientDet seul — pondéré au-dessus des patterns
+            # composites (20-30) mais sous identity_mismatch_sustained (38, qui
+            # exige une confirmation soutenue dans le temps, pas une seule
+            # image corroborée). Premier calibrage, à ajuster après retour
+            # d'usage réel — même traitement que les seuils regard/tête de la
+            # Phase X (aucune webcam réelle disponible pour valider la
+            # précision en conditions réelles dans cet environnement).
+            'suspect_object_confirmed': 28,
             # Vivacité (Phase 7) — signal informatif, ne bloque jamais l'examen
             'liveness_check_failed': 0,
             # Audio (Phase 6) et multi-écran (Phase 8)

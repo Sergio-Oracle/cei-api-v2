@@ -6514,6 +6514,42 @@ def download_corrections_zip(exam_id):
 # RÉVISION DÉTAILLÉE D'UNE TENTATIVE
 # ============================================================================
 
+def _format_incident_description(event_type: str, ed: dict, raw: str) -> str:
+    """Construit une description lisible pour un incident de surveillance.
+
+    Correctif (31/08) : jusqu'ici, event_data était soit une simple phrase
+    française (la quasi-totalité des event_types existants), soit — pour
+    suspect_object_detected/suspect_object_confirmed depuis l'ajout de la
+    corroboration YOLOv8n — un JSON structuré {category, efficientdet, yolo}.
+    Dans les deux cas, le `json.loads` plus haut échouait silencieusement
+    sur la phrase française (ed devenait {}), et l'incident était renvoyé
+    SANS aucune description exploitable (juste 'type'/'data'/'timestamp',
+    aucune clé 'description' n'existait même dans la réponse) — perdue à la
+    fois pour les nouveaux événements ET pour tout l'historique existant.
+    Ce helper restaure les deux : la forme structurée est traduite en
+    phrase, et le repli sur `raw` (au lieu de l'ancien ed={} silencieux)
+    restaure la description de tous les événements préexistants.
+    """
+    if ed.get('efficientdet') is not None or ed.get('yolo') is not None:
+        category_labels = {'phone': 'téléphone', 'book': 'livre/document', 'screen': 'écran supplémentaire'}
+        what = category_labels.get(ed.get('category'), ed.get('category') or 'objet suspect')
+        efd = ed.get('efficientdet') or []
+        efd_str = ', '.join(f"{m.get('label')} {round((m.get('score') or 0) * 100)}%" for m in efd) or 'n/a'
+        yolo = ed.get('yolo') or {}
+        yolo_status = yolo.get('status')
+        if yolo_status == 'agreed':
+            yolo_matches = yolo.get('matches') or []
+            yolo_str = ', '.join(f"{m.get('label')} {round((m.get('score') or 0) * 100)}%" for m in yolo_matches) or 'n/a'
+            return f"Objet suspect confirmé par 2 modèles : {what} (EfficientDet {efd_str} — YOLOv8n {yolo_str})"
+        reason = {
+            'disagreed':          'YOLOv8n a analysé la même image mais n\'a pas retrouvé la même catégorie',
+            'no_equivalent_class': 'catégorie non reconnaissable par YOLOv8n (ex. tablette, absente de son jeu de classes)',
+            'unavailable':        'YOLOv8n indisponible sur cet appareil au moment du contrôle',
+        }.get(yolo_status, 'non corroboré')
+        return f"Objet suspect détecté : {what} (EfficientDet {efd_str} — {reason})"
+    return raw or ''
+
+
 @exams_bp.route('/api/exam_attempts/<int:attempt_id>/review', methods=['GET'])
 @paseto_required
 def get_attempt_review(attempt_id):
@@ -6571,9 +6607,11 @@ def get_attempt_review(attempt_id):
                 })
             else:
                 incidents.append({
-                    'type':      log.event_type,
-                    'data':      ed,
-                    'timestamp': log.timestamp.isoformat() if log.timestamp else None,
+                    'type':        log.event_type,
+                    'event_type':  log.event_type,  # alias — la page moniteur lit event_type en priorité
+                    'data':        ed,
+                    'description': _format_incident_description(log.event_type, ed, log.event_data),
+                    'timestamp':   log.timestamp.isoformat() if log.timestamp else None,
                 })
 
         duration_min = None

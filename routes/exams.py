@@ -6541,6 +6541,17 @@ def _format_incident_description(event_type: str, ed: dict, raw: str) -> str:
             yolo_matches = yolo.get('matches') or []
             yolo_str = ', '.join(f"{m.get('label')} {round((m.get('score') or 0) * 100)}%" for m in yolo_matches) or 'n/a'
             return f"Objet suspect confirmé par 2 modèles : {what} (EfficientDet {efd_str} — YOLOv8n {yolo_str})"
+        if yolo_status == 'independent':
+            # Correctif (31/08, retour utilisateur — un objet tenu près/à un
+            # angle inhabituel de la caméra n'a déclenché aucune alerte) :
+            # YOLOv8n tourne aussi en second détecteur indépendant (cadence
+            # propre, 15s), pas seulement en corroborateur d'EfficientDet —
+            # ce cas signifie qu'EfficientDet n'a PAS vu cet objet à ce
+            # moment (efficientdet=[] volontairement, aucun candidat à
+            # corroborer), pas qu'il a regardé et n'était pas d'accord.
+            yolo_matches = yolo.get('matches') or []
+            yolo_str = ', '.join(f"{m.get('label')} {round((m.get('score') or 0) * 100)}%" for m in yolo_matches) or 'n/a'
+            return f"Objet suspect détecté par YOLOv8n : {what} ({yolo_str} — non vu par EfficientDet à ce moment)"
         reason = {
             'disagreed':          'YOLOv8n a analysé la même image mais n\'a pas retrouvé la même catégorie',
             'no_equivalent_class': 'catégorie non reconnaissable par YOLOv8n (ex. tablette, absente de son jeu de classes)',

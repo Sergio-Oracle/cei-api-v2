@@ -464,7 +464,7 @@ OPENAPI_SPEC = {
 
         "/api/auth/login": {"post": {
             "tags": ["Authentification"], "summary": "Connexion — obtenir un token PASETO v4",
-            "description": "Retourne un **access token PASETO v4.public** (15 min, à stocker en mémoire) et pose un cookie httpOnly `cei_refresh` (7 jours) pour le rafraîchissement. **Session unique (étudiants uniquement, 24/08)** : si le compte a déjà une session active sur un autre appareil, la connexion est refusée avec `409` — renvoyer `force: true` pour déconnecter l'autre appareil et se connecter quand même.",
+            "description": "Retourne un **access token PASETO v4.public** (15 min, à stocker en mémoire) et pose un cookie httpOnly `cei_refresh` (7 jours) pour le rafraîchissement. **Session unique (étudiants uniquement, 24/08 puis 29/08)** : si le compte a déjà une session active sur un autre appareil, la connexion est refusée avec `409` — renvoyer `force: true` pour déconnecter l'autre appareil et se connecter quand même. Depuis le 29/08, `force: true` révoque réellement l'ancien appareil dès sa PROCHAINE requête (pas seulement à sa prochaine reconnexion) : l'access token porte un `sid` interne revérifié à chaque appel `@paseto_required`, tout endpoint appelé par l'ancien appareil renvoie alors `401 {session_superseded: true}`.",
             "security": [],
             "requestBody": {"required": True, "content": {"application/json": {"schema": {
                 "type": "object", "required": ["email","password"],

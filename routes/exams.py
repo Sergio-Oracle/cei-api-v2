@@ -6520,7 +6520,7 @@ def _format_incident_description(event_type: str, ed: dict, raw: str) -> str:
     Correctif (31/08) : jusqu'ici, event_data était soit une simple phrase
     française (la quasi-totalité des event_types existants), soit — pour
     suspect_object_detected/suspect_object_confirmed depuis l'ajout de la
-    corroboration YOLOv8n — un JSON structuré {category, efficientdet, yolo}.
+    corroboration YOLO26n — un JSON structuré {category, efficientdet, yolo}.
     Dans les deux cas, le `json.loads` plus haut échouait silencieusement
     sur la phrase française (ed devenait {}), et l'incident était renvoyé
     SANS aucune description exploitable (juste 'type'/'data'/'timestamp',
@@ -6540,22 +6540,22 @@ def _format_incident_description(event_type: str, ed: dict, raw: str) -> str:
         if yolo_status == 'agreed':
             yolo_matches = yolo.get('matches') or []
             yolo_str = ', '.join(f"{m.get('label')} {round((m.get('score') or 0) * 100)}%" for m in yolo_matches) or 'n/a'
-            return f"Objet suspect confirmé par 2 modèles : {what} (EfficientDet {efd_str} — YOLOv8n {yolo_str})"
+            return f"Objet suspect confirmé par 2 modèles : {what} (EfficientDet {efd_str} — YOLO26n {yolo_str})"
         if yolo_status == 'independent':
             # Correctif (31/08, retour utilisateur — un objet tenu près/à un
             # angle inhabituel de la caméra n'a déclenché aucune alerte) :
-            # YOLOv8n tourne aussi en second détecteur indépendant (cadence
+            # YOLO26n tourne aussi en second détecteur indépendant (cadence
             # propre, 15s), pas seulement en corroborateur d'EfficientDet —
             # ce cas signifie qu'EfficientDet n'a PAS vu cet objet à ce
             # moment (efficientdet=[] volontairement, aucun candidat à
             # corroborer), pas qu'il a regardé et n'était pas d'accord.
             yolo_matches = yolo.get('matches') or []
             yolo_str = ', '.join(f"{m.get('label')} {round((m.get('score') or 0) * 100)}%" for m in yolo_matches) or 'n/a'
-            return f"Objet suspect détecté par YOLOv8n : {what} ({yolo_str} — non vu par EfficientDet à ce moment)"
+            return f"Objet suspect détecté par YOLO26n : {what} ({yolo_str} — non vu par EfficientDet à ce moment)"
         reason = {
-            'disagreed':          'YOLOv8n a analysé la même image mais n\'a pas retrouvé la même catégorie',
-            'no_equivalent_class': 'catégorie non reconnaissable par YOLOv8n (ex. tablette, absente de son jeu de classes)',
-            'unavailable':        'YOLOv8n indisponible sur cet appareil au moment du contrôle',
+            'disagreed':          'YOLO26n a analysé la même image mais n\'a pas retrouvé la même catégorie',
+            'no_equivalent_class': 'catégorie non reconnaissable par YOLO26n (ex. tablette, absente de son jeu de classes)',
+            'unavailable':        'YOLO26n indisponible sur cet appareil au moment du contrôle',
         }.get(yolo_status, 'non corroboré')
         return f"Objet suspect détecté : {what} (EfficientDet {efd_str} — {reason})"
     return raw or ''

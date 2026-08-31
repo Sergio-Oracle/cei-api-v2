@@ -434,7 +434,7 @@ def log_proctoring_event(attempt_id):
             # que tout le reste.
             'suspect_object_detected': 12,
             # Corroboration inter-modèles (31/08, retour utilisateur : "renforcer
-            # les modèles déjà présents") — YOLOv8n (voir cei-next/lib/yolo-detector.ts)
+            # les modèles déjà présents") — YOLO26n (voir cei-next/lib/yolo-detector.ts)
             # appelé côté client une seule fois, sur l'image courante, au moment
             # où EfficientDet atteint déjà son propre seuil de 2 vérifications
             # consécutives (pas un second modèle tournant en continu, coût CPU

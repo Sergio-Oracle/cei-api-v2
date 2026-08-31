@@ -1286,7 +1286,7 @@ class CameraLog(Base):
             # Correctif (31/08) : colonne déjà écrite à la sauvegarde
             # (proctoring_routes.py, camera_snapshot) mais jamais renvoyée en
             # lecture — le personnel ne voyait jamais le niveau de confiance
-            # réel d'une détection (ex. corroboration YOLOv8n/EfficientDet).
+            # réel d'une détection (ex. corroboration YOLO26n/EfficientDet).
             'confidence_score': self.confidence_score,
         }
 

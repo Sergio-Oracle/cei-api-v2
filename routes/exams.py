@@ -326,7 +326,7 @@ def activate_online_exam(exam_id):
         student_contacts = []
         try:
             app_url  = os.getenv('APP_URL', 'https://dev-cei.ddns.net').rstrip('/')
-            exam_url = f"{app_url}/app"
+            exam_url = f"{app_url}/exam/{exam_id}"
             end_str  = exam.end_time.strftime('%d/%m/%Y à %H:%M') if exam.end_time else 'voir sur la plateforme'
             from models import StudentUEEnrollment, EC as ECModel, UE as UEModel
             # Récupérer les EC liés à cet examen
@@ -6344,7 +6344,7 @@ def get_exam_qrcode(exam_id):
         # Récupérer les données AVANT de fermer la session
         exam_title = exam.title
         base_url   = request.host_url.rstrip('/')
-        exam_url   = f"{base_url}/app"
+        exam_url   = f"{base_url}/exam/{exam_id}"
         session.close()
         qr = _qrcode.QRCode(version=1, box_size=8, border=3,
                              error_correction=_qrcode.constants.ERROR_CORRECT_M)

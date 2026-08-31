@@ -618,8 +618,13 @@ def send_account_created_email(user_email, user_name, role, temp_password=None):
             '</svg>'
         ),
         'admin': (
-            '#7c3aed', '#f5f3ff', '#c4b5fd', 'Administrateur',
-            f'{app_url}/app', "Accéder à l'interface",
+            # Correctif (29/08) : #7c3aed était du violet, contraire à la
+            # charte du reste de la plateforme (jamais de violet/dégradé) —
+            # remplacé par un slate foncé, cohérent avec la palette déjà
+            # utilisée ailleurs. Lien /app corrigé vers /login (aucune page
+            # /guide-admin n'existe, contrairement aux autres rôles).
+            '#334155', '#f1f5f9', '#cbd5e1', 'Administrateur',
+            f'{app_url}/login', "Accéder à l'interface",
             "Vous disposez d'un accès complet à la plateforme : gestion des utilisateurs, des examens et des statistiques globales.",
             '<svg width="44" height="44" viewBox="0 0 24 24" fill="none" style="display:inline-block;">'
             '<circle cx="12" cy="12" r="3" stroke="white" stroke-width="2"/>'
@@ -683,7 +688,7 @@ def send_account_created_email(user_email, user_name, role, temp_password=None):
 
     <!-- Bouton connexion -->
     <div style="text-align:center;margin-bottom:20px;">
-      <a href="{app_url}/app"
+      <a href="{app_url}/login"
          style="display:inline-block;padding:13px 30px;background:{color};color:#fff;text-decoration:none;border-radius:9px;font-size:15px;font-weight:700;">
         Se connecter à la plateforme
       </a>
@@ -727,7 +732,7 @@ Vos identifiants de connexion :
   Email       : {user_email}
 {"  Mot de passe : " + temp_password if temp_password else ""}
 
-Se connecter : {app_url}/app
+Se connecter : {app_url}/login
 Guide         : {guide_url}
 
 IMPORTANT : changez votre mot de passe dès votre première connexion.
@@ -801,7 +806,7 @@ def send_paper_corrected_email(student_email, student_name, subject_title, score
 
     <!-- CTA -->
     <div style="text-align:center;margin-bottom:26px;">
-      <a href="{app_url}/app"
+      <a href="{app_url}/login"
          style="display:inline-block;padding:13px 32px;background:#2563eb;color:#fff;text-decoration:none;border-radius:9px;font-size:15px;font-weight:700;">
         Consulter le détail de ma copie
       </a>
@@ -833,7 +838,7 @@ Bonjour {student_name},
 
 Votre note : {score}/20 — {mention}
 
-Consultez le détail de votre copie : {app_url}/app
+Consultez le détail de votre copie : {app_url}/login
 
 Vous avez 7 jours pour déposer une réclamation via l'application.
 

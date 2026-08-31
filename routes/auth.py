@@ -390,8 +390,11 @@ def change_password():
 
         user.password_hash = bcrypt.generate_password_hash(new_pw).decode('utf-8')
         session.commit()
+        # Correctif (29/08, retour utilisateur) : /app n'existe pas dans le
+        # frontend (héritage d'un ancien schéma d'URL) — /login est la
+        # vraie page vers laquelle renvoyer depuis cet email de confirmation.
         app_url   = os.getenv('APP_URL', 'https://dev-cei.ddns.net').rstrip('/')
-        reset_url = f"{app_url}/app?action=forgot"
+        reset_url = f"{app_url}/login"
         saved_email = user.email
         saved_name = user.full_name
         session.close()
@@ -430,8 +433,13 @@ def forgot_password():
         user.reset_token_expires = utcnow() + timedelta(hours=1)
         session.commit()
 
+        # Correctif (29/08, retour utilisateur) : le lien pointait vers
+        # {app_url}/app?reset_token=... — une page qui n'existe nulle part
+        # dans le frontend (héritage d'un ancien schéma d'URL). Aucune page
+        # ne lisait jamais ce paramètre : le mail partait, mais cliquer sur
+        # le lien ne menait nulle part. Nouvelle page dédiée /reset-password.
         app_url    = os.getenv('APP_URL', request.host_url.rstrip('/'))
-        reset_link = f"{app_url}/app?reset_token={token}"
+        reset_link = f"{app_url}/reset-password?token={token}"
         email_to_send = user.email
         email_name = user.full_name
         parts  = (user.email or '').split('@')
@@ -484,8 +492,11 @@ def reset_password():
         user.reset_token         = None
         user.reset_token_expires = None
         session.commit()
+        # Correctif (29/08, retour utilisateur) : /app n'existe pas dans le
+        # frontend (héritage d'un ancien schéma d'URL) — /login est la
+        # vraie page vers laquelle renvoyer depuis cet email de confirmation.
         app_url   = os.getenv('APP_URL', 'https://dev-cei.ddns.net').rstrip('/')
-        reset_url = f"{app_url}/app?action=forgot"
+        reset_url = f"{app_url}/login"
         session.close()
         try:
             if saved_email:

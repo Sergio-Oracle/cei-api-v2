@@ -3072,18 +3072,18 @@ OPENAPI_SPEC = {
                 "properties": {"email": {"type": "string", "example": "user@ec2lt.sn"}}
             }}}},
             "responses": {
-                "200": {"description": "Email de réinitialisation envoyé (si le compte existe)"},
-                "404": {"description": "Aucun compte avec cet email"}
+                "200": {"description": "Toujours 200 avec success:true, que le compte existe ou non — ne révèle jamais si un email est enregistré (email_sent:false si absent/pas d'email)"}
             }
         }},
         "/api/auth/reset-password": {"post": {
             "tags": ["Authentification"], "summary": "Réinitialiser le mot de passe avec un token",
+            "description": "Le lien envoyé par email pointe vers {APP_URL}/reset-password?token=... côté frontend, page dédiée qui appelle cet endpoint.",
             "security": [],
             "requestBody": {"required": True, "content": {"application/json": {"schema": {
                 "type": "object", "required": ["token","new_password"],
                 "properties": {
-                    "token":        {"type": "string", "description": "Token reçu par email"},
-                    "new_password": {"type": "string", "minLength": 6}
+                    "token":        {"type": "string", "description": "Token reçu par email, valable 1h, usage unique"},
+                    "new_password": {"type": "string", "minLength": 8}
                 }
             }}}},
             "responses": {

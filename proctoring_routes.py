@@ -413,6 +413,16 @@ def log_proctoring_event(attempt_id):
             # peu fiable : signal informatif seulement, ne doit jamais faire
             # monter le score de risque comme une vraie absence.
             'no_face_low_light': 0,
+            # Correctif (01/09) — le chargement des modèles de détection
+            # faciale (local + repli CDN) a échoué pour cette session :
+            # signal purement informatif/diagnostic (l'étudiant n'y est pour
+            # rien), jamais une pénalité — mais désormais consigné plutôt que
+            # silencieusement invisible comme c'était le cas auparavant.
+            'face_detection_unavailable': 0,
+            # Idem pour le canal vidéo/alertes en direct (LiveKit) — sa perte
+            # ne prive l'étudiant d'aucune fonctionnalité de l'examen, ce
+            # n'est qu'une couche de confort pour le surveillant.
+            'live_monitoring_unavailable': 0,
             'multiple_faces': 20,
             'face_covered': 15,
             'camera_blocked': 25,

@@ -6537,27 +6537,33 @@ def _format_incident_description(event_type: str, ed: dict, raw: str) -> str:
         efd_str = ', '.join(f"{m.get('label')} {round((m.get('score') or 0) * 100)}%" for m in efd) or 'n/a'
         yolo = ed.get('yolo') or {}
         yolo_status = yolo.get('status')
+        # Correctif (01/09, retour utilisateur — jamais nommer les technologies
+        # utilisées dans un texte visible par le personnel) : les noms de
+        # modèles (EfficientDet/YOLO26n) restent dans les commentaires
+        # ci-dessus pour la maintenance, mais jamais dans les chaînes
+        # retournées ici, qui s'affichent telles quelles dans les journaux
+        # consultés par le surveillant/professeur.
         if yolo_status == 'agreed':
             yolo_matches = yolo.get('matches') or []
             yolo_str = ', '.join(f"{m.get('label')} {round((m.get('score') or 0) * 100)}%" for m in yolo_matches) or 'n/a'
-            return f"Objet suspect confirmé par 2 modèles : {what} (EfficientDet {efd_str} — YOLO26n {yolo_str})"
+            return f"Objet suspect confirmé par 2 modèles indépendants : {what} ({efd_str} — {yolo_str})"
         if yolo_status == 'independent':
             # Correctif (31/08, retour utilisateur — un objet tenu près/à un
             # angle inhabituel de la caméra n'a déclenché aucune alerte) :
-            # YOLO26n tourne aussi en second détecteur indépendant (cadence
-            # propre, 15s), pas seulement en corroborateur d'EfficientDet —
-            # ce cas signifie qu'EfficientDet n'a PAS vu cet objet à ce
+            # un second détecteur tourne aussi de façon indépendante (cadence
+            # propre, 15s), pas seulement en corroborateur du premier — ce
+            # cas signifie que le premier modèle n'a PAS vu cet objet à ce
             # moment (efficientdet=[] volontairement, aucun candidat à
             # corroborer), pas qu'il a regardé et n'était pas d'accord.
             yolo_matches = yolo.get('matches') or []
             yolo_str = ', '.join(f"{m.get('label')} {round((m.get('score') or 0) * 100)}%" for m in yolo_matches) or 'n/a'
-            return f"Objet suspect détecté par YOLO26n : {what} ({yolo_str} — non vu par EfficientDet à ce moment)"
+            return f"Objet suspect détecté par un second modèle indépendant : {what} ({yolo_str} — non vu par la première vérification à ce moment)"
         reason = {
-            'disagreed':          'YOLO26n a analysé la même image mais n\'a pas retrouvé la même catégorie',
-            'no_equivalent_class': 'catégorie non reconnaissable par YOLO26n (ex. tablette, absente de son jeu de classes)',
-            'unavailable':        'YOLO26n indisponible sur cet appareil au moment du contrôle',
+            'disagreed':          'le second modèle a analysé la même image mais n\'a pas retrouvé la même catégorie',
+            'no_equivalent_class': 'catégorie non reconnaissable par le second modèle (ex. tablette, absente de son répertoire de classes)',
+            'unavailable':        'second modèle indisponible sur cet appareil au moment du contrôle',
         }.get(yolo_status, 'non corroboré')
-        return f"Objet suspect détecté : {what} (EfficientDet {efd_str} — {reason})"
+        return f"Objet suspect détecté : {what} ({efd_str} — {reason})"
     return raw or ''
 
 

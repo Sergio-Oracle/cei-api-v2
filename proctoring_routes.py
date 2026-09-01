@@ -423,6 +423,14 @@ def log_proctoring_event(attempt_id):
             # ne prive l'étudiant d'aucune fonctionnalité de l'examen, ce
             # n'est qu'une couche de confort pour le surveillant.
             'live_monitoring_unavailable': 0,
+            # Anti-usurpation par micro-mouvement (01/09) — signal neuf,
+            # jamais calibré sur une vraie webcam (pas de matériel de test
+            # disponible dans cet environnement). Poids 0 délibéré, comme
+            # les autres heuristiques neuves de ce trimestre à leur premier
+            # déploiement (voir no_face_low_light, env_scan_unavailable) —
+            # à faire monter seulement après confirmation en conditions
+            # réelles, jamais avant.
+            'liveness_suspect_static': 0,
             'multiple_faces': 20,
             'face_covered': 15,
             'camera_blocked': 25,

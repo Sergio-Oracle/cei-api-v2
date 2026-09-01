@@ -6564,6 +6564,15 @@ def _format_incident_description(event_type: str, ed: dict, raw: str) -> str:
             'unavailable':        'second modèle indisponible sur cet appareil au moment du contrôle',
         }.get(yolo_status, 'non corroboré')
         return f"Objet suspect détecté : {what} ({efd_str} — {reason})"
+    # Correctif (01/09, retour utilisateur — JSON brut affiché dans les
+    # journaux pour les appels privés) : plusieurs endpoints (avertissement/
+    # message enseignant, appel privé, message étudiant, pause self-service)
+    # stockent event_data comme {'message': ..., ...métadonnées internes}
+    # (from_teacher, timestamp, student_name, minutes...) — jamais géré ici
+    # jusqu'à présent, donc affiché tel quel (échappements unicode compris)
+    # au lieu de la phrase lisible qu'il contient déjà.
+    if isinstance(ed.get('message'), str) and ed['message']:
+        return ed['message']
     return raw or ''
 
 

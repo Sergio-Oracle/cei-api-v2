@@ -251,6 +251,7 @@ def create_online_exam():
             enable_calculator=data.get('enable_calculator', False),
             allow_secondary_camera=data.get('allow_secondary_camera', False),
             require_biometric=data.get('require_biometric', False),
+            run_environment_scan=data.get('run_environment_scan', False),
             status=ExamStatus.SCHEDULED,
             created_by_id=user_id
         )
@@ -513,6 +514,8 @@ def edit_online_exam(exam_id):
             exam.allow_secondary_camera = bool(data['allow_secondary_camera'])
         if 'require_biometric' in data:
             exam.require_biometric = bool(data['require_biometric'])
+        if 'run_environment_scan' in data:
+            exam.run_environment_scan = bool(data['run_environment_scan'])
         if 'randomize_questions' in data:
             exam.randomize_questions = bool(data['randomize_questions'])
         if 'questions_per_page' in data:

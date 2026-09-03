@@ -718,6 +718,17 @@ class OnlineExam(Base):
     # que si ce champ est vrai.
     require_biometric = Column(Boolean, default=False)
 
+    # Retour utilisateur (03/09) : le scan de l'environnement (vérification
+    # caméra 360°/8s avant de composer) était jusqu'ici obligatoire pour tous
+    # les examens, sans réglage possible. Certains examens (à faible enjeu,
+    # ou pour une connexion rapide) n'en ont pas besoin — opt-in par le
+    # professeur, décoché par défaut pour tout NOUVEL examen (les examens
+    # créés avant ce champ, migrés à TRUE, ne sont pas rétroactivement
+    # modifiés, cf. même logique que require_biometric ci-dessus). Voir
+    # exam/[id]/page.tsx, la phase 'env_scan' n'est atteinte que si ce champ
+    # est vrai.
+    run_environment_scan = Column(Boolean, default=False)
+
     status = Column(SQLEnum(ExamStatus), default=ExamStatus.DRAFT)
     created_by_id = Column(Integer, ForeignKey('users.id'), nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -755,6 +766,7 @@ class OnlineExam(Base):
             'enable_calculator': self.enable_calculator or False,
             'allow_secondary_camera': self.allow_secondary_camera or False,
             'require_biometric': self.require_biometric if self.require_biometric is not None else False,
+            'run_environment_scan': self.run_environment_scan if self.run_environment_scan is not None else False,
             'creator_name': self.creator.full_name if self.creator else None,
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'is_active': self.status == ExamStatus.ACTIVE,

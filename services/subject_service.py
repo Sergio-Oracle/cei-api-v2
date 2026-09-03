@@ -257,9 +257,19 @@ class SubjectService:
         # Save + extract text for each file, concatenated with clear separators
         # so l'IA distingue les sources sans qu'un professeur ait besoin de
         # fusionner ses documents à la main avant de les déposer.
+        #
+        # Stockage (03/09) : extract_text_from_file a besoin d'un vrai chemin
+        # disque (catdoc pour les .doc legacy, notamment), donc on sauvegarde
+        # toujours en local d'abord pour l'extraction — mais le fichier est
+        # ensuite envoyé vers MinIO et supprimé du disque local, au lieu d'y
+        # rester indéfiniment (~140 fichiers accumulés avant ce correctif).
+        # Sécurité : on ne supprime JAMAIS le fichier local si l'upload S3 a
+        # échoué (MinIO indisponible) — mieux vaut un fichier qui traîne
+        # qu'un document de professeur perdu.
         saved_paths = []
         content_parts = []
         first_filename = None
+        first_s3_key = None
         try:
             for f in files:
                 filename = f"subject_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{secure_filename(f.filename)}"
@@ -273,6 +283,16 @@ class SubjectService:
                 if not part:
                     raise ValueError(f"Impossible d'extraire le texte du fichier « {f.filename} »")
                 content_parts.append(f"--- Fichier: {f.filename} ---\n{part}")
+
+                from s3_client import upload_document
+                with open(filepath, 'rb') as fh:
+                    raw = fh.read()
+                s3_key = upload_document('subject', filename, raw, f.content_type or 'application/octet-stream')
+                if s3_key:
+                    if first_s3_key is None:
+                        first_s3_key = s3_key
+                    os.remove(filepath)
+                    saved_paths.remove(filepath)
         except Exception:
             for p in saved_paths:
                 if os.path.exists(p):
@@ -316,6 +336,7 @@ class SubjectService:
             filename=filename,
             creator_id=creator_id,
             ec_id=ec_id,
+            s3_key=first_s3_key,
         )
         result['duplicates'] = duplicates
         return result

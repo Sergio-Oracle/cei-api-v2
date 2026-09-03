@@ -275,6 +275,36 @@ def upload_subject_media(link_key: str, media_type: str, filename: str, raw: byt
         return None
 
 
+def upload_document(kind: str, filename: str, raw: bytes, content_type: str = 'application/octet-stream') -> Optional[str]:
+    """
+    Uploade un document pédagogique (support de cours PDF/DOCX/DOC/TXT envoyé
+    pour la génération IA de sujets, ou fichier joint à un sujet) vers MinIO.
+    Contrairement à upload_subject_media, accepte n'importe quelle extension
+    (documents, pas seulement médias image/audio/vidéo) — pas de restriction
+    par _SUBJECT_MEDIA_EXTS.
+
+    kind : 'course' ou 'subject' — détermine le préfixe de la clé.
+    Clé : documents/{kind}/{ts}_{safe_filename}
+
+    Retourne None si MinIO est injoignable — l'appelant doit alors garder le
+    fichier local existant (ne jamais le supprimer sans confirmation d'upload
+    réussi, pour ne jamais perdre un document déposé par un enseignant).
+    """
+    if not _KEY_ID or not raw:
+        return None
+    ts = datetime.utcnow().strftime('%Y%m%dT%H%M%S')
+    safe_name = ''.join(c for c in filename if c.isalnum() or c in '._-') or 'file'
+    key = f'documents/{kind}/{ts}_{safe_name}'
+    try:
+        _client().put_object(Bucket=_SNAP_BUCKET, Key=key, Body=raw, ContentType=content_type)
+        _alert_admins_s3_recovered()
+        return key
+    except Exception as exc:
+        _log.warning('S3 document upload failed key=%s: %s', key, exc)
+        _alert_admins_s3_down(exc)
+        return None
+
+
 def get_snapshot_url(key: str) -> Optional[str]:
     """
     Génère l'URL d'accès à un snapshot à partir de sa clé.

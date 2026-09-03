@@ -76,12 +76,13 @@ class SubjectRepository:
         filename: str,
         creator_id: int,
         ec_id: Optional[int] = None,
+        s3_key: Optional[str] = None,
     ) -> dict:
         with db_session() as session:
             subj = Subject(
                 title=title, content=content, rubric=rubric,
                 filename=filename, creator_id=creator_id,
-                ec_id=ec_id,
+                ec_id=ec_id, s3_key=s3_key,
             )
             session.add(subj)
             session.flush()          # get subj.id before commit

@@ -357,6 +357,12 @@ class Subject(Base):
     content = Column(Text, nullable=False)
     rubric = Column(Text)
     filename = Column(String(255))
+    # Clé MinIO du document source original (support de cours uploadé pour
+    # créer ce sujet) — même convention que SubjectMedia.s3_key. Ajouté le
+    # 03/09 lors de la migration des documents du disque local vers MinIO ;
+    # nullable car les sujets créés avant ce champ n'ont pas été retrouvés
+    # dans tous les cas (fichiers orphelins, doublons de tentatives ratées).
+    s3_key = Column(String(500), nullable=True)
     creator_id = Column(Integer, ForeignKey('users.id'), nullable=False)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -379,6 +385,7 @@ class Subject(Base):
             'content': self.content,
             'rubric': self.rubric,
             'filename': self.filename,
+            's3_key': self.s3_key,
             'creator_id': self.creator_id,
             'creator_name': self.creator.full_name if self.creator else None,
             'is_active': self.is_active,

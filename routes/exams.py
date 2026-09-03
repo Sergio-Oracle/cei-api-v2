@@ -4519,7 +4519,18 @@ def generate_exam_suggestions():
             session.close()
             return jsonify({'success': False, 'error': f'Fichiers cours trop volumineux au total (max {_COURSE_FILE_MAX_MB} Mo)'}), 400
 
-        # Sauvegarder temporairement chaque fichier et extraire son contenu
+        # Sauvegarder temporairement chaque fichier et extraire son contenu.
+        #
+        # Stockage (03/09) : ces fichiers étaient nommés "temp_*" mais
+        # n'étaient en réalité JAMAIS nettoyés sur le chemin de succès (seuls
+        # les cas d'erreur/cache/échec de parsing plus bas les supprimaient)
+        # — source principale des ~140 fichiers accumulés sur le disque avant
+        # ce correctif. Chaque fichier est maintenant envoyé vers MinIO puis
+        # supprimé du disque local ICI, juste après extraction — donc déjà
+        # nettoyé avant même d'atteindre les branches succès/cache/erreur
+        # plus bas (leurs `os.remove` restants deviennent des no-ops sûrs).
+        # Si MinIO est injoignable, le fichier local est conservé (jamais
+        # perdu) et sera nettoyé par les branches existantes comme avant.
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         temp_filepaths = []
         content_parts = []
@@ -4535,6 +4546,13 @@ def generate_exam_suggestions():
                 part = extract_text_from_file(temp_filepath)
                 if part:
                     content_parts.append(f"--- Fichier: {f.filename} ---\n{part}")
+
+                from s3_client import upload_document
+                with open(temp_filepath, 'rb') as fh:
+                    raw = fh.read()
+                if upload_document('course', temp_filename, raw, f.content_type or 'application/octet-stream'):
+                    os.remove(temp_filepath)
+                    temp_filepaths.remove(temp_filepath)
         except Exception:
             for p in temp_filepaths:
                 if os.path.exists(p):

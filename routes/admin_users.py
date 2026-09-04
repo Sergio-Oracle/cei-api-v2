@@ -14,6 +14,7 @@ Routes migrées depuis app.py :
 """
 from flask import Blueprint, request, jsonify
 from sqlalchemy import or_
+from sqlalchemy.orm import joinedload
 from threading import Thread
 
 from extensions import bcrypt, limiter
@@ -189,7 +190,16 @@ def get_all_users():
         niveau      = request.args.get('niveau', '').strip()
         role_filter = request.args.get('role', '').strip()
 
-        query = session.query(User)
+        # Chargement anticipé (JOIN) de formation -> niveau/pole — sans ça,
+        # User.to_dict() (appelé une fois par utilisateur ci-dessous) déclenche
+        # 3 requêtes lazy-load individuelles par étudiant (formation, niveau,
+        # pole) : ~6500 étudiants × 3 = jusqu'à ~19500 requêtes séquentielles
+        # supplémentaires, ce qui rendait cette page quasi infinie après
+        # l'import en masse du 04/09 (avant, ~106 étudiants, jamais remarqué).
+        query = session.query(User).options(
+            joinedload(User.formation).joinedload(Formation.niveau),
+            joinedload(User.formation).joinedload(Formation.pole),
+        )
         if search:
             query = query.filter(or_(
                 User.full_name.ilike(f'%{search}%'),

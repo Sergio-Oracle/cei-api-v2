@@ -474,10 +474,16 @@ def get_students_list():
         if role not in ['professor', 'admin']:
             return jsonify({'error': 'Accès non autorisé'}), 403
         session = get_session()
-        students = session.query(User).filter_by(role=UserRole.STUDENT).order_by(User.full_name).all()
+        # Même correctif que GET /api/admin/users (04/09) : une requête
+        # Formation + une requête Pole PAR étudiant ici (pas même du lazy-load,
+        # une requête manuelle explicite dans la boucle) — devenu ~13000
+        # requêtes séquentielles avec 6500 étudiants. Un seul JOIN désormais.
+        students = session.query(User).filter_by(role=UserRole.STUDENT).options(
+            joinedload(User.formation).joinedload(Formation.pole),
+        ).order_by(User.full_name).all()
         result = []
         for s in students:
-            f = session.query(Formation).filter_by(id=s.formation_id).first() if getattr(s, 'formation_id', None) else None
+            f = s.formation
             result.append({
                 'id':             s.id,
                 'full_name':      s.full_name,

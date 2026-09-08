@@ -283,7 +283,12 @@ class StudentUEEnrollment(Base):
     __tablename__ = 'student_ue_enrollments'
     id = Column(Integer, primary_key=True)
     student_id = Column(Integer, ForeignKey('users.id'), nullable=False)
-    ue_id = Column(Integer, ForeignKey('ues.id'), nullable=False)
+    # index=True séparé (2026-09-08) : le seul index existant sur cette table
+    # était composite (student_id, ue_id), inutile pour un filtre sur ue_id
+    # seul — 3 endroits (routes/exams.py, routes/formations.py) comptent les
+    # inscrits PAR UE sans passer par student_id. Devenu significatif depuis
+    # l'import en masse (table passée à ~54k lignes).
+    ue_id = Column(Integer, ForeignKey('ues.id'), nullable=False, index=True)
     enrolled_at = Column(DateTime, default=datetime.utcnow)
 
     __table_args__ = (UniqueConstraint('student_id', 'ue_id', name='unique_student_ue'),)  # Unicité: Pas de double inscription
@@ -1442,6 +1447,9 @@ def init_db():
         _safe_migrations = [
             "ALTER TABLE proctor_assignments ALTER COLUMN attempt_id DROP NOT NULL",
             "ALTER TABLE proctor_assignments DROP CONSTRAINT IF EXISTS unique_attempt_proctor",
+            # Audit de performance (2026-09-08) : comptage d'inscrits par UE
+            # (routes/exams.py, routes/formations.py) filtrait sans index utile
+            "CREATE INDEX IF NOT EXISTS ix_student_ue_enrollments_ue_id ON student_ue_enrollments (ue_id)",
         ]
         for _sql in _safe_migrations:
             try:

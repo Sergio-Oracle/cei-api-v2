@@ -1521,20 +1521,6 @@ OPENAPI_SPEC = {
                 "404": {"$ref": "#/components/responses/NotFound"}
             }
         }},
-        "/api/papers/{paper_id}/export": {"get": {
-            "tags": ["Copies"],
-            "summary": "Exporter une copie corrigée en PDF",
-            "description": "Génère un PDF contenant le feedback complet, la note et les informations de l'étudiant. L'étudiant ne peut exporter que sa propre copie.",
-            "parameters": [{"name": "paper_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
-            "responses": {
-                "200": {
-                    "description": "Fichier PDF",
-                    "content": {"application/pdf": {"schema": {"type": "string", "format": "binary"}}}
-                },
-                "403": {"$ref": "#/components/responses/Forbidden"},
-                "404": {"$ref": "#/components/responses/NotFound"}
-            }
-        }},
         "/api/papers/{paper_id}/publish": {"put": {
             "tags": ["Copies"],
             "summary": "Publier / dépublier la note d'une copie à l'étudiant",
@@ -1585,6 +1571,19 @@ OPENAPI_SPEC = {
                         "papers": {"type": "array", "items": {"$ref": "#/components/schemas/StudentPaper"}}
                     }
                 }}}}
+            }
+        }},
+        "/api/statistics/bulk": {"get": {
+            "tags": ["Copies"], "summary": "Statistiques de plusieurs sujets en un seul appel",
+            "description": "Audit montée en charge (29/08) : la page Résultats professeur appelait `GET /api/statistics/{subject_id}` une fois par sujet (parallèle côté client mais toujours N requêtes/N connexions DB). Ce endpoint fait le même calcul groupé — une seule requête DB par table (copies/examens/tentatives) au lieu d'une par sujet — puis répartit en mémoire ; le résultat par sujet est identique à un appel individuel.",
+            "parameters": [{"name": "subject_ids", "in": "query", "required": True, "schema": {"type": "string"}, "description": "Liste d'IDs séparés par des virgules, ex: `1,2,3`", "example": "12,13,14"}],
+            "responses": {
+                "200": {"description": "Statistiques par sujet, clé = subject_id (chaîne)", "content": {"application/json": {"schema": {
+                    "type": "object",
+                    "description": "Chaque valeur a exactement la forme de la réponse de GET /api/statistics/{subject_id}",
+                    "additionalProperties": {"type": "object"}
+                }}}},
+                "400": {"description": "subject_ids manquant ou invalide"}
             }
         }},
 

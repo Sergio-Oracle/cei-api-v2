@@ -2764,16 +2764,33 @@ def get_exam_recordings(exam_id):
         else:
             attempts = session.query(ExamAttempt).filter_by(exam_id=exam_id).all()
 
+        # N+1 corrigé (2026-09-08) : un User et un CameraLog par tentative
+        # explosait à 2×N+1 requêtes pour ce dashboard de surveillance
+        # (potentiellement des centaines de tentatives par examen) — deux
+        # requêtes groupées ici, puis répartition en mémoire ci-dessous.
+        attempt_ids_all = [a.id for a in attempts]
+        student_ids_all = [a.student_id for a in attempts]
+        students_by_id = {
+            u.id: u for u in (
+                session.query(User).filter(User.id.in_(student_ids_all)).all()
+                if student_ids_all else []
+            )
+        }
+        snapshots_by_attempt = {}
+        if attempt_ids_all:
+            all_snapshots = session.query(CameraLog).filter(
+                CameraLog.attempt_id.in_(attempt_ids_all)
+            ).order_by(CameraLog.timestamp.asc()).all()
+            for snap in all_snapshots:
+                snapshots_by_attempt.setdefault(snap.attempt_id, []).append(snap)
+
         result = []
         for attempt in attempts:
-            student = session.query(User).filter_by(id=attempt.student_id).first()
+            student = students_by_id.get(attempt.student_id)
             student_name = student.full_name if student else f'Étudiant #{attempt.student_id}'
             student_email = student.email if student else ''
 
-            # Récupérer les snapshots caméra
-            snapshots = session.query(CameraLog).filter_by(
-                attempt_id=attempt.id
-            ).order_by(CameraLog.timestamp.asc()).all()
+            snapshots = snapshots_by_attempt.get(attempt.id, [])
 
             snaps_list = []
             for snap in snapshots:

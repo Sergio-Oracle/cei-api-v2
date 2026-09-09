@@ -14,6 +14,23 @@ les chemins de certificat, le nombre d'instances front et le pooler DB.
 | `cei-api-v2` | `127.0.0.1:8091` | API principale (tout `/api/` sauf le poll) |
 | `cei-api-v2-notif` | `127.0.0.1:8092` | `/api/notifications/poll` uniquement — pool isolé (6 workers × 14 threads, I/O-bound). Voir `routes/notifications.py`. |
 
+## Front (Next.js standalone, `node .next/standalone/server.js`)
+
+6 instances **des deux côtés**, une par port, servant le même
+`.next/standalone/` :
+
+| Service systemd | Port |
+|---|---|
+| `cei-next` | `127.0.0.1:5175` |
+| `cei-next-2` … `cei-next-6` | `127.0.0.1:5176` … `5180` |
+
+- Config par `Environment=PORT=` + `HOSTNAME=127.0.0.1` dans chaque unit.
+- dev : `User=root`, `WorkingDirectory=/root/cei-next`, node via nvm, `.env.local`
+  fournit `NEXT_PUBLIC_API_URL` ; prod : `User=serge`,
+  `/home/serge/projet-cei/cei-next`, `/usr/bin/node`, URL API figée au build.
+- Rebuild + restart des 6 : dev `cei-next/build-local.sh`,
+  prod `cei-next/deploy-to-prod.sh`.
+
 - Le bind vient de `Environment=GUNICORN_BIND=` dans l'unit (défaut du fichier
   `gunicorn.conf.py` = `unix:/run/cei-api-v2.sock`, **surchargé** dans les deux
   units pour du TCP).
@@ -37,11 +54,16 @@ upstream cei_notif_upstream { server 127.0.0.1:8092; keepalive 32; }
 # prod a aussi cei_next_upstream (6 instances Next) ; dev sert Next en direct.
 ```
 
+Front : `upstream cei_next_upstream { least_conn; server 127.0.0.1:5175 … :5180;
+keepalive 64; }` **des deux côtés** (6 instances). Nécessite le `map
+$http_upgrade $connection_upgrade` (défini en tête du vhost) pour que le
+keepalive coexiste avec l'upgrade WebSocket.
+
 | `location` | `proxy_pass` |
 |---|---|
 | `= /api/notifications/poll` | `http://cei_notif_upstream` |
 | `/api/` | `http://cei_api_upstream` |
-| `/` (front) | dev : `http://127.0.0.1:5173` — prod : `http://cei_next_upstream` (ports 5175-5180) |
+| `/` (front) | `http://cei_next_upstream` |
 
 `/api/notifications/poll` est un `location =` (exact) → matché avant `/api/`
 quel que soit l'ordre dans le fichier.
@@ -61,8 +83,6 @@ TTL 1 h. (Historique : c'était un canal Pub/Sub jusqu'au 09/09.)
 
 ## Divergences dev / prod à connaître
 
-- **Front** : dev = 1 instance Next (`:5173`, `cei-next.service`, sert
-  `.next/standalone/`). prod = 6 instances (`:5175-5180`, `cei-next{,-2..-6}`).
 - **Accès** : dev = ce serveur en direct (Bash root). prod = SSH `serge@…:3120`,
   sudo NOPASSWD **restreint** (`systemctl restart/reload cei-api-v2`,
   `restart cei-next*` seulement — **pas** `cei-api-v2-notif`, pas d'écriture

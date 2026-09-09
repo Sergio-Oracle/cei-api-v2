@@ -2518,8 +2518,10 @@ OPENAPI_SPEC = {
                     "**Stockage** : Les alertes sont persistées dans une **Redis List** (`cei:agent:alerts`) "
                     "avec un maximum de 200 entrées. Les attempt_ids lus sont conservés dans un **Redis Set** "
                     "(`cei:agent:alerts:read`). Plus de fichier `agent_alerts.json` — stockage multi-serveur prêt.\n\n"
-                    "**Push temps réel** : à chaque nouvelle alerte, le bus `notif_bus.py` publie sur "
-                    "`cei:notif:exam:{id}` (long-polling navigateur) ET sur ntfy topic `exam-{id}` (push mobile)."
+                    "**Push temps réel** : à chaque nouvelle alerte, le bus `notif_bus.py` publie sur le "
+                    "canal Redis individuel (`cei:notif:user:{id}`) de chaque membre du personnel couvrant "
+                    "l'examen (surveillants assignés + superviseur(s) du groupe + professeur), consommé par "
+                    "le long-polling navigateur `/api/notifications/poll`."
                 ),
                 "responses": {"200": {"description": "Alertes", "content": {"application/json": {"schema": {
                     "type": "object",

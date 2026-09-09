@@ -15,8 +15,8 @@ Fallback disque :
   Si MinIO est injoignable (service arrêté, panne réseau...), l'upload bascule
   automatiquement sur le disque local (UPLOAD_FOLDER/snapshots_fallback/...) au lieu
   de faire échouer toute la capture proctoring. Les admins sont alertés (Redis
-  Pub/Sub + ntfy) au premier échec, avec un cooldown pour éviter le flood, puis
-  re-notifiés quand MinIO redevient disponible.
+  Pub/Sub, badge Header) au premier échec, avec un cooldown pour éviter le flood,
+  puis re-notifiés quand MinIO redevient disponible.
 """
 import os, base64, logging
 from datetime import datetime

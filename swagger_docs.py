@@ -2518,10 +2518,10 @@ OPENAPI_SPEC = {
                     "**Stockage** : Les alertes sont persistées dans une **Redis List** (`cei:agent:alerts`) "
                     "avec un maximum de 200 entrées. Les attempt_ids lus sont conservés dans un **Redis Set** "
                     "(`cei:agent:alerts:read`). Plus de fichier `agent_alerts.json` — stockage multi-serveur prêt.\n\n"
-                    "**Push temps réel** : à chaque nouvelle alerte, le bus `notif_bus.py` publie sur le "
-                    "canal Redis individuel (`cei:notif:user:{id}`) de chaque membre du personnel couvrant "
-                    "l'examen (surveillants assignés + superviseur(s) du groupe + professeur), consommé par "
-                    "le long-polling navigateur `/api/notifications/poll`."
+                    "**Push temps réel** : à chaque nouvelle alerte, le bus `notif_bus.py` empile l'événement "
+                    "dans la file Redis individuelle (`cei:notif:user:{id}`) de chaque membre du personnel "
+                    "couvrant l'examen (surveillants assignés + superviseur(s) du groupe + professeur), "
+                    "drainée par le poll court navigateur `/api/notifications/poll`."
                 ),
                 "responses": {"200": {"description": "Alertes", "content": {"application/json": {"schema": {
                     "type": "object",
@@ -3749,17 +3749,21 @@ OPENAPI_SPEC = {
         }},
         "/api/notifications/poll": {"get": {
             "tags": ["Tableaux de bord"],
-            "summary": "Long-polling des notifications en temps réel (Redis Pub/Sub)",
-            "description": "Attend au plus 25s un événement sur le canal Redis de l'utilisateur connecté. Le client doit se reconnecter immédiatement après chaque réponse (événement reçu ou timeout 204) — chaque connexion occupe un thread Gunicorn gthread pendant max 25s puis le libère.",
+            "summary": "Draine la file de notifications de l'utilisateur (réponse immédiate)",
+            "description": "Lit et purge atomiquement (LRANGE + LTRIM en MULTI/EXEC, ordre FIFO) la file Redis `cei:notif:user:{id}` alimentée par `notif_bus.py`. Réponse immédiate, aucune connexion tenue : le client rappelle cet endpoint à intervalle court (~15s onglet visible, ~60s onglet caché). File bornée à 50 entrées, TTL 1h — un événement émis alors que le destinataire n'a aucun onglet ouvert est conservé puis livré au prochain poll (au lieu d'être perdu comme avec l'ancien Pub/Sub).",
             "responses": {
-                "200": {"description": "Événement reçu", "content": {"application/json": {"schema": {
+                "200": {"description": "Événements en attente (liste éventuellement vide)", "content": {"application/json": {"schema": {
                     "type": "object",
                     "properties": {
-                        "has_event": {"type": "boolean", "example": True},
-                        "event": {"type": "object", "properties": {"type": {"type": "string"}, "title": {"type": "string"}, "message": {"type": "string"}}}
+                        "has_events": {"type": "boolean", "example": True},
+                        "events": {"type": "array", "items": {"type": "object", "properties": {
+                            "type": {"type": "string"}, "title": {"type": "string"}, "message": {"type": "string"},
+                            "ts": {"type": "integer", "description": "epoch ms d'émission"}
+                        }}},
+                        "has_event": {"type": "boolean", "description": "repli : = has_events (client d'une version précédente)"},
+                        "event": {"type": "object", "description": "repli : 1er élément de events, ou null"}
                     }
-                }}}},
-                "204": {"description": "Timeout sans événement — le client doit se reconnecter"}
+                }}}}
             }
         }},
 

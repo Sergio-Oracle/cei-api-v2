@@ -3,9 +3,9 @@ Blueprint Notifications.
 
 GET  /api/notifications          — corrections récentes (étudiant)
 PUT  /api/notifications/mark-read — marquer toutes comme lues
-GET  /api/notifications/poll     — long-polling Redis Pub/Sub (max 25 s)
+GET  /api/notifications/poll     — draine la file Redis de l'utilisateur (réponse immédiate)
 """
-import os, json, time, logging
+import os, json, logging
 from datetime import datetime, timezone
 from flask import Blueprint, jsonify
 from auth_paseto import paseto_required, get_current_user_id
@@ -115,24 +115,31 @@ def mark_notifications_read():
         session.close()
 
 
+_POLL_BATCH = 50
+
+
 @notifications_bp.route('/api/notifications/poll', methods=['GET'])
 @paseto_required
 @limiter.exempt
 def notification_poll():
     """
-    Long-polling Redis Pub/Sub — attend au plus 25 s un événement.
+    Draine la file Redis de l'utilisateur (`cei:notif:user:{id}`, liste
+    alimentée par notif_bus) et renvoie immédiatement les événements en
+    attente. Aucune connexion tenue : le client rappelle cet endpoint à
+    intervalle court (cf. hooks/useNotificationPoll.ts).
 
-    Le client doit se reconnecter immédiatement après chaque réponse
-    (event reçu ou timeout 204). Chaque connexion occupe un thread
-    Gunicorn gthread pendant max 25 s puis le libère.
+    LRANGE + LTRIM dans une transaction Redis (MULTI/EXEC) = lecture-puis-
+    purge atomique, ordre FIFO (le plus ancien d'abord).
 
-    Retours :
-      200 { has_event: true,  event: { type, title, message } }
-      204 (corps vide)  — timeout sans événement, le client se reconnecte
+    Retour :
+      200 { has_events: bool, events: [ { type, title, message, ts, ... } ] }
+      (`has_event` / `event` = 1er élément, pour un client long-poll d'une
+       version précédente encore chargé pendant une bascule.)
     """
     user_id = get_current_user_id()
-    channel = f'cei:notif:user:{user_id}'
-    r = pubsub = None
+    key = f'cei:notif:user:{user_id}'
+    events = []
+    r = None
     try:
         r = _redis_lib.from_url(
             _REDIS_URL,
@@ -140,30 +147,27 @@ def notification_poll():
             socket_connect_timeout=2,
             socket_timeout=2,
         )
-        pubsub = r.pubsub()
-        pubsub.subscribe(channel)
-
-        # Consommer le message de confirmation d'abonnement
-        pubsub.get_message(timeout=0.1)
-
-        deadline = time.monotonic() + 25.0
-        while time.monotonic() < deadline:
-            msg = pubsub.get_message(timeout=1.0)
-            if msg and msg['type'] == 'message':
-                data = json.loads(msg['data'])
-                return jsonify({'has_event': True, 'event': data})
-
-        return jsonify({'has_event': False}), 204
-
+        pipe = r.pipeline(transaction=True)
+        pipe.lrange(key, 0, _POLL_BATCH - 1)
+        pipe.ltrim(key, _POLL_BATCH, -1)
+        raw = pipe.execute()[0]
+        for item in raw or []:
+            try:
+                events.append(json.loads(item))
+            except Exception:
+                pass
     except Exception as exc:
         _log.warning('notification_poll error user=%s: %s', user_id, exc)
-        return jsonify({'has_event': False}), 204
     finally:
         try:
-            if pubsub:
-                pubsub.unsubscribe(channel)
-                pubsub.close()
             if r:
                 r.close()
         except Exception:
             pass
+
+    return jsonify({
+        'has_events': bool(events),
+        'events':     events,
+        'has_event':  bool(events),
+        'event':      events[0] if events else None,
+    })

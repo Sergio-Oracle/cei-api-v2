@@ -48,20 +48,44 @@ def _link_student_to_formation(session, student, formation_id):
     Formation → Semestre → UE) : renseigne formation_id, synchronise le texte
     niveau depuis formation.niveau.code (même principe que Formation.level
     synchronisé depuis niveau.name), et inscrit l'étudiant à toutes les UE de
-    la formation (sans jamais retirer une inscription existante)."""
+    la formation (sans jamais retirer une inscription existante).
+
+    Version batchée : un seul scan des UE de la formation + un seul bulk insert
+    des inscriptions manquantes, au lieu d'un N+1 par UE.
+    """
     formation = session.query(Formation).filter_by(id=formation_id).first()
     if not formation:
         return 0
+
     student.formation_id = formation_id
     if formation.niveau:
         student.niveau = formation.niveau.code[:5]
-    added = 0
-    for sem in session.query(Semester).filter_by(formation_id=formation_id).all():
-        for ue in session.query(UE).filter_by(semester_id=sem.id).all():
-            if not session.query(StudentUEEnrollment).filter_by(student_id=student.id, ue_id=ue.id).first():
-                session.add(StudentUEEnrollment(student_id=student.id, ue_id=ue.id))
-                added += 1
-    return added
+
+    semester_ids = [row[0] for row in session.query(Semester.id)
+                    .filter_by(formation_id=formation_id).all()]
+    if not semester_ids:
+        return 0
+
+    ue_ids = [row[0] for row in session.query(UE.id)
+              .filter(UE.semester_id.in_(semester_ids)).all()]
+    if not ue_ids:
+        return 0
+
+    existing_ue_ids = {
+        row[0] for row in session.query(StudentUEEnrollment.ue_id)
+        .filter_by(student_id=student.id)
+        .filter(StudentUEEnrollment.ue_id.in_(ue_ids))
+        .all()
+    }
+
+    missing_enrollments = [
+        StudentUEEnrollment(student_id=student.id, ue_id=ue_id)
+        for ue_id in ue_ids
+        if ue_id not in existing_ue_ids
+    ]
+    if missing_enrollments:
+        session.add_all(missing_enrollments)
+    return len(missing_enrollments)
 
 
 # ── Dashboard ─────────────────────────────────────────────────────────────────

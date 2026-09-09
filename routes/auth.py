@@ -75,17 +75,43 @@ def _link_student_to_formation(session, student, formation_id):
     Formation → Semestre → UE) à l'inscription publique — renseigne
     formation_id, synchronise le niveau, inscrit à toutes les UE de la
     formation. Même logique que admin_users._link_student_to_formation :
-    évite qu'un étudiant auto-inscrit se retrouve "Sans pôle"."""
+    évite qu'un étudiant auto-inscrit se retrouve "Sans pôle".
+
+    Version batchée : on ne fait plus un SELECT + EXISTS par UE, mais un seul
+    scan des UE du programme et un seul bulk insert des inscriptions manquantes.
+    """
     formation = session.query(Formation).filter_by(id=formation_id).first()
     if not formation:
         return
+
     student.formation_id = formation_id
     if formation.niveau:
         student.niveau = formation.niveau.code[:5]
-    for sem in session.query(Semester).filter_by(formation_id=formation_id).all():
-        for ue in session.query(UE).filter_by(semester_id=sem.id).all():
-            if not session.query(StudentUEEnrollment).filter_by(student_id=student.id, ue_id=ue.id).first():
-                session.add(StudentUEEnrollment(student_id=student.id, ue_id=ue.id))
+
+    semester_ids = [row[0] for row in session.query(Semester.id)
+                    .filter_by(formation_id=formation_id).all()]
+    if not semester_ids:
+        return
+
+    ue_ids = [row[0] for row in session.query(UE.id)
+              .filter(UE.semester_id.in_(semester_ids)).all()]
+    if not ue_ids:
+        return
+
+    existing_ue_ids = {
+        row[0] for row in session.query(StudentUEEnrollment.ue_id)
+        .filter_by(student_id=student.id)
+        .filter(StudentUEEnrollment.ue_id.in_(ue_ids))
+        .all()
+    }
+
+    missing_enrollments = [
+        StudentUEEnrollment(student_id=student.id, ue_id=ue_id)
+        for ue_id in ue_ids
+        if ue_id not in existing_ue_ids
+    ]
+    if missing_enrollments:
+        session.add_all(missing_enrollments)
 
 
 # ── Inscription ───────────────────────────────────────────────────────────────

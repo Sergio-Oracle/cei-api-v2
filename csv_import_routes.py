@@ -17,22 +17,46 @@ from utils import send_account_created_email
 
 
 def _link_student_to_formation_by_code(session_db, student, formation_code):
-    """Rattache un étudiant importé par CSV à une Formation via son code
-    (colonne optionnelle formation_code) — même logique que
-    admin_users._link_student_to_formation : synchronise le niveau et inscrit
-    l'étudiant à toutes les UE de la formation (sans jamais retirer une
-    inscription existante). Sans cette colonne, un import CSV créait des
-    étudiants sans aucun rattachement Pôle/Niveau/Formation."""
+    """Rattache un étudiant importé par CSV à une Formation via son code.
+
+    Version batchée : on récupère tous les IDs UE de la formation en une seule
+    requête, puis on calcule les inscriptions manquantes et on les insère en
+    une seule opération. Cela évite le N+1 qui coûtait énormément sur les gros
+    imports de maquette/étudiants.
+    """
     formation = session_db.query(Formation).filter_by(code=formation_code.strip()).first()
     if not formation:
         return None
+
     student.formation_id = formation.id
     if formation.niveau:
         student.niveau = formation.niveau.code[:5]
-    for sem in session_db.query(Semester).filter_by(formation_id=formation.id).all():
-        for ue in session_db.query(UE).filter_by(semester_id=sem.id).all():
-            if not session_db.query(StudentUEEnrollment).filter_by(student_id=student.id, ue_id=ue.id).first():
-                session_db.add(StudentUEEnrollment(student_id=student.id, ue_id=ue.id))
+
+    semester_ids = [row[0] for row in session_db.query(Semester.id)
+                    .filter_by(formation_id=formation.id).all()]
+    if not semester_ids:
+        return formation
+
+    ue_ids = [row[0] for row in session_db.query(UE.id)
+              .filter(UE.semester_id.in_(semester_ids)).all()]
+    if not ue_ids:
+        return formation
+
+    existing_ue_ids = {
+        row[0] for row in session_db.query(StudentUEEnrollment.ue_id)
+        .filter_by(student_id=student.id)
+        .filter(StudentUEEnrollment.ue_id.in_(ue_ids))
+        .all()
+    }
+
+    missing_enrollments = [
+        StudentUEEnrollment(student_id=student.id, ue_id=ue_id)
+        for ue_id in ue_ids
+        if ue_id not in existing_ue_ids
+    ]
+    if missing_enrollments:
+        session_db.add_all(missing_enrollments)
+
     return formation
 
 bcrypt = Bcrypt()

@@ -13,7 +13,7 @@ Routes migrées depuis app.py :
   POST /api/admin/users/student-no-email   (depuis route ~6638)
 """
 from flask import Blueprint, request, jsonify
-from sqlalchemy import or_
+from sqlalchemy import or_, func
 from sqlalchemy.orm import joinedload
 from threading import Thread
 
@@ -28,6 +28,7 @@ from models import (
     ProctorAssignment, ReclamationStatus, TokenBlocklist,
     OnlineExam, ExamProctor, QuestionBank,
     ProctorGroup, ProctorGroupMember, SubjectMedia, IncidentDismissal,
+    Pole,
 )
 from utils import send_account_created_email
 
@@ -199,7 +200,7 @@ def get_proctor_users():
         return jsonify({'error': str(e)}), 500
 
 
-# ── Liste tous les utilisateurs ───────────────────────────────────────────────
+# ── Liste tous les utilisateurs (paginée, triée A-Z) ──────────────────────────
 @admin_users_bp.route('/api/admin/users', methods=['GET'])
 @paseto_required
 @limiter.exempt
@@ -213,6 +214,10 @@ def get_all_users():
         search      = request.args.get('search', '').strip()
         niveau      = request.args.get('niveau', '').strip()
         role_filter = request.args.get('role', '').strip()
+        pole_id_raw = request.args.get('pole_id', '').strip()
+        no_email    = request.args.get('no_email', '').strip() in ('1', 'true', 'True')
+        page        = max(1, request.args.get('page', 1, type=int))
+        limit       = min(200, max(1, request.args.get('limit', 50, type=int)))
 
         # Chargement anticipé (JOIN) de formation -> niveau/pole — sans ça,
         # User.to_dict() (appelé une fois par utilisateur ci-dessous) déclenche
@@ -220,15 +225,27 @@ def get_all_users():
         # pole) : ~6500 étudiants × 3 = jusqu'à ~19500 requêtes séquentielles
         # supplémentaires, ce qui rendait cette page quasi infinie après
         # l'import en masse du 04/09 (avant, ~106 étudiants, jamais remarqué).
+        # Pagination + tri alphabétique ajoutés le 18/09 pour la même raison :
+        # rendre 6500 lignes d'un coup restait lent côté rendu, même sans le
+        # N+1 ci-dessus — on ne charge plus qu'une page à la fois (façon Moodle).
         query = session.query(User).options(
             joinedload(User.formation).joinedload(Formation.niveau),
             joinedload(User.formation).joinedload(Formation.pole),
         )
+        if pole_id_raw == 'none':
+            query = query.filter(User.formation_id.is_(None))
+        elif pole_id_raw:
+            try:
+                query = query.join(User.formation).filter(Formation.pole_id == int(pole_id_raw))
+            except ValueError:
+                pass
         if search:
             query = query.filter(or_(
                 User.full_name.ilike(f'%{search}%'),
                 User.email.ilike(f'%{search}%'),
             ))
+        if no_email:
+            query = query.filter(User.email.ilike('%@no-email.cei.local%'))
         if niveau:
             query = query.filter(User.niveau == niveau)
         if role_filter:
@@ -237,14 +254,82 @@ def get_all_users():
             except KeyError:
                 pass
 
-        users = query.order_by(User.created_at.desc()).all()
+        total = query.count()
+        users = (
+            query.order_by(func.lower(User.full_name))
+            .offset((page - 1) * limit)
+            .limit(limit)
+            .all()
+        )
         result = [u.to_dict() for u in users]
         session.close()
-        return jsonify(result)
+        return jsonify({
+            'users': result,
+            'total': total,
+            'page': page,
+            'limit': limit,
+            'total_pages': max(1, (total + limit - 1) // limit),
+        })
     except Exception as e:
         try: session.rollback(); session.close()
         except Exception: pass
         print(f"ERROR get_all_users: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+# ── Compteurs globaux par rôle + répartition étudiants par pôle ───────────────
+# Indépendant de la pagination ci-dessus : sert uniquement le bandeau de stats
+# (2 Administrateurs / 23 Professeurs / ... / 6489 Étudiants) et la liste des
+# colonnes Pôle à afficher côte à côte, sans jamais charger les lignes elles-mêmes.
+@admin_users_bp.route('/api/admin/users/role-counts', methods=['GET'])
+@paseto_required
+@limiter.exempt
+def get_user_role_counts():
+    try:
+        session = get_session()
+        if not _require_admin(session):
+            session.close()
+            return jsonify({'error': 'Accès non autorisé'}), 403
+
+        from cache import cache_get, cache_set
+        CACHE_KEY = 'cei:admin_user_role_counts'
+        data = cache_get(CACHE_KEY)
+        if data is None:
+            role_rows = session.query(User.role, func.count(User.id)).group_by(User.role).all()
+            roles = {r.value: c for r, c in role_rows}
+
+            pole_rows = (
+                session.query(Pole.id, Pole.code, Pole.name, func.count(User.id))
+                .join(Formation, Formation.pole_id == Pole.id)
+                .join(User, User.formation_id == Formation.id)
+                .filter(User.role == UserRole.STUDENT)
+                .group_by(Pole.id, Pole.code, Pole.name)
+                .order_by(Pole.code)
+                .all()
+            )
+            student_poles = [
+                {'pole_id': pid, 'pole_code': code, 'pole_name': name, 'count': c}
+                for pid, code, name, c in pole_rows
+            ]
+            no_pole_count = (
+                session.query(User)
+                .filter(User.role == UserRole.STUDENT, User.formation_id.is_(None))
+                .count()
+            )
+            if no_pole_count > 0:
+                student_poles.append({
+                    'pole_id': None, 'pole_code': 'SANS_POLE',
+                    'pole_name': 'Sans pôle assigné', 'count': no_pole_count,
+                })
+
+            data = {'roles': roles, 'student_poles': student_poles}
+            cache_set(CACHE_KEY, data, ttl=30)
+        session.close()
+        return jsonify(data)
+    except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
+        print(f"ERROR get_user_role_counts: {e}")
         return jsonify({'error': str(e)}), 500
 
 

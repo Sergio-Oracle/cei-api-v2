@@ -605,13 +605,25 @@ OPENAPI_SPEC = {
         }},
         "/api/admin/users": {
             "get": {
-                "tags": ["Administration"], "summary": "Liste de tous les utilisateurs (admin)",
+                "tags": ["Administration"], "summary": "Liste de tous les utilisateurs (admin), paginée et triée A-Z",
+                "description": "Triée par ordre alphabétique (insensible à la casse) sur full_name — pas par date de création. pole_id filtre les étudiants d'un pôle donné via la Formation (utiliser la valeur spéciale 'none' pour les étudiants sans formation/pôle assigné).",
                 "parameters": [
-                    {"name": "role",   "in": "query", "schema": {"type": "string", "enum": ["admin","professor","surveillant","superviseur","student"]}},
-                    {"name": "page",   "in": "query", "schema": {"type": "integer", "default": 1}},
-                    {"name": "search", "in": "query", "schema": {"type": "string"}}
+                    {"name": "role",     "in": "query", "schema": {"type": "string", "enum": ["admin","professor","surveillant","superviseur","student"]}},
+                    {"name": "pole_id",  "in": "query", "schema": {"type": "string"}, "description": "ID numérique d'un pôle, ou 'none' pour les étudiants sans pôle assigné."},
+                    {"name": "no_email", "in": "query", "schema": {"type": "boolean"}, "description": "Ne garder que les comptes créés sans email institutionnel (@no-email.cei.local)."},
+                    {"name": "page",     "in": "query", "schema": {"type": "integer", "default": 1}},
+                    {"name": "limit",    "in": "query", "schema": {"type": "integer", "default": 50, "maximum": 200}},
+                    {"name": "search",   "in": "query", "schema": {"type": "string"}}
                 ],
-                "responses": {"200": {"description": "Liste paginée"}}
+                "responses": {"200": {"description": "Page d'utilisateurs", "content": {"application/json": {"schema": {
+                    "type": "object", "properties": {
+                        "users":       {"type": "array", "items": {"$ref": "#/components/schemas/User"}},
+                        "total":       {"type": "integer"},
+                        "page":        {"type": "integer"},
+                        "limit":       {"type": "integer"},
+                        "total_pages": {"type": "integer"}
+                    }
+                }}}}}
             },
             "post": {
                 "tags": ["Administration"], "summary": "Créer un utilisateur (admin)",
@@ -630,6 +642,23 @@ OPENAPI_SPEC = {
                 "responses": {"201": {"description": "Utilisateur créé", "content": {"application/json": {"schema": {
                     "type": "object", "properties": {"success": {"type": "boolean"}, "message": {"type": "string"}, "user": {"$ref": "#/components/schemas/User"}}
                 }}}}, "400": {"description": "Email déjà utilisé ou rôle invalide"}}
+            }
+        },
+        "/api/admin/users/role-counts": {
+            "get": {
+                "tags": ["Administration"], "summary": "Compteurs globaux par rôle + répartition étudiants par pôle (admin)",
+                "description": "Indépendant de la pagination de GET /api/admin/users — sert le bandeau de stats (nombre total d'admins/professeurs/superviseurs/surveillants/étudiants) et la liste des colonnes Pôle à afficher, sans jamais charger les lignes elles-mêmes. Résultat mis en cache 30s.",
+                "responses": {"200": {"description": "Compteurs", "content": {"application/json": {"schema": {
+                    "type": "object", "properties": {
+                        "roles": {"type": "object", "description": "Ex. {\"admin\": 2, \"professor\": 23, \"superviseur\": 1, \"surveillant\": 15, \"student\": 6489}"},
+                        "student_poles": {"type": "array", "items": {"type": "object", "properties": {
+                            "pole_id":   {"type": "integer", "nullable": True, "description": "null pour l'entrée synthétique 'Sans pôle assigné'"},
+                            "pole_code": {"type": "string"},
+                            "pole_name": {"type": "string"},
+                            "count":     {"type": "integer"}
+                        }}}
+                    }
+                }}}}}
             }
         },
         "/api/admin/users/{target_id}": {

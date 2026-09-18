@@ -721,8 +721,14 @@ def get_enrollment_stats():
         if data is None:
             total_students = session.query(User).filter_by(role=UserRole.STUDENT).count()
             total_ues = session.query(UE).count()
+            # Filtré par role=STUDENT — sans ça, un compte dont le rôle a changé
+            # depuis (ou tout autre student_id résiduel) gonflerait ce chiffre
+            # au-delà du total d'étudiants, comme observé en test (6499 > 6489).
             enrolled_count = (
-                session.query(func.count(func.distinct(StudentUEEnrollment.student_id))).scalar() or 0
+                session.query(func.count(func.distinct(StudentUEEnrollment.student_id)))
+                .join(User, User.id == StudentUEEnrollment.student_id)
+                .filter(User.role == UserRole.STUDENT)
+                .scalar() or 0
             )
 
             formation_rows = (

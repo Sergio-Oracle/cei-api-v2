@@ -575,6 +575,33 @@ def delete_user(target_id):
 
 
 # ── Liste des étudiants (professeur/admin) ────────────────────────────────────
+def _apply_student_list_filters(query, search, formation_id_raw, pole_id_raw):
+    if formation_id_raw == 'none':
+        query = query.filter(User.formation_id.is_(None))
+    elif formation_id_raw:
+        try:
+            query = query.filter(User.formation_id == int(formation_id_raw))
+        except ValueError:
+            pass
+    if pole_id_raw == 'none':
+        # "Sans pôle" ≠ "sans formation" : couvre aussi une formation existante
+        # dont le pôle n'est pas renseigné (voir /api/admin/enrollments/stats).
+        query = query.outerjoin(Formation, User.formation_id == Formation.id).filter(
+            or_(User.formation_id.is_(None), Formation.pole_id.is_(None))
+        )
+    elif pole_id_raw:
+        try:
+            query = query.join(User.formation).filter(Formation.pole_id == int(pole_id_raw))
+        except ValueError:
+            pass
+    if search:
+        query = query.filter(or_(
+            User.full_name.ilike(f'%{search}%'),
+            User.email.ilike(f'%{search}%'),
+        ))
+    return query
+
+
 @admin_users_bp.route('/api/students/list', methods=['GET'])
 @paseto_required
 def get_students_list():
@@ -587,13 +614,24 @@ def get_students_list():
         # Formation + une requête Pole PAR étudiant ici (pas même du lazy-load,
         # une requête manuelle explicite dans la boucle) — devenu ~13000
         # requêtes séquentielles avec 6500 étudiants. Un seul JOIN désormais.
-        students = session.query(User).filter_by(role=UserRole.STUDENT).options(
+        #
+        # Pagination ajoutée le 18/09 (même correctif que /api/admin/users) —
+        # mais OPT-IN via la présence du paramètre `page`, pour ne pas casser
+        # les appelants existants (page Professeur > Étudiants) qui attendent
+        # encore un tableau brut avec tout le monde dedans.
+        page_raw = request.args.get('page')
+        search      = request.args.get('search', '').strip()
+        formation_id_raw = request.args.get('formation_id', '').strip()
+        pole_id_raw = request.args.get('pole_id', '').strip()
+
+        base_query = session.query(User).filter_by(role=UserRole.STUDENT).options(
             joinedload(User.formation).joinedload(Formation.pole),
-        ).order_by(User.full_name).all()
-        result = []
-        for s in students:
+        )
+        base_query = _apply_student_list_filters(base_query, search, formation_id_raw, pole_id_raw)
+
+        def serialize(s):
             f = s.formation
-            result.append({
+            return {
                 'id':             s.id,
                 'full_name':      s.full_name,
                 'email':          s.email,
@@ -603,13 +641,153 @@ def get_students_list():
                 'pole_id':        f.pole_id if f else None,
                 'pole_code':      f.pole.code if f and f.pole else None,
                 'pole_name':      f.pole.name if f and f.pole else None,
-            })
+            }
+
+        if page_raw is None:
+            # Ancien comportement (aucune pagination demandée) — tout le monde,
+            # trié par nom, conservé tel quel pour les appelants historiques.
+            students = base_query.order_by(User.full_name).all()
+            result = [serialize(s) for s in students]
+            session.close()
+            return jsonify(result)
+
+        page  = max(1, request.args.get('page', 1, type=int))
+        limit = min(200, max(1, request.args.get('limit', 50, type=int)))
+        total = base_query.count()
+        students = (
+            base_query.order_by(func.lower(User.full_name))
+            .offset((page - 1) * limit)
+            .limit(limit)
+            .all()
+        )
+        result = [serialize(s) for s in students]
         session.close()
-        return jsonify(result)
+        return jsonify({
+            'students': result,
+            'total': total,
+            'page': page,
+            'limit': limit,
+            'total_pages': max(1, (total + limit - 1) // limit),
+        })
     except Exception as e:
         try: session.rollback(); session.close()
         except Exception: pass
         print(f"ERROR get_students_list: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+# ── IDs des étudiants correspondant à un filtre (pour "Tout sélectionner" /
+# "Tout cocher" à travers TOUTES les pages, pas seulement celles déjà
+# chargées) — volontairement séparé de /api/students/list : une seule colonne,
+# pas de JOIN formation/pôle, reste rapide même sur 6500+ lignes. ─────────────
+@admin_users_bp.route('/api/students/ids', methods=['GET'])
+@paseto_required
+def get_students_ids():
+    try:
+        role = get_current_user_role()
+        if role not in ['professor', 'admin']:
+            return jsonify({'error': 'Accès non autorisé'}), 403
+        session = get_session()
+        search      = request.args.get('search', '').strip()
+        formation_id_raw = request.args.get('formation_id', '').strip()
+        pole_id_raw = request.args.get('pole_id', '').strip()
+
+        query = session.query(User.id).filter_by(role=UserRole.STUDENT)
+        query = _apply_student_list_filters(query, search, formation_id_raw, pole_id_raw)
+        ids = [row[0] for row in query.all()]
+        session.close()
+        return jsonify({'ids': ids})
+    except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
+        print(f"ERROR get_students_ids: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+# ── Stats page "Inscriptions UE" (indépendant de la pagination ci-dessus) ────
+@admin_users_bp.route('/api/admin/enrollments/stats', methods=['GET'])
+@paseto_required
+@limiter.exempt
+def get_enrollment_stats():
+    try:
+        session = get_session()
+        if not _require_admin(session):
+            session.close()
+            return jsonify({'error': 'Accès non autorisé'}), 403
+
+        from cache import cache_get, cache_set
+        CACHE_KEY = 'cei:admin_enrollment_stats'
+        data = cache_get(CACHE_KEY)
+        if data is None:
+            total_students = session.query(User).filter_by(role=UserRole.STUDENT).count()
+            total_ues = session.query(UE).count()
+            enrolled_count = (
+                session.query(func.count(func.distinct(StudentUEEnrollment.student_id))).scalar() or 0
+            )
+
+            formation_rows = (
+                session.query(Formation.id, Formation.code, Formation.name, func.count(User.id))
+                .join(User, User.formation_id == Formation.id)
+                .filter(User.role == UserRole.STUDENT)
+                .group_by(Formation.id, Formation.code, Formation.name)
+                .order_by(Formation.code)
+                .all()
+            )
+            formation_groups = [
+                {'formation_id': fid, 'formation_code': code, 'formation_name': name, 'count': c}
+                for fid, code, name, c in formation_rows
+            ]
+            no_formation_count = (
+                session.query(User).filter(User.role == UserRole.STUDENT, User.formation_id.is_(None)).count()
+            )
+            if no_formation_count > 0:
+                formation_groups.append({
+                    'formation_id': None, 'formation_code': 'SANS_FORMATION',
+                    'formation_name': 'Sans formation principale', 'count': no_formation_count,
+                })
+
+            pole_rows = (
+                session.query(Pole.id, Pole.code, Pole.name, func.count(User.id))
+                .join(Formation, Formation.pole_id == Pole.id)
+                .join(User, User.formation_id == Formation.id)
+                .filter(User.role == UserRole.STUDENT)
+                .group_by(Pole.id, Pole.code, Pole.name)
+                .order_by(Pole.code)
+                .all()
+            )
+            pole_groups = [
+                {'pole_id': pid, 'pole_code': code, 'pole_name': name, 'count': c}
+                for pid, code, name, c in pole_rows
+            ]
+            # "Sans pôle" ≠ "sans formation" : un étudiant peut avoir une
+            # formation dont le pôle n'est pas renseigné. Compté séparément.
+            no_pole_count = (
+                session.query(User)
+                .outerjoin(Formation, User.formation_id == Formation.id)
+                .filter(User.role == UserRole.STUDENT)
+                .filter(or_(User.formation_id.is_(None), Formation.pole_id.is_(None)))
+                .count()
+            )
+            if no_pole_count > 0:
+                pole_groups.append({
+                    'pole_id': None, 'pole_code': 'SANS_POLE',
+                    'pole_name': 'Sans pôle', 'count': no_pole_count,
+                })
+
+            data = {
+                'total_students': total_students,
+                'total_ues': total_ues,
+                'enrolled_count': enrolled_count,
+                'formation_groups': formation_groups,
+                'pole_groups': pole_groups,
+            }
+            cache_set(CACHE_KEY, data, ttl=30)
+        session.close()
+        return jsonify(data)
+    except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
+        print(f"ERROR get_enrollment_stats: {e}")
         return jsonify({'error': str(e)}), 500
 
 

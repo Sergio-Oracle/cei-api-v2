@@ -752,20 +752,58 @@ OPENAPI_SPEC = {
             }
         }},
         "/api/students/list": {"get": {
-            "tags": ["Administration"], "summary": "Liste complète des étudiants (prof/admin)",
+            "tags": ["Administration"], "summary": "Liste des étudiants (prof/admin) — pagination optionnelle",
+            "description": "Sans le paramètre `page` : comportement historique inchangé, renvoie un tableau brut avec TOUS les étudiants (utilisé par la page Professeur > Relevés). Avec `page` : réponse paginée triée A-Z, filtrable par formation_id/pole_id ('none' pour les étudiants sans formation/pôle) et search.",
+            "parameters": [
+                {"name": "page",         "in": "query", "schema": {"type": "integer"}, "description": "Active la pagination si présent."},
+                {"name": "limit",        "in": "query", "schema": {"type": "integer", "default": 50, "maximum": 200}},
+                {"name": "search",       "in": "query", "schema": {"type": "string"}},
+                {"name": "formation_id", "in": "query", "schema": {"type": "string"}, "description": "ID numérique, ou 'none' pour les étudiants sans formation."},
+                {"name": "pole_id",      "in": "query", "schema": {"type": "string"}, "description": "ID numérique, ou 'none' pour les étudiants sans pôle."}
+            ],
             "responses": {
-                "200": {"description": "Étudiants", "content": {"application/json": {"schema": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "id": {"type": "integer"},
-                            "full_name": {"type": "string"},
-                            "email": {"type": "string"}
-                        }
-                    }
+                "200": {"description": "Étudiants (tableau brut sans `page`, objet paginé avec `page`)", "content": {"application/json": {"schema": {
+                    "oneOf": [
+                        {"type": "array", "items": {"type": "object", "properties": {
+                            "id": {"type": "integer"}, "full_name": {"type": "string"}, "email": {"type": "string"}
+                        }}},
+                        {"type": "object", "properties": {
+                            "students": {"type": "array", "items": {"type": "object"}},
+                            "total": {"type": "integer"}, "page": {"type": "integer"},
+                            "limit": {"type": "integer"}, "total_pages": {"type": "integer"}
+                        }}
+                    ]
                 }}}}
             }
+        }},
+        "/api/students/ids": {"get": {
+            "tags": ["Administration"], "summary": "IDs des étudiants correspondant à un filtre (prof/admin)",
+            "description": "Sert uniquement 'Tout sélectionner' / 'Tout cocher' sur la page Inscriptions UE — une seule colonne, sans JOIN, pour rester rapide même à 6500+ lignes et permettre de sélectionner TOUTES les correspondances (pas seulement la page affichée).",
+            "parameters": [
+                {"name": "search",       "in": "query", "schema": {"type": "string"}},
+                {"name": "formation_id", "in": "query", "schema": {"type": "string"}},
+                {"name": "pole_id",      "in": "query", "schema": {"type": "string"}}
+            ],
+            "responses": {"200": {"description": "IDs", "content": {"application/json": {"schema": {
+                "type": "object", "properties": {"ids": {"type": "array", "items": {"type": "integer"}}}
+            }}}}}
+        }},
+        "/api/admin/enrollments/stats": {"get": {
+            "tags": ["Administration"], "summary": "Stats page Inscriptions UE (admin) — indépendant de la pagination",
+            "description": "Compteurs globaux (étudiants/UEs/inscrits) + répartition par formation et par pôle, pour alimenter les 3 cartes de stats et les colonnes des onglets 'Par formation'/'Par pôle' sans jamais charger les lignes elles-mêmes. Résultat mis en cache 30s.",
+            "responses": {"200": {"description": "Stats", "content": {"application/json": {"schema": {
+                "type": "object", "properties": {
+                    "total_students": {"type": "integer"}, "total_ues": {"type": "integer"}, "enrolled_count": {"type": "integer"},
+                    "formation_groups": {"type": "array", "items": {"type": "object", "properties": {
+                        "formation_id": {"type": "integer", "nullable": True}, "formation_code": {"type": "string"},
+                        "formation_name": {"type": "string"}, "count": {"type": "integer"}
+                    }}},
+                    "pole_groups": {"type": "array", "items": {"type": "object", "properties": {
+                        "pole_id": {"type": "integer", "nullable": True}, "pole_code": {"type": "string"},
+                        "pole_name": {"type": "string"}, "count": {"type": "integer"}
+                    }}}
+                }
+            }}}}}
         }},
 
         # ══════════════════════════════════════════════════════════════════════
@@ -3140,8 +3178,11 @@ OPENAPI_SPEC = {
         }},
         "/api/admin/students/enrollments/bulk": {"get": {
             "tags": ["Académique"],
-            "summary": "Inscriptions UE de TOUS les étudiants en un seul appel (admin)",
-            "description": "Remplace N appels individuels à GET /api/admin/students/{student_id}/enrollments (un par étudiant) qui saturaient le rate-limit (60/min) sur les pages listant beaucoup d'étudiants (ex: 48 requêtes simultanées → 429). Résultat groupé par student_id.",
+            "summary": "Inscriptions UE de TOUS les étudiants, ou d'une liste ciblée (admin)",
+            "description": "Remplace N appels individuels à GET /api/admin/students/{student_id}/enrollments (un par étudiant) qui saturaient le rate-limit (60/min) sur les pages listant beaucoup d'étudiants (ex: 48 requêtes simultanées → 429). Résultat groupé par student_id. `student_ids` (ajouté 18/09) limite le résultat à ces étudiants seulement — utilisé par la page Inscriptions UE paginée pour ne charger que les inscriptions de la page affichée ; absent, comportement historique inchangé (tout le monde).",
+            "parameters": [
+                {"name": "student_ids", "in": "query", "schema": {"type": "string"}, "description": "IDs séparés par des virgules, ex: '10,29,44'."}
+            ],
             "responses": {"200": {"description": "Inscriptions groupées par étudiant", "content": {"application/json": {"schema": {
                 "type": "object",
                 "description": "Clé = student_id (string), valeur = liste des inscriptions UE de cet étudiant",

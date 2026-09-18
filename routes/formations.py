@@ -1285,13 +1285,25 @@ def get_all_students_enrollments():
         ok, _ = _is_admin(session)
         if not ok: session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
 
-        rows = (
+        # student_ids optionnel (18/09, suite à la pagination de la page
+        # Inscriptions UE) : ne charger les inscriptions QUE pour les
+        # étudiants réellement affichés (une page ≤200), plutôt que pour les
+        # ~6500 étudiants du système à chaque appel. Absent -> comportement
+        # historique inchangé (tout le monde), pour ne rien casser ailleurs.
+        student_ids_raw = request.args.get('student_ids', '').strip()
+        query = (
             session.query(StudentUEEnrollment, UE, Semester, Formation)
             .join(UE, StudentUEEnrollment.ue_id == UE.id)
             .outerjoin(Semester, UE.semester_id == Semester.id)
             .outerjoin(Formation, Semester.formation_id == Formation.id)
-            .all()
         )
+        if student_ids_raw:
+            try:
+                ids = [int(x) for x in student_ids_raw.split(',') if x.strip()]
+                query = query.filter(StudentUEEnrollment.student_id.in_(ids))
+            except ValueError:
+                pass
+        rows = query.all()
         result = {}
         for enr, ue, sem, form in rows:
             result.setdefault(str(enr.student_id), []).append({

@@ -178,10 +178,6 @@ def _security_headers(response):
             "frame-ancestors 'none'"
         )
     response.headers.setdefault('Content-Security-Policy', csp)
-    response.headers.setdefault(
-        'Permissions-Policy',
-        'camera=(self), microphone=(self), geolocation=(), payment=()'
-    )
     if path.startswith('/static/'):
         response.headers['Cache-Control'] = 'public, max-age=604800, immutable'
         return response

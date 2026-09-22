@@ -143,13 +143,19 @@ def _after_request(response):
     return response
 
 # ── Sécurité : headers HTTP + cache ──────────────────────────────────────────
+# C-13 (audit DITSI-SSSI AVR-2026-09-CEI-AUDIT) : X-Content-Type-Options,
+# X-Frame-Options, Referrer-Policy et X-XSS-Protection étaient posés ici ET par
+# NGINX (voir /etc/nginx/sites-available/cei) — doublons, avec une contradiction
+# réelle sur X-Frame-Options (DENY côté NGINX, SAMEORIGIN ici). NGINX applique
+# désormais ces en-têtes à tout le vhost, /api/ compris (add_header au niveau
+# server{}) : centralisés là-bas, retirés d'ici. X-XSS-Protection abandonné
+# partout (obsolète, plus aucun navigateur moderne ne le respecte — C-14/C-20).
+# CSP et Permissions-Policy restent ici : la CSP diffère selon la route
+# (/api/docs a besoin d'unsafe-inline/eval pour swagger-ui-dist, pas le reste),
+# NGINX ne peut pas faire cette distinction par route sans dupliquer la logique.
 @app.after_request
 def _security_headers(response):
     path = request.path
-    response.headers.setdefault('X-Content-Type-Options', 'nosniff')
-    response.headers.setdefault('X-Frame-Options', 'DENY')
-    response.headers.setdefault('Referrer-Policy', 'strict-origin-when-cross-origin')
-    response.headers.setdefault('X-XSS-Protection', '1; mode=block')
     # Les pages docs Swagger/ReDoc chargent swagger-ui-dist depuis jsdelivr.net (CDN)
     if path.startswith('/api/docs'):
         csp = (
@@ -176,11 +182,6 @@ def _security_headers(response):
         'Permissions-Policy',
         'camera=(self), microphone=(self), geolocation=(), payment=()'
     )
-    if request.is_secure or request.headers.get('X-Forwarded-Proto') == 'https':
-        response.headers.setdefault(
-            'Strict-Transport-Security',
-            'max-age=63072000; includeSubDomains'
-        )
     if path.startswith('/static/'):
         response.headers['Cache-Control'] = 'public, max-age=604800, immutable'
         return response

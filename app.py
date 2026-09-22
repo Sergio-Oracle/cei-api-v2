@@ -150,7 +150,8 @@ def _after_request(response):
 # désormais ces en-têtes à tout le vhost, /api/ compris (add_header au niveau
 # server{}) : centralisés là-bas, retirés d'ici. X-XSS-Protection abandonné
 # partout (obsolète, plus aucun navigateur moderne ne le respecte — C-14/C-20).
-# CSP et Permissions-Policy restent ici : la CSP diffère selon la route
+# CSP reste ici (Permissions-Policy déménagé vers NGINX aussi, même raison que
+# les quatre autres — voir commit suivant) : elle diffère selon la route
 # (/api/docs a besoin d'unsafe-inline/eval pour swagger-ui-dist, pas le reste),
 # NGINX ne peut pas faire cette distinction par route sans dupliquer la logique.
 @app.after_request

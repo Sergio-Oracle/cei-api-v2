@@ -48,6 +48,8 @@ CEI est enregistré comme client OIDC dans le realm Keycloak `UNCHK` (`https://s
 
 Si votre plateforme a besoin d'appeler l'API CEI directement (par exemple pour afficher des données CEI dans une page de l'ENT sans rediriger l'utilisateur), utilisez une **clé API**, fournie par l'administration CEI.
 
+> **Limite actuelle, à connaître avant d'implémenter ce mécanisme :** le jeton `Bearer` requis en plus de la clé API s'obtient via `POST /api/auth/login` (identifiants CEI directs) — il n'existe **pas aujourd'hui** de pont permettant d'échanger une session SSO/Keycloak déjà ouverte côté ENT contre un jeton CEI pour un utilisateur donné. Concrètement, un appel serveur-à-serveur pour le compte d'un utilisateur précis (ex. un widget « mes examens à venir » sur la page d'accueil ENT) n'est **pas** réalisable sans redemander les identifiants CEI de cet utilisateur, ce qui n'est pas souhaitable. **Pour l'intégration ENT actuelle, seule la Section 2 (SSO) est utilisée** : l'ENT redirige simplement vers CEI, qui gère sa propre session de bout en bout — aucun jeton à manipuler côté ENT. La clé API reste disponible pour d'éventuels besoins futurs (outillage interne, tests, ou une évolution ultérieure avec un vrai échange de jeton).
+
 ### Authentification requise sur les routes externes
 
 Chaque appel doit fournir **les deux** éléments suivants :

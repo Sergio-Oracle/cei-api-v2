@@ -90,10 +90,39 @@ def _role_docs_unauthorized(role: str) -> Response:
 def _filter_spec_for_role(role: str) -> dict:
     """Copie de OPENAPI_SPEC ne gardant que /api/external/<role>/* — pas les
     ~300 routes internes (voir décision dans le plan : la clé API/doc par
-    rôle porte uniquement sur la petite surface externe dédiée)."""
+    rôle porte uniquement sur la petite surface externe dédiée).
+
+    Filtre aussi `tags` et `components.securitySchemes` pour ne garder que
+    ce qui est réellement utilisé par ces routes — sinon Swagger UI affiche
+    quand même les sections vides (Administration, Académique, AgentSecret...)
+    de l'API interne, ce qui noie les 2-3 vraies routes du module et rend le
+    bouton "Authorize" confus (un champ AgentSecret sans rapport apparaît).
+    """
     filtered = copy.deepcopy(OPENAPI_SPEC)
     prefix = f'/api/external/{role}/'
     filtered['paths'] = {p: m for p, m in OPENAPI_SPEC['paths'].items() if p.startswith(prefix)}
+
+    used_tags = {
+        tag
+        for methods in filtered['paths'].values()
+        for op in methods.values()
+        if isinstance(op, dict)
+        for tag in op.get('tags', [])
+    }
+    filtered['tags'] = [t for t in filtered.get('tags', []) if t.get('name') in used_tags]
+
+    used_schemes = {
+        scheme
+        for methods in filtered['paths'].values()
+        for op in methods.values()
+        if isinstance(op, dict)
+        for req in op.get('security', [])
+        for scheme in req
+    }
+    schemes = filtered.get('components', {}).get('securitySchemes', {})
+    filtered.setdefault('components', {})['securitySchemes'] = {
+        k: v for k, v in schemes.items() if k in used_schemes
+    }
     return filtered
 
 

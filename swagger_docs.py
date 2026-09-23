@@ -166,11 +166,27 @@ def _filter_spec_for_role(role: str) -> dict:
     return filtered
 
 
-def _role_swagger_html(role: str) -> str:
-    count = sum(1 for m in _filter_spec_for_role(role)['paths'].values()
-                for k in m if k in ('get', 'post', 'put', 'delete', 'patch'))
-    html = _SWAGGER_HTML.replace('/api/docs/openapi.json', f'/api/docs/{role}/openapi.json')
+def _role_endpoint_count(role: str) -> int:
+    return sum(1 for m in _filter_spec_for_role(role)['paths'].values()
+               for k in m if k in ('get', 'post', 'put', 'delete', 'patch'))
+
+
+def _localize_docs_html(html: str, role: str) -> str:
+    """Repointe Swagger UI/ReDoc/JSON du bandeau de nav (et l'URL de la spec
+    chargée par la page) vers les pages DE CE RÔLE plutôt que celles de
+    l'admin — sinon un professeur cliquant "JSON" atterrissait sur
+    /api/docs/openapi.json (identifiants admin, jamais les siens)."""
+    html = html.replace('/api/docs', f'/api/docs/{role}')
+    count = _role_endpoint_count(role)
     return html.replace(f'{_ENDPOINT_COUNT} endpoints', f'{count} endpoints')
+
+
+def _role_swagger_html(role: str) -> str:
+    return _localize_docs_html(_SWAGGER_HTML, role)
+
+
+def _role_redoc_html(role: str) -> str:
+    return _localize_docs_html(_REDOC_HTML, role)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Composants réutilisables
@@ -4845,7 +4861,18 @@ _SWAGGER_HTML = """<!DOCTYPE html>
       <a class="cei-nav-link active" href="/api/docs">Swagger UI</a>
       <a class="cei-nav-link" href="/api/docs/redoc">ReDoc</a>
       <a class="cei-nav-link" href="/api/docs/openapi.json">JSON</a>
+      <a class="cei-nav-link" href="#" onclick="ceiDocsLogout(event)" title="Oublie les identifiants mis en cache par le navigateur pour cette page — si la fenêtre de connexion ne réapparaît pas, fermez complètement l'onglet." style="color:#fca5a5;border-color:rgba(252,165,165,.3);">
+        &#8618; Se déconnecter
+      </a>
     </nav>
+    <script>
+      function ceiDocsLogout(e) {
+        e.preventDefault();
+        fetch(window.location.pathname, { headers: { 'Authorization': 'Basic ' + btoa('logout:logout') }, cache: 'no-store' })
+          .catch(function(){})
+          .finally(function(){ window.location.reload(); });
+      }
+    </script>
   </div>
 </header>
 
@@ -4968,9 +4995,20 @@ _REDOC_HTML = """<!DOCTYPE html>
       <a class="n-link" href="/api/docs">Swagger UI</a>
       <a class="n-link on" href="/api/docs/redoc">ReDoc</a>
       <a class="n-link" href="/api/docs/openapi.json">JSON</a>
+      <a class="n-link" href="#" onclick="ceiDocsLogout(event)" title="Oublie les identifiants mis en cache par le navigateur pour cette page — si la fenêtre de connexion ne réapparaît pas, fermez complètement l'onglet." style="color:#fca5a5;">
+        &#8618; Se déconnecter
+      </a>
     </nav>
   </div>
 </header>
+<script>
+  function ceiDocsLogout(e) {
+    e.preventDefault();
+    fetch(window.location.pathname, { headers: { 'Authorization': 'Basic ' + btoa('logout:logout') }, cache: 'no-store' })
+      .catch(function(){})
+      .finally(function(){ window.location.reload(); });
+  }
+</script>
 
 <redoc
   spec-url='/api/docs/openapi.json'
@@ -5118,6 +5156,15 @@ def role_docs_ui(role):
     if not _check_role_docs_auth(role):
         return _role_docs_unauthorized(role)
     return _role_swagger_html(role), 200, {'Content-Type': 'text/html; charset=utf-8'}
+
+
+@swagger_bp.route('/api/docs/<role>/redoc')
+def role_docs_redoc(role):
+    if role not in _ROLE_DOCS_CREDS:
+        return jsonify({'error': 'Module inconnu'}), 404
+    if not _check_role_docs_auth(role):
+        return _role_docs_unauthorized(role)
+    return _role_redoc_html(role), 200, {'Content-Type': 'text/html; charset=utf-8'}
 
 
 @swagger_bp.route('/api/docs/<role>/openapi.json')

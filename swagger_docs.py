@@ -10,6 +10,7 @@ automatiquement depuis OPENAPI_SPEC["paths"] — voir _ENDPOINT_COUNT plus bas.
 Rien à mettre à jour à la main quand une route est ajoutée/retirée.
 """
 import os
+import re
 import copy
 import base64
 import secrets as _secrets
@@ -60,6 +61,13 @@ _ROLE_DOCS_CREDS = {
     'student':     (os.getenv('DOCS_STUDENT_USER')     or 'student',     os.getenv('DOCS_STUDENT_PASS')     or _secrets.token_urlsafe(24)),
     'surveillant': (os.getenv('DOCS_SURVEILLANT_USER') or 'surveillant', os.getenv('DOCS_SURVEILLANT_PASS') or _secrets.token_urlsafe(24)),
     'superviseur': (os.getenv('DOCS_SUPERVISEUR_USER') or 'superviseur', os.getenv('DOCS_SUPERVISEUR_PASS') or _secrets.token_urlsafe(24)),
+}
+
+_ROLE_LABELS = {
+    'professor':   'Professeur',
+    'student':     'Étudiant',
+    'surveillant': 'Surveillant',
+    'superviseur': 'Superviseur',
 }
 
 
@@ -123,6 +131,38 @@ def _filter_spec_for_role(role: str) -> dict:
     filtered.setdefault('components', {})['securitySchemes'] = {
         k: v for k, v in schemes.items() if k in used_schemes
     }
+
+    # Explique noir sur blanc ce qui est/n'est PAS testable ici — généré à
+    # partir des routes réellement présentes, jamais recopié à la main (donc
+    # ne peut pas se désynchroniser si une route externe est ajoutée/retirée).
+    role_label = _ROLE_LABELS.get(role, role.capitalize())
+
+    def _clean_summary(summary: str) -> str:
+        # Les summaries des routes /api/external/* commencent par "[Rôle] " —
+        # inutile de le répéter, le titre de la doc l'indique déjà.
+        return re.sub(r'^\[[^\]]+\]\s*', '', summary or '')
+
+    route_lines = "\n".join(
+        f"- `{method.upper()} {path}` — {_clean_summary(op.get('summary', ''))}"
+        for path, methods in sorted(filtered['paths'].items())
+        for method, op in methods.items()
+        if isinstance(op, dict)
+    )
+    filtered['info'] = dict(filtered.get('info', {}))
+    filtered['info']['description'] = (
+        f"Documentation **{role_label}** — intégration externe ENT.\n\n"
+        f"Avec vos identifiants, vous ne pouvez tester **que** les routes ci-dessous, toutes en "
+        f"lecture seule. Aucune route interne de CEI (Administration, Académique, Examens, "
+        f"Proctoring, etc.) n'est accessible ici — seul le compte **administrateur CEI** (documentation "
+        f"séparée, `/api/docs`) a accès à l'ensemble de l'API.\n\n"
+        f"## Routes testables avec ce rôle\n{route_lines}\n\n"
+        f"## Authentification requise (les deux, ensemble)\n"
+        f"1. Un jeton utilisateur **{role_label}** valide (`Bearer <token>`, obtenu via "
+        f"`POST /api/auth/login` ou le SSO UNCHK)\n"
+        f"2. Une clé API d'intégration (`X-CEI-API-Key`) autorisée pour le module **{role_label}** — "
+        f"fournie par l'administrateur CEI\n\n"
+        f"Cliquez **Authorize** ci-dessus, renseignez les deux, puis **Try it out** sur une route."
+    )
     return filtered
 
 
@@ -508,7 +548,24 @@ OPENAPI_SPEC = {
             "## Score de risque (proctoring)\n"
             "| Événement | Points |\n|---|---|\n"
             "| Visage absent | +10 |\n| Plusieurs visages | +20 |\n"
-            "| Changement onglet | +15 (max 60) |\n| Avertissement | +5 (max 40) |"
+            "| Changement onglet | +15 (max 60) |\n| Avertissement | +5 (max 40) |\n\n"
+            "## Documentation par rôle (intégration externe ENT)\n"
+            "Cette documentation-ci (celle que vous consultez, sur `/api/docs`) est réservée à "
+            "l'**administrateur CEI** : elle couvre **toutes** les routes internes (API Externe "
+            "comprise) et sert notamment à **créer/révoquer les clés API** partenaires "
+            "(tag **Administration** → `POST`/`PUT /api/admin/api-clients`) — cliquez **Authorize** "
+            "avec votre jeton admin, dépliez la route, **Try it out**, remplissez et **Execute**. "
+            "C'est la manière prévue de gérer ces clés : action manuelle, volontairement réservée à "
+            "l'admin, pas de création automatique.\n\n"
+            "Les autres rôles (professeur/étudiant/surveillant/superviseur) ont chacun leur **propre** "
+            "documentation, séparée et restreinte à leur module :\n\n"
+            "| Rôle | Documentation | Ce qu'ils peuvent tester |\n|---|---|---|\n"
+            "| Professeur | `/api/docs/professor` | Uniquement `/api/external/professor/*` |\n"
+            "| Étudiant | `/api/docs/student` | Uniquement `/api/external/student/*` |\n"
+            "| Surveillant | `/api/docs/surveillant` | Uniquement `/api/external/surveillant/*` |\n"
+            "| Superviseur | `/api/docs/superviseur` | Uniquement `/api/external/superviseur/*` |\n\n"
+            "Chacune de ces 4 pages a ses propres identifiants Basic Auth (distincts de ceux de "
+            "cette page admin) et n'affiche jamais les routes internes ni les autres modules."
         ),
         "contact": {
             "name": "UNCHK — VisioPLUS",

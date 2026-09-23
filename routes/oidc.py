@@ -100,12 +100,14 @@ def oidc_callback():
 
     try:
         tokens = oidc_keycloak.exchange_code_for_tokens(code)
-    except Exception:
+    except Exception as e:
+        print(f"[oidc] exchange_code_for_tokens échoué : {e}")
         return redirect(f"{_app_url()}/login?sso_error=token_exchange_failed")
 
     try:
         claims = oidc_keycloak.validate_id_token(tokens['id_token'], entry['nonce'])
-    except (ValueError, KeyError):
+    except (ValueError, KeyError) as e:
+        print(f"[oidc] validate_id_token échoué : {e}")
         return redirect(f"{_app_url()}/login?sso_error=invalid_token")
 
     email = (claims.get('email') or '').strip().lower()

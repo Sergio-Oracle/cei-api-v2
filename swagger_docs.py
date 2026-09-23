@@ -132,9 +132,9 @@ def _filter_spec_for_role(role: str) -> dict:
         k: v for k, v in schemes.items() if k in used_schemes
     }
 
-    # Explique noir sur blanc ce qui est/n'est PAS testable ici — généré à
-    # partir des routes réellement présentes, jamais recopié à la main (donc
-    # ne peut pas se désynchroniser si une route externe est ajoutée/retirée).
+    # Liste des routes testables générée à partir des routes réellement
+    # présentes, jamais recopiée à la main (donc ne peut pas se
+    # désynchroniser si une route externe est ajoutée/retirée).
     role_label = _ROLE_LABELS.get(role, role.capitalize())
 
     def _clean_summary(summary: str) -> str:
@@ -148,32 +148,10 @@ def _filter_spec_for_role(role: str) -> dict:
         for method, op in methods.items()
         if isinstance(op, dict)
     )
-    has_writes = any(
-        method in ('post', 'put', 'delete')
-        for methods in filtered['paths'].values()
-        for method in methods
-    )
-    access_note = (
-        "vous pouvez tester les routes de lecture et d'écriture ci-dessous"
-        if has_writes else
-        "vous ne pouvez tester **que** les routes de lecture ci-dessous"
-    )
-
     filtered['info'] = dict(filtered.get('info', {}))
     filtered['info']['description'] = (
         f"Documentation **{role_label}** — intégration externe ENT.\n\n"
-        f"Avec vos identifiants, {access_note}. Aucune route interne de CEI (Administration, "
-        f"Académique, Examens, Proctoring, etc.) n'est accessible ici — seul le compte "
-        f"**administrateur CEI** (documentation séparée, `/api/docs`) a accès à l'ensemble de l'API.\n\n"
         f"## Routes testables avec ce rôle\n{route_lines}\n\n"
-        f"## Actions volontairement non exposées ici\n"
-        f"Certaines actions existent dans CEI pour ce rôle mais ne sont **pas** exposées par cette API "
-        f"externe — ce n'est pas un oubli : démarrer/soumettre un examen, bannir un candidat, générer "
-        f"un code d'accès, et toute action nécessitant un flux vidéo/audio en direct (jetons LiveKit, "
-        f"enregistrement) restent strictement internes à l'application CEI, où les garde-fous "
-        f"d'intégrité d'examen (biométrie, minutage, surveillance) s'appliquent. Pour ces actions, "
-        f"redirigez l'utilisateur vers son tableau de bord CEI (via le SSO UNCHK, voir `/api/auth/oidc/login`) "
-        f"plutôt que d'appeler une route API.\n\n"
         f"## Authentification requise (les deux, ensemble)\n"
         f"1. Un jeton utilisateur **{role_label}** valide (`Bearer <token>`, obtenu via "
         f"`POST /api/auth/login` ou le SSO UNCHK)\n"

@@ -85,7 +85,7 @@ def exchange_code_for_tokens(code: str) -> dict:
 def _jwks_client() -> PyJWKClient:
     global _jwks_client_cache
     if _jwks_client_cache is None:
-        _jwks_client_cache = PyJWKClient(_jwks_uri(), cache_keys=True, lifetime=3600)
+        _jwks_client_cache = PyJWKClient(_jwks_uri(), cache_keys=True, lifespan=3600)
     return _jwks_client_cache
 
 
@@ -98,6 +98,12 @@ def validate_id_token(id_token: str, expected_nonce: str) -> dict:
         claims = jwt.decode(
             id_token, signing_key.key, algorithms=['RS256'],
             audience=client_id(), issuer=issuer(),
+            # Léger décalage d'horloge constaté entre ce serveur et Keycloak
+            # UNCHK (~17s, deux infrastructures distinctes) — sans marge,
+            # PyJWT rejette le token comme "not yet valid (iat)" alors qu'il
+            # est parfaitement légitime. 60s absorbe une dérive raisonnable
+            # sans affaiblir la vérification d'expiration de façon notable.
+            leeway=60,
         )
     except Exception as e:
         raise ValueError(f"id_token invalide : {e}")

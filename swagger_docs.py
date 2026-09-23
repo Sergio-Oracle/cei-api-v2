@@ -10,6 +10,7 @@ automatiquement depuis OPENAPI_SPEC["paths"] — voir _ENDPOINT_COUNT plus bas.
 Rien à mettre à jour à la main quand une route est ajoutée/retirée.
 """
 import os
+import copy
 import base64
 import secrets as _secrets
 from functools import wraps
@@ -48,6 +49,61 @@ def _require_docs_auth(f):
     return decorated
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Docs Swagger par rôle (/api/docs/<role>) — module Professeur/Étudiant/
+# Surveillant/Superviseur uniquement (jamais Admin), chacun avec ses propres
+# identifiants Basic Auth, ne montrant que /api/external/<role>/* (voir
+# routes/external/). Même philosophie fail-closed que _DOCS_USER/_DOCS_PASS.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_ROLE_DOCS_CREDS = {
+    'professor':   (os.getenv('DOCS_PROF_USER')       or 'prof',        os.getenv('DOCS_PROF_PASS')       or _secrets.token_urlsafe(24)),
+    'student':     (os.getenv('DOCS_STUDENT_USER')     or 'student',     os.getenv('DOCS_STUDENT_PASS')     or _secrets.token_urlsafe(24)),
+    'surveillant': (os.getenv('DOCS_SURVEILLANT_USER') or 'surveillant', os.getenv('DOCS_SURVEILLANT_PASS') or _secrets.token_urlsafe(24)),
+    'superviseur': (os.getenv('DOCS_SUPERVISEUR_USER') or 'superviseur', os.getenv('DOCS_SUPERVISEUR_PASS') or _secrets.token_urlsafe(24)),
+}
+
+
+def _check_role_docs_auth(role: str) -> bool:
+    creds = _ROLE_DOCS_CREDS.get(role)
+    if not creds:
+        return False
+    expected_user, expected_pass = creds
+    auth = request.headers.get('Authorization', '')
+    if auth.startswith('Basic '):
+        try:
+            decoded = base64.b64decode(auth[6:]).decode('utf-8')
+            user, pwd = decoded.split(':', 1)
+            return user == expected_user and pwd == expected_pass
+        except Exception:
+            return False
+    return False
+
+
+def _role_docs_unauthorized(role: str) -> Response:
+    return Response(
+        'Accès réservé aux développeurs autorisés pour ce module.',
+        401,
+        {'WWW-Authenticate': f'Basic realm="CEI API Docs - {role}"'}
+    )
+
+
+def _filter_spec_for_role(role: str) -> dict:
+    """Copie de OPENAPI_SPEC ne gardant que /api/external/<role>/* — pas les
+    ~300 routes internes (voir décision dans le plan : la clé API/doc par
+    rôle porte uniquement sur la petite surface externe dédiée)."""
+    filtered = copy.deepcopy(OPENAPI_SPEC)
+    prefix = f'/api/external/{role}/'
+    filtered['paths'] = {p: m for p, m in OPENAPI_SPEC['paths'].items() if p.startswith(prefix)}
+    return filtered
+
+
+def _role_swagger_html(role: str) -> str:
+    count = sum(1 for m in _filter_spec_for_role(role)['paths'].values()
+                for k in m if k in ('get', 'post', 'put', 'delete', 'patch'))
+    html = _SWAGGER_HTML.replace('/api/docs/openapi.json', f'/api/docs/{role}/openapi.json')
+    return html.replace(f'{_ENDPOINT_COUNT} endpoints', f'{count} endpoints')
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Composants réutilisables
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -61,6 +117,20 @@ _SCHEMAS = {
         "properties": {
             "success": {"type": "boolean"},
             "message": {"type": "string"}
+        }
+    },
+    "ApiClient": {
+        "type": "object",
+        "description": "Clé d'intégration externe — identifie une application (ex. ENT UNCHK), pas une personne.",
+        "properties": {
+            "id":            {"type": "integer"},
+            "name":          {"type": "string", "example": "ENT UNCHK"},
+            "key_prefix":    {"type": "string", "description": "Préfixe de la clé, pour identification sans exposer la clé complète", "example": "cei_tZchdxGs"},
+            "allowed_roles": {"type": "array", "items": {"type": "string", "enum": ["professor", "student", "surveillant", "superviseur"]}},
+            "is_active":     {"type": "boolean"},
+            "created_at":    {"type": "string", "format": "date-time"},
+            "last_used_at":  {"type": "string", "format": "date-time", "nullable": True},
+            "revoked_at":    {"type": "string", "format": "date-time", "nullable": True}
         }
     },
     "User": {
@@ -424,6 +494,8 @@ OPENAPI_SPEC = {
     ],
     "tags": [
         {"name": "Authentification",         "description": "Connexion PASETO v4, rafraîchissement token, déconnexion, profil, mot de passe"},
+        {"name": "SSO / Fédération d'identité", "description": "Connexion via le Keycloak UNCHK (realm UNCHK) — authentifie l'utilisateur, le rôle CEI reste géré côté CEI"},
+        {"name": "API Externe", "description": "Surface publique destinée à l'intégration ENT — nécessite un Bearer PASETO ET une clé X-CEI-API-Key. Documentée séparément par rôle sur /api/docs/<role> (professor/student/surveillant/superviseur), chacun avec ses propres identifiants Basic Auth."},
         {"name": "Administration",           "description": "Tableau de bord admin, utilisateurs, historique"},
         {"name": "Académique",               "description": "Pôles, Niveaux, Formations, semestres, UE, EC, inscriptions, affectations — hiérarchie Pôle → Niveau → Formation → Semestre → UE → EC"},
         {"name": "Groupes Surveillants",      "description": "Groupes de surveillants rattachés à un ou plusieurs EC — affectation automatique à chaque nouvel examen créé pour ces EC"},
@@ -451,6 +523,10 @@ OPENAPI_SPEC = {
             "AgentSecret": {
                 "type": "apiKey", "in": "header", "name": "X-Agent-Secret",
                 "description": "Clé AGENT_SECRET_KEY du service agent proctor"
+            },
+            "ApiKeyAuth": {
+                "type": "apiKey", "in": "header", "name": "X-CEI-API-Key",
+                "description": "Clé d'intégration externe (ENT UNCHK), émise depuis la page admin CEI. À utiliser EN PLUS du Bearer PASETO normal — jamais seule."
             }
         },
         "schemas": _SCHEMAS,
@@ -562,6 +638,67 @@ OPENAPI_SPEC = {
                 "401": {"description": "Token access manquant"}
             }
         }},
+        "/api/auth/oidc/login": {"get": {
+            "tags": ["SSO / Fédération d'identité"], "summary": "Démarre le login SSO via le Keycloak UNCHK",
+            "description": "Redirige (302) vers le realm Keycloak UNCHK (senid.unchk.sn), même serveur que Moodle. Route destinée à être ouverte par navigation directe (lien/bouton), pas par fetch/XHR.",
+            "security": [],
+            "responses": {"302": {"description": "Redirection vers Keycloak"}}
+        }},
+        "/api/auth/oidc/callback": {"get": {
+            "tags": ["SSO / Fédération d'identité"], "summary": "Retour Keycloak — ouvre une session CEI",
+            "description": "Échange le code contre des tokens, valide le id_token (signature JWKS + nonce), cherche un compte CEI existant par email (jamais d'auto-création — le rôle CEI reste géré par l'admin CEI). Redirige vers /dashboard (succès), /login?sso_error=... (échec) ou /login?sso_conflict=1&retry_token=...&device_label=... (session étudiante déjà active ailleurs).",
+            "security": [],
+            "parameters": [
+                {"name": "code", "in": "query", "schema": {"type": "string"}},
+                {"name": "state", "in": "query", "schema": {"type": "string"}},
+                {"name": "error", "in": "query", "schema": {"type": "string"}}
+            ],
+            "responses": {"302": {"description": "Redirection vers le frontend (succès ou erreur)"}}
+        }},
+        "/api/auth/oidc/force-login": {"post": {
+            "tags": ["SSO / Fédération d'identité"], "summary": "Confirme l'ouverture de session malgré un conflit (étudiant déjà connecté ailleurs)",
+            "security": [],
+            "requestBody": {"required": True, "content": {"application/json": {"schema": {
+                "type": "object", "required": ["retry_token"],
+                "properties": {"retry_token": {"type": "string", "description": "Fourni dans le paramètre sso_conflict de la redirection du callback"}}
+            }}}},
+            "responses": {
+                "200": {"description": "Session ouverte", "content": {"application/json": {"schema": {
+                    "type": "object", "properties": {"success": {"type": "boolean"}}
+                }}}},
+                "400": {"description": "retry_token invalide ou expiré"}
+            }
+        }},
+        "/api/external/student/exams": {"get": {
+            "tags": ["API Externe"], "summary": "[Étudiant] Examens à venir / récents",
+            "security": [{"BearerAuth": [], "ApiKeyAuth": []}],
+            "responses": {"200": {"description": "Liste des examens"}, "401": {"description": "Token ou clé API manquant/invalide"}, "403": {"description": "Rôle non autorisé pour cette route ou pour cette clé"}}
+        }},
+        "/api/external/student/transcripts": {"get": {
+            "tags": ["API Externe"], "summary": "[Étudiant] Relevés de notes publiés",
+            "security": [{"BearerAuth": [], "ApiKeyAuth": []}],
+            "responses": {"200": {"description": "Relevés publiés"}, "401": {"description": "Token ou clé API manquant/invalide"}, "403": {"description": "Rôle non autorisé pour cette route ou pour cette clé"}}
+        }},
+        "/api/external/professor/exams": {"get": {
+            "tags": ["API Externe"], "summary": "[Professeur] Mes examens créés",
+            "security": [{"BearerAuth": [], "ApiKeyAuth": []}],
+            "responses": {"200": {"description": "Liste des examens"}, "401": {"description": "Token ou clé API manquant/invalide"}, "403": {"description": "Rôle non autorisé pour cette route ou pour cette clé"}}
+        }},
+        "/api/external/professor/corrections": {"get": {
+            "tags": ["API Externe"], "summary": "[Professeur] Copies en attente de correction",
+            "security": [{"BearerAuth": [], "ApiKeyAuth": []}],
+            "responses": {"200": {"description": "Copies en attente"}, "401": {"description": "Token ou clé API manquant/invalide"}, "403": {"description": "Rôle non autorisé pour cette route ou pour cette clé"}}
+        }},
+        "/api/external/surveillant/assignments": {"get": {
+            "tags": ["API Externe"], "summary": "[Surveillant] Mes affectations de surveillance à venir",
+            "security": [{"BearerAuth": [], "ApiKeyAuth": []}],
+            "responses": {"200": {"description": "Affectations"}, "401": {"description": "Token ou clé API manquant/invalide"}, "403": {"description": "Rôle non autorisé pour cette route ou pour cette clé"}}
+        }},
+        "/api/external/superviseur/groups": {"get": {
+            "tags": ["API Externe"], "summary": "[Superviseur] Mes groupes de surveillants supervisés",
+            "security": [{"BearerAuth": [], "ApiKeyAuth": []}],
+            "responses": {"200": {"description": "Groupes supervisés"}, "401": {"description": "Token ou clé API manquant/invalide"}, "403": {"description": "Rôle non autorisé pour cette route ou pour cette clé"}}
+        }},
         "/api/auth/public-key": {"get": {
             "tags": ["Authentification"], "summary": "Clé publique Ed25519 du serveur",
             "description": "Expose la clé publique PASETO v4 (Ed25519) encodée en base64. Utilisable par le frontend pour vérifier localement les tokens.",
@@ -642,6 +779,45 @@ OPENAPI_SPEC = {
                 "responses": {"201": {"description": "Utilisateur créé", "content": {"application/json": {"schema": {
                     "type": "object", "properties": {"success": {"type": "boolean"}, "message": {"type": "string"}, "user": {"$ref": "#/components/schemas/User"}}
                 }}}}, "400": {"description": "Email déjà utilisé ou rôle invalide"}}
+            }
+        },
+        "/api/admin/api-clients": {
+            "get": {
+                "tags": ["Administration"], "summary": "Liste des clés API d'intégration externe (admin)",
+                "responses": {"200": {"description": "Clés API", "content": {"application/json": {"schema": {
+                    "type": "array", "items": {"$ref": "#/components/schemas/ApiClient"}
+                }}}}}
+            },
+            "post": {
+                "tags": ["Administration"], "summary": "Créer une clé API d'intégration externe (admin)",
+                "description": "La clé brute n'est retournée qu'une seule fois, dans cette réponse — jamais récupérable ensuite.",
+                "requestBody": {"required": True, "content": {"application/json": {"schema": {
+                    "type": "object", "required": ["name", "allowed_roles"],
+                    "properties": {
+                        "name": {"type": "string", "example": "ENT UNCHK"},
+                        "allowed_roles": {"type": "array", "items": {"type": "string", "enum": ["professor", "student", "surveillant", "superviseur"]}}
+                    }
+                }}}},
+                "responses": {"201": {"description": "Clé créée", "content": {"application/json": {"schema": {
+                    "type": "object", "properties": {
+                        "success": {"type": "boolean"}, "api_client": {"$ref": "#/components/schemas/ApiClient"},
+                        "api_key": {"type": "string", "description": "Clé brute — affichée une seule fois"}
+                    }
+                }}}}, "400": {"description": "Nom manquant ou rôles invalides"}}
+            }
+        },
+        "/api/admin/api-clients/{client_id}": {
+            "put": {
+                "tags": ["Administration"], "summary": "Modifier / révoquer une clé API (admin)",
+                "parameters": [{"name": "client_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+                "requestBody": {"content": {"application/json": {"schema": {
+                    "type": "object", "properties": {
+                        "name": {"type": "string"},
+                        "allowed_roles": {"type": "array", "items": {"type": "string"}},
+                        "is_active": {"type": "boolean", "description": "false = révoque la clé"}
+                    }
+                }}}},
+                "responses": {"200": {"description": "Mise à jour effectuée"}, "404": {"description": "Clé introuvable"}}
             }
         },
         "/api/admin/users/role-counts": {
@@ -4836,6 +5012,36 @@ def redoc_ui():
 @_require_docs_auth
 def openapi_spec():
     spec = dict(OPENAPI_SPEC)
+    scheme = 'https' if (request.is_secure or request.headers.get('X-Forwarded-Proto') == 'https') else 'http'
+    current_url = f"{scheme}://{request.host}"
+    spec['servers'] = [{"url": current_url, "description": "Serveur actuel"}] + [
+        s for s in OPENAPI_SPEC['servers'] if s['url'] != current_url
+    ]
+    return jsonify(spec)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Docs par rôle — /api/docs/<role> et /api/docs/<role>/openapi.json
+# (professor/student/surveillant/superviseur uniquement, jamais admin)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@swagger_bp.route('/api/docs/<role>')
+def role_docs_ui(role):
+    if role not in _ROLE_DOCS_CREDS:
+        return jsonify({'error': 'Module inconnu'}), 404
+    if not _check_role_docs_auth(role):
+        return _role_docs_unauthorized(role)
+    return _role_swagger_html(role), 200, {'Content-Type': 'text/html; charset=utf-8'}
+
+
+@swagger_bp.route('/api/docs/<role>/openapi.json')
+def role_openapi_spec(role):
+    if role not in _ROLE_DOCS_CREDS:
+        return jsonify({'error': 'Module inconnu'}), 404
+    if not _check_role_docs_auth(role):
+        return _role_docs_unauthorized(role)
+
+    spec = _filter_spec_for_role(role)
     scheme = 'https' if (request.is_secure or request.headers.get('X-Forwarded-Proto') == 'https') else 'http'
     current_url = f"{scheme}://{request.host}"
     spec['servers'] = [{"url": current_url, "description": "Serveur actuel"}] + [

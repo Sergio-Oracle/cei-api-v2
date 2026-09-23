@@ -1258,6 +1258,35 @@ class TokenBlocklist(Base):
         return hashlib.sha256(token.encode()).hexdigest()
 
 
+class ApiClient(Base):
+    """Clé API pour l'intégration externe (ENT UNCHK, etc.) — distincte des
+    comptes utilisateurs : identifie une APPLICATION appelante, pas une
+    personne. Portée sur /api/external/<role>/* uniquement (voir routes/external/)."""
+    __tablename__ = 'api_clients'
+    id                  = Column(Integer, primary_key=True)
+    name                = Column(String(120), nullable=False)
+    key_hash            = Column(String(255), nullable=False)
+    key_prefix          = Column(String(12), nullable=False, index=True)
+    allowed_roles       = Column(Text, nullable=True)  # JSON list, ex. '["professor","student"]'
+    is_active           = Column(Boolean, default=True)
+    created_at          = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    created_by_admin_id = Column(Integer, ForeignKey('users.id'), nullable=True)
+    last_used_at        = Column(DateTime(timezone=True), nullable=True)
+    revoked_at          = Column(DateTime(timezone=True), nullable=True)
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'name': self.name,
+            'key_prefix': self.key_prefix,
+            'allowed_roles': json.loads(self.allowed_roles) if self.allowed_roles else [],
+            'is_active': self.is_active,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'last_used_at': self.last_used_at.isoformat() if self.last_used_at else None,
+            'revoked_at': self.revoked_at.isoformat() if self.revoked_at else None,
+        }
+
+
 class CameraLog(Base):
     """Logs de surveillance caméra pendant les examens"""
     __tablename__ = 'camera_logs'

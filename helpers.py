@@ -10,6 +10,19 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def require_admin(session):
+    """Vérifie que l'utilisateur courant est admin, ferme la session et
+    renvoie None sinon (à l'appelant de retourner 403). Factorisé depuis
+    admin_users.py — utilisé aussi par routes/api_clients.py."""
+    from auth_paseto import get_current_user_id
+    from models import User, UserRole
+    user = session.query(User).filter_by(id=get_current_user_id()).first()
+    if not user or user.role != UserRole.ADMIN:
+        session.close()
+        return None
+    return user
+
+
 def strip_bareme_from_content(content: str) -> str:
     """Retirer la section barème du contenu du sujet (pour les étudiants)."""
     if not content:

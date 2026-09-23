@@ -36,12 +36,10 @@ admin_users_bp = Blueprint('admin_users', __name__)
 
 
 def _require_admin(session):
-    """Vérifie que l'utilisateur courant est admin, ferme la session et lève 403 sinon."""
-    user = session.query(User).filter_by(id=get_current_user_id()).first()
-    if not user or user.role != UserRole.ADMIN:
-        session.close()
-        return None
-    return user
+    """Vérifie que l'utilisateur courant est admin, ferme la session et lève 403 sinon.
+    Factorisé dans helpers.require_admin (aussi utilisé par routes/api_clients.py)."""
+    from helpers import require_admin
+    return require_admin(session)
 
 
 def _link_student_to_formation(session, student, formation_id):

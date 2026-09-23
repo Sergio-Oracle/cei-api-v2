@@ -5,6 +5,9 @@ Routes :
   GET  /api/auth/oidc/login        — redirige vers Keycloak
   GET  /api/auth/oidc/callback     — reçoit le retour, ouvre une session CEI
   POST /api/auth/oidc/force-login  — résout un conflit de session étudiant
+  POST /api/auth/oidc/exchange     — échange un jeton Keycloak (ENT) contre un
+                                      jeton PASETO CEI, pour un appel serveur-
+                                      à-serveur à l'API externe (voir plus bas)
 
 Le rôle CEI est TOUJOURS déterminé par le compte CEI existant (jamais par
 Keycloak) — un compte email inconnu de CEI se voit refuser l'accès plutôt
@@ -14,7 +17,7 @@ import os
 import secrets
 from urllib.parse import urlencode
 
-from flask import Blueprint, request, redirect, jsonify, make_response
+from flask import Blueprint, request, redirect, jsonify, make_response, g
 
 import oidc_keycloak
 from extensions import limiter
@@ -23,6 +26,7 @@ from auth_paseto import (
     create_access_token, create_refresh_token, set_refresh_cookie,
     hash_token, session_key, REFRESH_TTL,
 )
+from api_key_auth import api_key_required, api_client_allows_role
 from models import get_session, User, UserRole, TokenBlocklist
 from cache import cache_get, cache_set, cache_delete
 
@@ -175,5 +179,59 @@ def oidc_force_login():
         for cookie_header in redirect_resp.headers.getlist('Set-Cookie'):
             json_resp.headers.add('Set-Cookie', cookie_header)
         return json_resp
+    finally:
+        session.close()
+
+
+@oidc_bp.route('/api/auth/oidc/exchange', methods=['POST'])
+@api_key_required
+@limiter.limit("30 per minute")
+def oidc_exchange():
+    """Échange serveur-à-serveur : un backend ENT qui a déjà authentifié un
+    utilisateur via le Keycloak UNCHK (donc possède un access_token Keycloak
+    valide pour lui) l'échange ici contre un jeton PASETO CEI pour ce même
+    utilisateur — sans jamais lui redemander ses identifiants CEI. Protégé
+    uniquement par la clé API (X-CEI-API-Key) : à ce stade, l'appelant n'a
+    par définition pas encore de session CEI, donc pas de @paseto_required.
+    """
+    data = request.get_json(silent=True) or {}
+    keycloak_access_token = (data.get('keycloak_access_token') or '').strip()
+    if not keycloak_access_token:
+        return jsonify({'error': "Champ 'keycloak_access_token' requis"}), 400
+
+    try:
+        userinfo = oidc_keycloak.get_userinfo(keycloak_access_token)
+    except Exception:
+        return jsonify({'error': 'Jeton Keycloak invalide ou expiré'}), 401
+
+    email = (userinfo.get('email') or '').strip().lower()
+    if not email:
+        return jsonify({'error': "Le jeton Keycloak ne contient pas d'email"}), 400
+
+    session = get_session()
+    try:
+        user = session.query(User).filter_by(email=email).first()
+        if not user or not user.is_active:
+            return jsonify({'error': 'Aucun compte CEI actif pour cet utilisateur'}), 404
+
+        role_value = user.role.value
+        if not api_client_allows_role(g.api_client, role_value):
+            return jsonify({'error': f"Cette clé API n'est pas autorisée pour le module {role_value}"}), 403
+
+        user.last_login = utcnow()
+        session.commit()
+
+        access_token = create_access_token(user.id, role_value, user.email)
+        return jsonify({
+            'success': True,
+            'access_token': access_token,
+            'expires_in': 3600,
+            'user': {
+                'id': user.id,
+                'email': user.email,
+                'full_name': user.full_name,
+                'role': role_value,
+            },
+        })
     finally:
         session.close()

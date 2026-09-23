@@ -48,18 +48,41 @@ CEI est enregistré comme client OIDC dans le realm Keycloak `UNCHK` (`https://s
 
 Si votre plateforme a besoin d'appeler l'API CEI directement (par exemple pour afficher des données CEI dans une page de l'ENT sans rediriger l'utilisateur), utilisez une **clé API**, fournie par l'administration CEI.
 
-> **Limite actuelle, à connaître avant d'implémenter ce mécanisme :** le jeton `Bearer` requis en plus de la clé API s'obtient via `POST /api/auth/login` (identifiants CEI directs) — il n'existe **pas aujourd'hui** de pont permettant d'échanger une session SSO/Keycloak déjà ouverte côté ENT contre un jeton CEI pour un utilisateur donné. Concrètement, un appel serveur-à-serveur pour le compte d'un utilisateur précis (ex. un widget « mes examens à venir » sur la page d'accueil ENT) n'est **pas** réalisable sans redemander les identifiants CEI de cet utilisateur, ce qui n'est pas souhaitable. **Pour l'intégration ENT actuelle, seule la Section 2 (SSO) est utilisée** : l'ENT redirige simplement vers CEI, qui gère sa propre session de bout en bout — aucun jeton à manipuler côté ENT. La clé API reste disponible pour d'éventuels besoins futurs (outillage interne, tests, ou une évolution ultérieure avec un vrai échange de jeton).
+### Obtenir un jeton `Bearer` pour un utilisateur précis, sans lui redemander ses identifiants CEI
+
+Votre backend a déjà authentifié l'utilisateur via le Keycloak UNCHK et détient donc un **`access_token` Keycloak** valide pour lui. Échangez-le contre un jeton CEI :
+
+```
+POST /api/auth/oidc/exchange
+X-CEI-API-Key: <votre clé API>
+Content-Type: application/json
+
+{ "keycloak_access_token": "<access_token Keycloak de l'utilisateur>" }
+```
+
+Réponse (`200`) :
+
+```json
+{
+  "success": true,
+  "access_token": "v4.public.eyJzdWIiOi...",
+  "expires_in": 3600,
+  "user": { "id": 42, "email": "...", "full_name": "...", "role": "professor" }
+}
+```
+
+CEI valide ce jeton Keycloak auprès de Keycloak lui-même (endpoint `userinfo` standard OIDC — pas de décodage local), retrouve le compte CEI par email (**jamais de création automatique** — même règle que le SSO) et retourne un jeton PASETO `Bearer` de courte durée (1h) pour cet utilisateur. Erreurs possibles : `401` (jeton Keycloak invalide/expiré, ou clé API manquante/invalide), `403` (votre clé API n'autorise pas le module correspondant au rôle CEI de cet utilisateur), `404` (aucun compte CEI actif pour cet email).
 
 ### Authentification requise sur les routes externes
 
 Chaque appel doit fournir **les deux** éléments suivants :
 
 ```
-Authorization: Bearer <jeton PASETO de l'utilisateur CEI>
+Authorization: Bearer <jeton PASETO obtenu via /api/auth/oidc/exchange ou POST /api/auth/login>
 X-CEI-API-Key: <votre clé API>
 ```
 
-- Le jeton PASETO s'obtient via une connexion classique (`POST /api/auth/login`) ou via le flux SSO ci-dessus.
+- Le jeton PASETO s'obtient via `POST /api/auth/oidc/exchange` (recommandé pour un backend ENT, voir ci-dessus) ou une connexion classique (`POST /api/auth/login`, identifiants CEI directs).
 - La clé API identifie votre application ; elle est scopée à un ou plusieurs modules (rôles) — un appel vers un module non autorisé par votre clé renvoie `403`.
 - Une clé API **seule, sans jeton utilisateur valide, ne donne accès à rien**.
 

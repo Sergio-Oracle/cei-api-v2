@@ -57,6 +57,10 @@ def _jwks_uri() -> str:
     return f"{issuer()}/protocol/openid-connect/certs"
 
 
+def _userinfo_endpoint() -> str:
+    return f"{issuer()}/protocol/openid-connect/userinfo"
+
+
 def build_authorization_url(state: str, nonce: str) -> str:
     from urllib.parse import urlencode
     params = {
@@ -111,3 +115,19 @@ def validate_id_token(id_token: str, expected_nonce: str) -> dict:
     if claims.get('nonce') != expected_nonce:
         raise ValueError("nonce invalide (rejeu possible)")
     return claims
+
+
+def get_userinfo(access_token: str) -> dict:
+    """Valide un ACCESS TOKEN Keycloak (pas un id_token) via l'endpoint
+    userinfo standard OIDC — utilisé par l'échange de jeton pour les
+    intégrations serveur-à-serveur (routes/oidc.py::oidc_exchange). C'est le
+    mécanisme prévu par la spec pour ce cas précis : Keycloak lui-même
+    vérifie la validité/l'expiration/la révocation du token, on n'a pas à
+    décoder le JWT localement (son format interne — audience, algorithme —
+    n'est pas garanti stable, contrairement à celui d'un id_token qu'on émet
+    nous-mêmes explicitement)."""
+    resp = requests.get(_userinfo_endpoint(), headers={
+        'Authorization': f'Bearer {access_token}',
+    }, timeout=10)
+    resp.raise_for_status()
+    return resp.json()

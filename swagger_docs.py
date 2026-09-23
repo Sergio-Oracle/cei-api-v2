@@ -109,6 +109,14 @@ def _filter_spec_for_role(role: str) -> dict:
     filtered = copy.deepcopy(OPENAPI_SPEC)
     prefix = f'/api/external/{role}/'
     filtered['paths'] = {p: m for p, m in OPENAPI_SPEC['paths'].items() if p.startswith(prefix)}
+    # L'échange de jeton (obtenir un Bearer CEI à partir d'un access_token
+    # Keycloak) est le préalable indispensable pour appeler les routes
+    # ci-dessus depuis un backend ENT — inclus dans CHAQUE doc par rôle,
+    # pas seulement la doc admin, sinon un dev de ce module n'aurait aucun
+    # moyen d'obtenir son jeton en ne lisant que sa propre documentation.
+    exchange_path = '/api/auth/oidc/exchange'
+    if exchange_path in OPENAPI_SPEC['paths']:
+        filtered['paths'][exchange_path] = OPENAPI_SPEC['paths'][exchange_path]
 
     used_tags = {
         tag
@@ -765,6 +773,43 @@ OPENAPI_SPEC = {
                     "type": "object", "properties": {"success": {"type": "boolean"}}
                 }}}},
                 "400": {"description": "retry_token invalide ou expiré"}
+            }
+        }},
+        "/api/auth/oidc/exchange": {"post": {
+            "tags": ["SSO / Fédération d'identité"],
+            "summary": "Échange un jeton Keycloak (ENT) contre un jeton CEI — appel serveur-à-serveur",
+            "description": (
+                "Pour un backend ENT qui a déjà authentifié un utilisateur via le Keycloak UNCHK "
+                "(donc possède un `access_token` Keycloak valide pour lui) et veut ensuite appeler "
+                "l'API externe CEI (`/api/external/<rôle>/*`) pour le compte de cet utilisateur, "
+                "sans jamais lui redemander ses identifiants CEI. CEI valide l'access_token auprès "
+                "de Keycloak (endpoint `userinfo` standard OIDC), retrouve le compte CEI par email "
+                "(jamais de création automatique), et retourne un jeton PASETO `Bearer` de courte "
+                "durée (1h) pour cet utilisateur — à utiliser ensuite avec `Authorization: Bearer "
+                "<token>` + `X-CEI-API-Key` sur les routes `/api/external/*`."
+            ),
+            "security": [{"ApiKeyAuth": []}],
+            "requestBody": {"required": True, "content": {"application/json": {"schema": {
+                "type": "object", "required": ["keycloak_access_token"],
+                "properties": {"keycloak_access_token": {"type": "string", "description": "access_token Keycloak (pas le id_token) de l'utilisateur, déjà obtenu côté ENT"}}
+            }}}},
+            "responses": {
+                "200": {"description": "Jeton CEI émis", "content": {"application/json": {"schema": {
+                    "type": "object",
+                    "properties": {
+                        "success": {"type": "boolean"},
+                        "access_token": {"type": "string"},
+                        "expires_in": {"type": "integer", "example": 3600},
+                        "user": {"type": "object", "properties": {
+                            "id": {"type": "integer"}, "email": {"type": "string"},
+                            "full_name": {"type": "string"}, "role": {"type": "string"}
+                        }}
+                    }
+                }}}},
+                "400": {"description": "Champ manquant ou email absent du jeton Keycloak"},
+                "401": {"description": "Clé API manquante/invalide, ou jeton Keycloak invalide/expiré"},
+                "403": {"description": "Cette clé API n'est pas autorisée pour le module correspondant au rôle CEI de cet utilisateur"},
+                "404": {"description": "Aucun compte CEI actif pour cet email"}
             }
         }},
         # ── Étudiant ─────────────────────────────────────────────────────────

@@ -148,14 +148,32 @@ def _filter_spec_for_role(role: str) -> dict:
         for method, op in methods.items()
         if isinstance(op, dict)
     )
+    has_writes = any(
+        method in ('post', 'put', 'delete')
+        for methods in filtered['paths'].values()
+        for method in methods
+    )
+    access_note = (
+        "vous pouvez tester les routes de lecture et d'écriture ci-dessous"
+        if has_writes else
+        "vous ne pouvez tester **que** les routes de lecture ci-dessous"
+    )
+
     filtered['info'] = dict(filtered.get('info', {}))
     filtered['info']['description'] = (
         f"Documentation **{role_label}** — intégration externe ENT.\n\n"
-        f"Avec vos identifiants, vous ne pouvez tester **que** les routes ci-dessous, toutes en "
-        f"lecture seule. Aucune route interne de CEI (Administration, Académique, Examens, "
-        f"Proctoring, etc.) n'est accessible ici — seul le compte **administrateur CEI** (documentation "
-        f"séparée, `/api/docs`) a accès à l'ensemble de l'API.\n\n"
+        f"Avec vos identifiants, {access_note}. Aucune route interne de CEI (Administration, "
+        f"Académique, Examens, Proctoring, etc.) n'est accessible ici — seul le compte "
+        f"**administrateur CEI** (documentation séparée, `/api/docs`) a accès à l'ensemble de l'API.\n\n"
         f"## Routes testables avec ce rôle\n{route_lines}\n\n"
+        f"## Actions volontairement non exposées ici\n"
+        f"Certaines actions existent dans CEI pour ce rôle mais ne sont **pas** exposées par cette API "
+        f"externe — ce n'est pas un oubli : démarrer/soumettre un examen, bannir un candidat, générer "
+        f"un code d'accès, et toute action nécessitant un flux vidéo/audio en direct (jetons LiveKit, "
+        f"enregistrement) restent strictement internes à l'application CEI, où les garde-fous "
+        f"d'intégrité d'examen (biométrie, minutage, surveillance) s'appliquent. Pour ces actions, "
+        f"redirigez l'utilisateur vers son tableau de bord CEI (via le SSO UNCHK, voir `/api/auth/oidc/login`) "
+        f"plutôt que d'appeler une route API.\n\n"
         f"## Authentification requise (les deux, ensemble)\n"
         f"1. Un jeton utilisateur **{role_label}** valide (`Bearer <token>`, obtenu via "
         f"`POST /api/auth/login` ou le SSO UNCHK)\n"
@@ -771,35 +789,225 @@ OPENAPI_SPEC = {
                 "400": {"description": "retry_token invalide ou expiré"}
             }
         }},
+        # ── Étudiant ─────────────────────────────────────────────────────────
         "/api/external/student/exams": {"get": {
             "tags": ["API Externe"], "summary": "[Étudiant] Examens à venir / récents",
             "security": [{"BearerAuth": [], "ApiKeyAuth": []}],
             "responses": {"200": {"description": "Liste des examens"}, "401": {"description": "Token ou clé API manquant/invalide"}, "403": {"description": "Rôle non autorisé pour cette route ou pour cette clé"}}
+        }},
+        "/api/external/student/exams/{exam_id}": {"get": {
+            "tags": ["API Externe"], "summary": "[Étudiant] Détail d'un examen (hors passage actif)",
+            "security": [{"BearerAuth": [], "ApiKeyAuth": []}],
+            "parameters": [{"name": "exam_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+            "responses": {"200": {"description": "Détail de l'examen"}, "401": {"description": "Token ou clé API manquant/invalide"}, "403": {"description": "Examen en cours (non consultable via cette API) ou rôle/clé non autorisé"}, "404": {"description": "Examen non trouvé"}}
+        }},
+        "/api/external/student/results": {"get": {
+            "tags": ["API Externe"], "summary": "[Étudiant] Résultats en ligne publiés",
+            "security": [{"BearerAuth": [], "ApiKeyAuth": []}],
+            "responses": {"200": {"description": "Résultats corrigés"}, "401": {"description": "Token ou clé API manquant/invalide"}, "403": {"description": "Rôle non autorisé pour cette route ou pour cette clé"}}
+        }},
+        "/api/external/student/papers": {"get": {
+            "tags": ["API Externe"], "summary": "[Étudiant] Copies corrigées (hors examens en ligne)",
+            "security": [{"BearerAuth": [], "ApiKeyAuth": []}],
+            "responses": {"200": {"description": "Copies corrigées"}, "401": {"description": "Token ou clé API manquant/invalide"}, "403": {"description": "Rôle non autorisé pour cette route ou pour cette clé"}}
         }},
         "/api/external/student/transcripts": {"get": {
             "tags": ["API Externe"], "summary": "[Étudiant] Relevés de notes publiés",
             "security": [{"BearerAuth": [], "ApiKeyAuth": []}],
             "responses": {"200": {"description": "Relevés publiés"}, "401": {"description": "Token ou clé API manquant/invalide"}, "403": {"description": "Rôle non autorisé pour cette route ou pour cette clé"}}
         }},
-        "/api/external/professor/exams": {"get": {
-            "tags": ["API Externe"], "summary": "[Professeur] Mes examens créés",
+        "/api/external/student/reclamations": {
+            "get": {
+                "tags": ["API Externe"], "summary": "[Étudiant] Mes réclamations",
+                "security": [{"BearerAuth": [], "ApiKeyAuth": []}],
+                "responses": {"200": {"description": "Réclamations de l'étudiant"}, "401": {"description": "Token ou clé API manquant/invalide"}, "403": {"description": "Rôle non autorisé pour cette route ou pour cette clé"}}
+            },
+            "post": {
+                "tags": ["API Externe"], "summary": "[Étudiant] Déposer une réclamation",
+                "security": [{"BearerAuth": [], "ApiKeyAuth": []}],
+                "requestBody": {"required": True, "content": {"application/json": {"schema": {
+                    "type": "object", "required": ["reason"],
+                    "properties": {
+                        "reason":     {"type": "string", "description": "Motif de la réclamation"},
+                        "paper_id":   {"type": "integer", "description": "Copie concernée (au choix avec attempt_id)"},
+                        "attempt_id": {"type": "integer", "description": "Tentative d'examen en ligne concernée (au choix avec paper_id)"}
+                    }
+                }}}},
+                "responses": {"201": {"description": "Réclamation créée"}, "400": {"description": "Données manquantes, délai expiré (7 jours) ou réclamation déjà en cours"}, "401": {"description": "Token ou clé API manquant/invalide"}, "403": {"description": "Copie/tentative n'appartenant pas à l'étudiant, ou rôle/clé non autorisé"}, "404": {"description": "Copie ou tentative non trouvée"}}
+            }
+        },
+        # ── Professeur ───────────────────────────────────────────────────────
+        "/api/external/professor/exams": {
+            "get": {
+                "tags": ["API Externe"], "summary": "[Professeur] Mes examens créés",
+                "security": [{"BearerAuth": [], "ApiKeyAuth": []}],
+                "responses": {"200": {"description": "Liste des examens"}, "401": {"description": "Token ou clé API manquant/invalide"}, "403": {"description": "Rôle non autorisé pour cette route ou pour cette clé"}}
+            },
+            "post": {
+                "tags": ["API Externe"], "summary": "[Professeur] Créer un examen (métadonnées uniquement — pas d'activation)",
+                "security": [{"BearerAuth": [], "ApiKeyAuth": []}],
+                "requestBody": {"required": True, "content": {"application/json": {"schema": {
+                    "type": "object", "required": ["subject_id", "title", "start_time", "end_time"],
+                    "properties": {
+                        "subject_id": {"type": "integer", "description": "Doit appartenir au professeur connecté"},
+                        "title":      {"type": "string"},
+                        "start_time": {"type": "string", "format": "date-time"},
+                        "end_time":   {"type": "string", "format": "date-time"},
+                        "instructions": {"type": "string"}
+                    }
+                }}}},
+                "responses": {"201": {"description": "Examen créé (statut planifié)"}, "400": {"description": "Champ manquant ou date invalide"}, "401": {"description": "Token ou clé API manquant/invalide"}, "403": {"description": "Sujet n'appartenant pas au professeur, ou rôle/clé non autorisé"}, "404": {"description": "Sujet non trouvé"}}
+            }
+        },
+        "/api/external/professor/exams/{exam_id}": {
+            "get": {
+                "tags": ["API Externe"], "summary": "[Professeur] Détail d'un de mes examens",
+                "security": [{"BearerAuth": [], "ApiKeyAuth": []}],
+                "parameters": [{"name": "exam_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+                "responses": {"200": {"description": "Détail de l'examen"}, "401": {"description": "Token ou clé API manquant/invalide"}, "403": {"description": "Rôle/clé non autorisé ou examen n'appartenant pas au professeur"}, "404": {"description": "Examen non trouvé"}}
+            },
+            "put": {
+                "tags": ["API Externe"], "summary": "[Professeur] Modifier les métadonnées d'un examen (brouillon/planifié uniquement)",
+                "security": [{"BearerAuth": [], "ApiKeyAuth": []}],
+                "parameters": [{"name": "exam_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+                "requestBody": {"content": {"application/json": {"schema": {
+                    "type": "object",
+                    "properties": {
+                        "title":            {"type": "string"},
+                        "start_time":       {"type": "string", "format": "date-time"},
+                        "end_time":         {"type": "string", "format": "date-time"},
+                        "duration_minutes": {"type": "integer"}
+                    }
+                }}}},
+                "responses": {"200": {"description": "Examen modifié"}, "400": {"description": "Examen déjà activé/clôturé — non modifiable, ou date invalide"}, "401": {"description": "Token ou clé API manquant/invalide"}, "403": {"description": "Rôle/clé non autorisé ou examen n'appartenant pas au professeur"}, "404": {"description": "Examen non trouvé"}}
+            }
+        },
+        "/api/external/professor/exams/{exam_id}/attempts": {"get": {
+            "tags": ["API Externe"], "summary": "[Professeur] Tentatives des candidats sur un examen (paginé)",
             "security": [{"BearerAuth": [], "ApiKeyAuth": []}],
-            "responses": {"200": {"description": "Liste des examens"}, "401": {"description": "Token ou clé API manquant/invalide"}, "403": {"description": "Rôle non autorisé pour cette route ou pour cette clé"}}
+            "parameters": [
+                {"name": "exam_id", "in": "path", "required": True, "schema": {"type": "integer"}},
+                {"name": "page", "in": "query", "schema": {"type": "integer", "default": 1}},
+                {"name": "limit", "in": "query", "schema": {"type": "integer", "default": 50, "maximum": 200}}
+            ],
+            "responses": {"200": {"description": "Tentatives"}, "401": {"description": "Token ou clé API manquant/invalide"}, "403": {"description": "Rôle/clé non autorisé ou examen n'appartenant pas au professeur"}, "404": {"description": "Examen non trouvé"}}
+        }},
+        "/api/external/professor/exams/{exam_id}/stats": {"get": {
+            "tags": ["API Externe"], "summary": "[Professeur] Statistiques d'un examen (moyenne, taux de réussite, etc.)",
+            "security": [{"BearerAuth": [], "ApiKeyAuth": []}],
+            "parameters": [{"name": "exam_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+            "responses": {"200": {"description": "Statistiques"}, "401": {"description": "Token ou clé API manquant/invalide"}, "403": {"description": "Rôle/clé non autorisé ou examen n'appartenant pas au professeur"}, "404": {"description": "Examen non trouvé"}}
+        }},
+        "/api/external/professor/exams/{exam_id}/publish-results": {"put": {
+            "tags": ["API Externe"], "summary": "[Professeur] Publier/dépublier les résultats déjà corrigés d'un examen",
+            "security": [{"BearerAuth": [], "ApiKeyAuth": []}],
+            "parameters": [{"name": "exam_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+            "requestBody": {"content": {"application/json": {"schema": {
+                "type": "object", "properties": {"published": {"type": "boolean", "default": True}}
+            }}}},
+            "responses": {"200": {"description": "Statut de publication mis à jour"}, "401": {"description": "Token ou clé API manquant/invalide"}, "403": {"description": "Rôle/clé non autorisé ou examen n'appartenant pas au professeur"}, "404": {"description": "Examen non trouvé"}}
         }},
         "/api/external/professor/corrections": {"get": {
             "tags": ["API Externe"], "summary": "[Professeur] Copies en attente de correction",
             "security": [{"BearerAuth": [], "ApiKeyAuth": []}],
             "responses": {"200": {"description": "Copies en attente"}, "401": {"description": "Token ou clé API manquant/invalide"}, "403": {"description": "Rôle non autorisé pour cette route ou pour cette clé"}}
         }},
+        "/api/external/professor/subjects": {"get": {
+            "tags": ["API Externe"], "summary": "[Professeur] Mes sujets",
+            "security": [{"BearerAuth": [], "ApiKeyAuth": []}],
+            "responses": {"200": {"description": "Sujets"}, "401": {"description": "Token ou clé API manquant/invalide"}, "403": {"description": "Rôle non autorisé pour cette route ou pour cette clé"}}
+        }},
+        "/api/external/professor/subjects/{subject_id}": {"get": {
+            "tags": ["API Externe"], "summary": "[Professeur] Détail d'un de mes sujets (contenu + barème)",
+            "security": [{"BearerAuth": [], "ApiKeyAuth": []}],
+            "parameters": [{"name": "subject_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+            "responses": {"200": {"description": "Détail du sujet"}, "401": {"description": "Token ou clé API manquant/invalide"}, "403": {"description": "Rôle/clé non autorisé ou sujet n'appartenant pas au professeur"}, "404": {"description": "Sujet non trouvé"}}
+        }},
+        "/api/external/professor/questions": {"get": {
+            "tags": ["API Externe"], "summary": "[Professeur] Ma banque de questions (lecture seule)",
+            "security": [{"BearerAuth": [], "ApiKeyAuth": []}],
+            "responses": {"200": {"description": "Questions"}, "401": {"description": "Token ou clé API manquant/invalide"}, "403": {"description": "Rôle non autorisé pour cette route ou pour cette clé"}}
+        }},
+        "/api/external/professor/transcripts": {"get": {
+            "tags": ["API Externe"], "summary": "[Professeur] Relevés de notes que j'ai générés",
+            "security": [{"BearerAuth": [], "ApiKeyAuth": []}],
+            "responses": {"200": {"description": "Relevés"}, "401": {"description": "Token ou clé API manquant/invalide"}, "403": {"description": "Rôle non autorisé pour cette route ou pour cette clé"}}
+        }},
+        "/api/external/professor/transcripts/{tid}/publish": {"put": {
+            "tags": ["API Externe"], "summary": "[Professeur] Publier/dépublier un relevé que j'ai généré",
+            "security": [{"BearerAuth": [], "ApiKeyAuth": []}],
+            "parameters": [{"name": "tid", "in": "path", "required": True, "schema": {"type": "integer"}}],
+            "requestBody": {"content": {"application/json": {"schema": {
+                "type": "object", "properties": {"is_published": {"type": "boolean"}}
+            }}}},
+            "responses": {"200": {"description": "Statut de publication mis à jour"}, "401": {"description": "Token ou clé API manquant/invalide"}, "403": {"description": "Rôle/clé non autorisé ou relevé non généré par ce professeur"}, "404": {"description": "Relevé non trouvé"}}
+        }},
+        "/api/external/professor/reclamations": {"get": {
+            "tags": ["API Externe"], "summary": "[Professeur] Réclamations sur mes examens/copies",
+            "security": [{"BearerAuth": [], "ApiKeyAuth": []}],
+            "responses": {"200": {"description": "Réclamations"}, "401": {"description": "Token ou clé API manquant/invalide"}, "403": {"description": "Rôle non autorisé pour cette route ou pour cette clé"}}
+        }},
+        "/api/external/professor/reclamations/{rid}/respond": {"put": {
+            "tags": ["API Externe"], "summary": "[Professeur] Répondre à une réclamation",
+            "security": [{"BearerAuth": [], "ApiKeyAuth": []}],
+            "parameters": [{"name": "rid", "in": "path", "required": True, "schema": {"type": "integer"}}],
+            "requestBody": {"required": True, "content": {"application/json": {"schema": {
+                "type": "object", "required": ["status"],
+                "properties": {
+                    "status":   {"type": "string", "enum": ["approved", "rejected", "in_review"]},
+                    "response": {"type": "string"}
+                }
+            }}}},
+            "responses": {"200": {"description": "Réclamation mise à jour"}, "400": {"description": "Statut invalide"}, "401": {"description": "Token ou clé API manquant/invalide"}, "403": {"description": "Rôle/clé non autorisé ou réclamation ne concernant pas ce professeur"}, "404": {"description": "Réclamation non trouvée"}}
+        }},
+        "/api/external/professor/students": {"get": {
+            "tags": ["API Externe"], "summary": "[Professeur] Étudiants inscrits à mes EC/UE",
+            "security": [{"BearerAuth": [], "ApiKeyAuth": []}],
+            "responses": {"200": {"description": "Étudiants"}, "401": {"description": "Token ou clé API manquant/invalide"}, "403": {"description": "Rôle non autorisé pour cette route ou pour cette clé"}}
+        }},
+        "/api/external/professor/ecs": {"get": {
+            "tags": ["API Externe"], "summary": "[Professeur] Mes EC/UE assignées",
+            "security": [{"BearerAuth": [], "ApiKeyAuth": []}],
+            "responses": {"200": {"description": "EC assignées"}, "401": {"description": "Token ou clé API manquant/invalide"}, "403": {"description": "Rôle non autorisé pour cette route ou pour cette clé"}}
+        }},
+        "/api/external/professor/analytics": {"get": {
+            "tags": ["API Externe"], "summary": "[Professeur] Analytique de base (sujets créés, copies corrigées)",
+            "security": [{"BearerAuth": [], "ApiKeyAuth": []}],
+            "responses": {"200": {"description": "Analytique"}, "401": {"description": "Token ou clé API manquant/invalide"}, "403": {"description": "Rôle non autorisé pour cette route ou pour cette clé"}}
+        }},
+        # ── Surveillant ──────────────────────────────────────────────────────
         "/api/external/surveillant/assignments": {"get": {
             "tags": ["API Externe"], "summary": "[Surveillant] Mes affectations de surveillance à venir",
             "security": [{"BearerAuth": [], "ApiKeyAuth": []}],
             "responses": {"200": {"description": "Affectations"}, "401": {"description": "Token ou clé API manquant/invalide"}, "403": {"description": "Rôle non autorisé pour cette route ou pour cette clé"}}
         }},
+        "/api/external/surveillant/exams/{exam_id}/status": {"get": {
+            "tags": ["API Externe"], "summary": "[Surveillant] Statut de surveillance d'un examen affecté (sans flux vidéo)",
+            "security": [{"BearerAuth": [], "ApiKeyAuth": []}],
+            "parameters": [{"name": "exam_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+            "responses": {"200": {"description": "Statut"}, "401": {"description": "Token ou clé API manquant/invalide"}, "403": {"description": "Rôle/clé non autorisé ou surveillant non affecté à cet examen"}, "404": {"description": "Examen non trouvé"}}
+        }},
+        "/api/external/surveillant/exams/{exam_id}/incidents": {"get": {
+            "tags": ["API Externe"], "summary": "[Surveillant] Incidents sur les candidats qui me sont affectés",
+            "security": [{"BearerAuth": [], "ApiKeyAuth": []}],
+            "parameters": [{"name": "exam_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+            "responses": {"200": {"description": "Incidents (limité aux 200 plus récents)"}, "401": {"description": "Token ou clé API manquant/invalide"}, "403": {"description": "Rôle non autorisé pour cette route ou pour cette clé"}, "404": {"description": "Examen non trouvé"}}
+        }},
+        # ── Superviseur ──────────────────────────────────────────────────────
         "/api/external/superviseur/groups": {"get": {
             "tags": ["API Externe"], "summary": "[Superviseur] Mes groupes de surveillants supervisés",
             "security": [{"BearerAuth": [], "ApiKeyAuth": []}],
             "responses": {"200": {"description": "Groupes supervisés"}, "401": {"description": "Token ou clé API manquant/invalide"}, "403": {"description": "Rôle non autorisé pour cette route ou pour cette clé"}}
+        }},
+        "/api/external/superviseur/dashboard": {"get": {
+            "tags": ["API Externe"], "summary": "[Superviseur] Vue d'ensemble de l'activité de mes groupes",
+            "security": [{"BearerAuth": [], "ApiKeyAuth": []}],
+            "responses": {"200": {"description": "Vue d'ensemble"}, "401": {"description": "Token ou clé API manquant/invalide"}, "403": {"description": "Rôle non autorisé pour cette route ou pour cette clé"}}
+        }},
+        "/api/external/superviseur/call-requests": {"get": {
+            "tags": ["API Externe"], "summary": "[Superviseur] Demandes d'appel étudiant sans surveillant assigné",
+            "security": [{"BearerAuth": [], "ApiKeyAuth": []}],
+            "responses": {"200": {"description": "Demandes d'appel"}, "401": {"description": "Token ou clé API manquant/invalide"}, "403": {"description": "Rôle non autorisé pour cette route ou pour cette clé"}}
         }},
         "/api/auth/public-key": {"get": {
             "tags": ["Authentification"], "summary": "Clé publique Ed25519 du serveur",

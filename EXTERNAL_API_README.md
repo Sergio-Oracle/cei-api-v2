@@ -73,33 +73,62 @@ X-CEI-API-Key: <votre clé API>
 
 ## 4. API externe par module de rôle
 
-Surface **volontairement restreinte et stable** (distincte des routes internes de l'application CEI, qui évoluent librement). Toutes les routes sont en lecture seule (`GET`).
+Surface **volontairement restreinte et stable** (distincte des routes internes de l'application CEI, qui évoluent librement), mais représentative de l'usage réel de chaque rôle : lecture des données courantes, et écritures qui ne touchent jamais à l'intégrité d'un examen en cours.
+
+**Ne sont volontairement pas exposées ici** (ce n'est pas un oubli) : démarrer/soumettre/sauvegarder un examen, bannir un candidat, générer un code d'accès, et toute action nécessitant un flux vidéo/audio en direct (jetons LiveKit, enregistrement). Ces actions restent strictement internes à l'application CEI, où s'appliquent les garde-fous d'intégrité (biométrie, minutage, surveillance active) — pour ces cas, redirigez l'utilisateur vers son tableau de bord CEI via le SSO (`GET /api/auth/oidc/login`) plutôt que d'appeler une route API.
 
 ### Module Étudiant
 
 | Route | Description |
 |---|---|
 | `GET /api/external/student/exams` | Examens à venir / récents de l'étudiant connecté |
+| `GET /api/external/student/exams/{id}` | Détail d'un examen (hors passage actif) |
+| `GET /api/external/student/results` | Résultats en ligne publiés |
+| `GET /api/external/student/papers` | Copies corrigées (hors examens en ligne) |
 | `GET /api/external/student/transcripts` | Relevés de notes **publiés** de l'étudiant connecté |
+| `GET /api/external/student/reclamations` | Ses propres réclamations |
+| `POST /api/external/student/reclamations` | Déposer une réclamation |
 
 ### Module Professeur
 
 | Route | Description |
 |---|---|
 | `GET /api/external/professor/exams` | Examens créés par le professeur connecté |
+| `POST /api/external/professor/exams` | Créer un examen (métadonnées uniquement, pas d'activation) |
+| `GET /api/external/professor/exams/{id}` | Détail d'un de ses examens |
+| `PUT /api/external/professor/exams/{id}` | Modifier les métadonnées (brouillon/planifié uniquement) |
+| `GET /api/external/professor/exams/{id}/attempts` | Tentatives des candidats (paginé) |
+| `GET /api/external/professor/exams/{id}/stats` | Statistiques (moyenne, taux de réussite, etc.) |
+| `PUT /api/external/professor/exams/{id}/publish-results` | Publier/dépublier des résultats déjà corrigés |
 | `GET /api/external/professor/corrections` | Copies en attente de correction pour ses examens |
+| `GET /api/external/professor/subjects` | Ses sujets |
+| `GET /api/external/professor/subjects/{id}` | Détail d'un de ses sujets (contenu + barème) |
+| `GET /api/external/professor/questions` | Sa banque de questions (lecture seule) |
+| `GET /api/external/professor/transcripts` | Relevés qu'il a générés |
+| `PUT /api/external/professor/transcripts/{id}/publish` | Publier/dépublier un relevé généré par lui |
+| `GET /api/external/professor/reclamations` | Réclamations sur ses examens/copies |
+| `PUT /api/external/professor/reclamations/{id}/respond` | Répondre à une réclamation |
+| `GET /api/external/professor/students` | Étudiants inscrits à ses EC/UE |
+| `GET /api/external/professor/ecs` | Ses EC/UE assignées |
+| `GET /api/external/professor/analytics` | Analytique de base (sujets créés, copies corrigées) |
 
 ### Module Surveillant
 
 | Route | Description |
 |---|---|
 | `GET /api/external/surveillant/assignments` | Affectations de surveillance à venir |
+| `GET /api/external/surveillant/exams/{id}/status` | Statut de surveillance d'un examen affecté (sans flux vidéo) |
+| `GET /api/external/surveillant/exams/{id}/incidents` | Incidents sur les candidats qui lui sont affectés |
+
+Aucune écriture exposée pour ce module : avertissement, bannissement, code d'accès et pilotage caméra/enregistrement restent internes — la surveillance en direct doit se faire depuis l'interface CEI elle-même.
 
 ### Module Superviseur
 
 | Route | Description |
 |---|---|
 | `GET /api/external/superviseur/groups` | Groupes de surveillants supervisés |
+| `GET /api/external/superviseur/dashboard` | Vue d'ensemble de l'activité de ses groupes |
+| `GET /api/external/superviseur/call-requests` | Demandes d'appel étudiant sans surveillant assigné |
 
 ### Exemple
 

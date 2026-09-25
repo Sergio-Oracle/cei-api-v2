@@ -52,3 +52,4 @@ chardet
 pdfplumber>=0.11
 PySocks
 boto3
+cryptography>=42

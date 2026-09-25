@@ -3175,22 +3175,71 @@ OPENAPI_SPEC = {
         # INTELLIGENCE ARTIFICIELLE
         # ══════════════════════════════════════════════════════════════════════
 
-        "/api/admin/moodle/status": {"get": {
-            "tags": ["Moodle"], "summary": "Connectivité Moodle (admin)",
-            "description": "`enabled=false` si MOODLE_SYNC_ENABLED n'est pas activé. Sinon teste le token via `core_webservice_get_site_info`.",
-            "responses": {"200": {"description": "État de la connexion", "content": {"application/json": {"example": {
-                "enabled": True, "connected": True,
-                "site": {"sitename": "PROMO P13 SEJA DEV", "siteurl": "https://dev-promo13seja.unchk.sn", "release": "4.5.7+", "username": "cei-integration", "functions_count": 68}
-            }}}}, "403": {"$ref": "#/components/responses/Forbidden"}}
+        "/api/admin/moodle/instances": {
+            "get": {
+                "tags": ["Moodle"], "summary": "Plateformes Moodle enregistrées (admin)",
+                "description": "Le token n'est jamais renvoyé : seuls ses 4 derniers caractères (`token_hint`). Une plateforme déclarée dans le .env (MOODLE_BASE_URL/MOODLE_WS_TOKEN) est reprise automatiquement en base si aucune n'existe encore.",
+                "responses": {"200": {"description": "Plateformes", "content": {"application/json": {"example": {"instances": [{
+                    "id": 1, "name": "Promo13 SEJA (préprod)", "base_url": "https://dev-promo13seja.unchk.sn", "token_hint": "…55ba",
+                    "pole_id": None, "pole_code": None, "is_active": True, "last_check_at": "2026-09-25T18:40:00+00:00", "last_check_ok": True,
+                    "last_check": {"ok": True, "problems": [], "warnings": []}
+                }]}}}}, "403": {"$ref": "#/components/responses/Forbidden"}}
+            },
+            "post": {
+                "tags": ["Moodle"], "summary": "Ajouter une plateforme Moodle (admin)",
+                "description": (
+                    "Ajout d'un nouveau Moodle sans changement de code. La connexion est vérifiée **avant** l'enregistrement : "
+                    "adresse ou token faux → 400, rien n'est enregistré. Une plateforme joignable mais incomplète est enregistrée, "
+                    "et `diagnosis.problems` liste précisément ce qu'il reste à régler dans Moodle (fonctions manquantes, "
+                    "case « Peut télécharger des fichiers »). Le token est chiffré en base."
+                ),
+                "requestBody": {"required": True, "content": {"application/json": {"schema": {
+                    "type": "object", "required": ["name", "base_url", "token"],
+                    "properties": {"name": {"type": "string", "example": "Moodle STN"},
+                                   "base_url": {"type": "string", "example": "https://moodle-stn.unchk.sn"},
+                                   "token": {"type": "string", "description": "Token du compte de service (service externe CEI Sync)"},
+                                   "pole_id": {"type": "integer", "nullable": True}}
+                }}}},
+                "responses": {"201": {"description": "Plateforme enregistrée + diagnostic"}, "400": {"description": "Paramètres invalides ou connexion impossible"},
+                              "403": {"$ref": "#/components/responses/Forbidden"}, "409": {"description": "Adresse déjà enregistrée"}}
+            },
+        },
+        "/api/admin/moodle/instances/{instance_id}": {
+            "put": {
+                "tags": ["Moodle"], "summary": "Modifier une plateforme Moodle (admin)",
+                "description": "Tous les champs sont facultatifs. `token` absent → le token actuel est conservé. Une nouvelle adresse ou un nouveau token est vérifié avant d'être pris en compte. `is_active=false` suspend la plateforme sans la supprimer.",
+                "parameters": [{"name": "instance_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+                "requestBody": {"content": {"application/json": {"schema": {"type": "object", "properties": {
+                    "name": {"type": "string"}, "base_url": {"type": "string"}, "token": {"type": "string"},
+                    "pole_id": {"type": "integer", "nullable": True}, "is_active": {"type": "boolean"}}}}}},
+                "responses": {"200": {"description": "Plateforme modifiée"}, "400": {"description": "Paramètres invalides ou connexion impossible"},
+                              "403": {"$ref": "#/components/responses/Forbidden"}, "404": {"description": "Plateforme introuvable"}}
+            },
+            "delete": {
+                "tags": ["Moodle"], "summary": "Supprimer une plateforme Moodle (admin)",
+                "parameters": [{"name": "instance_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+                "responses": {"200": {"description": "Supprimée"}, "403": {"$ref": "#/components/responses/Forbidden"}, "404": {"description": "Plateforme introuvable"}}
+            },
+        },
+        "/api/admin/moodle/instances/{instance_id}/test": {"post": {
+            "tags": ["Moodle"], "summary": "Diagnostic d'une plateforme Moodle (admin)",
+            "description": "Vérifie la connexion, les fonctions utilisées par CEI (`problems`, bloquant), celles des prochaines étapes (`warnings`) et l'autorisation de téléchargement de fichiers. Le résultat est mémorisé (`last_check`).",
+            "parameters": [{"name": "instance_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+            "responses": {"200": {"description": "Diagnostic", "content": {"application/json": {"example": {"diagnosis": {
+                "ok": False, "problems": ["Le service externe n'autorise pas le téléchargement de fichiers (cocher « Peut télécharger des fichiers » sur le service)"],
+                "warnings": [], "site": {"sitename": "Moodle STN", "release": "4.5.7+", "username": "cei-integration", "functions_count": 68},
+                "reminder": "Capacité mod/book:read requise sur le rôle du compte de service pour lire les chapitres de Livre (non vérifiable à distance)."
+            }}}}}, "403": {"$ref": "#/components/responses/Forbidden"}, "404": {"description": "Plateforme introuvable"}}
         }},
         "/api/admin/moodle/courses": {"get": {
             "tags": ["Moodle"], "summary": "Correspondance cours Moodle ↔ EC CEI (admin)",
-            "description": "Un cours Moodle correspond à un EC CEI quand son `shortname` est égal au code de l'EC. Renvoie aussi les cours Moodle sans EC et les EC sans cours Moodle.",
+            "description": "Un cours Moodle correspond à un EC CEI quand son `shortname` est égal au code de l'EC. Sans `instance_id` : toutes les plateformes actives, avec les codes présents sur plusieurs plateformes (`duplicate_codes`). Une plateforme injoignable est listée dans `errors` sans bloquer les autres.",
+            "parameters": [{"name": "instance_id", "in": "query", "required": False, "schema": {"type": "integer"}}],
             "responses": {"200": {"description": "Correspondances", "content": {"application/json": {"example": {
-                "counts": {"moodle_courses": 118, "matched": 70, "moodle_courses_without_ec": 48, "ecs_without_moodle_course": 21},
-                "matched": [{"moodle_course_id": 93, "shortname": "AES1111", "fullname": "Droit constitutionnel...", "ec_id": 12, "ec_code": "AES1111", "ec_name": "...", "ue_id": 4, "ue_code": "AES111"}],
-                "moodle_courses_without_ec": [], "ecs_without_moodle_course": ["MIC2311"]
-            }}}}, "403": {"$ref": "#/components/responses/Forbidden"}, "502": {"description": "Erreur Moodle"}, "503": {"description": "Synchronisation désactivée"}}
+                "counts": {"instances": 1, "matched": 70, "moodle_courses_without_ec": 48, "ecs_without_moodle_course": 21, "duplicate_codes": 0},
+                "matched": [{"instance_id": 1, "instance": "Promo13 SEJA (préprod)", "moodle_course_id": 93, "shortname": "AES1111", "fullname": "Droit constitutionnel...", "ec_id": 12, "ec_code": "AES1111", "ec_name": "...", "ue_id": 4, "ue_code": "AES111"}],
+                "moodle_courses_without_ec": [], "ecs_without_moodle_course": ["MIC2311"], "duplicate_codes": {}, "errors": []
+            }}}}, "403": {"$ref": "#/components/responses/Forbidden"}, "503": {"description": "Synchronisation désactivée"}}
         }},
         "/api/admin/moodle/sync/enrollments": {"post": {
             "tags": ["Moodle"], "summary": "Synchroniser les inscriptions d'UN cours Moodle vers CEI (admin)",
@@ -3202,10 +3251,12 @@ OPENAPI_SPEC = {
             ),
             "requestBody": {"required": True, "content": {"application/json": {"schema": {
                 "type": "object", "required": ["ec_code"],
-                "properties": {"ec_code": {"type": "string", "example": "AES1111"}, "dry_run": {"type": "boolean", "default": True}}
+                "properties": {"ec_code": {"type": "string", "example": "AES1111"},
+                               "instance_id": {"type": "integer", "description": "Plateforme ciblée ; absent → première plateforme active ayant ce cours"},
+                               "dry_run": {"type": "boolean", "default": True}}
             }}}},
             "responses": {"200": {"description": "Bilan du cours", "content": {"application/json": {"example": {
-                "dry_run": True, "ec_code": "AES1111", "ue_code": "AES111", "moodle_course_id": 93,
+                "dry_run": True, "instance_id": 1, "instance": "Promo13 SEJA (préprod)", "ec_code": "AES1111", "ue_code": "AES111", "moodle_course_id": 93,
                 "moodle_students": 3346, "matched_in_cei": 3220, "already_enrolled": 3100, "to_create": 120,
                 "unmatched_count": 126, "unmatched_sample": ["etudiant@unchk.edu.sn"]
             }}}}, "400": {"description": "ec_code manquant"}, "403": {"$ref": "#/components/responses/Forbidden"},

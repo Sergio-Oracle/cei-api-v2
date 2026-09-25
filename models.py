@@ -1287,6 +1287,47 @@ class ApiClient(Base):
         }
 
 
+class MoodleInstance(Base):
+    """Plateforme Moodle UNCHK synchronisée avec CEI — ajoutée par l'admin
+    depuis la page Moodle, sans changement de code (une par plateforme :
+    Promo13 SEJA en préprod, les 3 Moodle de production ensuite). Le token
+    n'est jamais stocké en clair ni renvoyé par l'API : chiffré (Fernet,
+    clé dérivée de SECRET_KEY, voir services/moodle_sync.py), seuls ses 4
+    derniers caractères sont exposés pour l'identifier à l'écran."""
+    __tablename__ = 'moodle_instances'
+    id                  = Column(Integer, primary_key=True)
+    name                = Column(String(120), nullable=False)
+    base_url            = Column(String(255), nullable=False, unique=True)
+    token_encrypted     = Column(Text, nullable=False)
+    token_last4         = Column(String(4), nullable=False)
+    pole_id             = Column(Integer, ForeignKey('poles.id', ondelete='SET NULL'), nullable=True)
+    is_active           = Column(Boolean, default=True)
+    last_check_at       = Column(DateTime(timezone=True), nullable=True)
+    last_check_ok       = Column(Boolean, nullable=True)
+    last_check_info     = Column(Text, nullable=True)  # JSON du dernier diagnostic
+    created_at          = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at          = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc),
+                                 onupdate=lambda: datetime.now(timezone.utc))
+    created_by_admin_id = Column(Integer, ForeignKey('users.id'), nullable=True)
+
+    pole = relationship('Pole')
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'name': self.name,
+            'base_url': self.base_url,
+            'token_hint': f'…{self.token_last4}',
+            'pole_id': self.pole_id,
+            'pole_code': self.pole.code if self.pole else None,
+            'is_active': self.is_active,
+            'last_check_at': self.last_check_at.isoformat() if self.last_check_at else None,
+            'last_check_ok': self.last_check_ok,
+            'last_check': json.loads(self.last_check_info) if self.last_check_info else None,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+        }
+
+
 class CameraLog(Base):
     """Logs de surveillance caméra pendant les examens"""
     __tablename__ = 'camera_logs'

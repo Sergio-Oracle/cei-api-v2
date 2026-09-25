@@ -1,30 +1,54 @@
 """
-Client des webservices REST Moodle (compte de service cei-integration,
-service externe "CEI Sync") — Phase AA du plan.
+Client des webservices REST Moodle — plusieurs plateformes (Phase AA/AB).
+
+Les plateformes sont enregistrées en base (MoodleInstance) par l'admin,
+depuis la page Moodle, sans changement de code. Une plateforme déclarée
+dans le .env (MOODLE_BASE_URL + MOODLE_WS_TOKEN, config d'origine de la
+préprod) est reprise automatiquement en base au premier usage.
 
 Correspondances vérifiées sur données réelles (Promo13 SEJA, 25/09) :
-- cours Moodle ↔ EC CEI par code (shortname Moodle == EC.code) — 70/118 ;
-  aucun cours ne correspond à un code d'UE ;
-- étudiants par email (96 % des inscriptions retrouvées) ;
-- les professeurs CEI n'ont PAS de compte Moodle au même email (0/24) :
-  on ne passe jamais par l'identité Moodle d'un professeur, mais par ses
-  affectations EC dans CEI (ECAssignment → EC.code → cours Moodle).
+- cours Moodle ↔ EC CEI par code (shortname Moodle == EC.code) ;
+- étudiants par email ; INE des étudiants dans idnumber ;
+- les professeurs CEI existants n'ont pas de compte Moodle au même email :
+  la matière d'un professeur passe par ses affectations EC dans CEI.
 
-Config 100% .env, échec explicite si une variable manque (même règle que
-oidc_keycloak.py). Moodle répond HTTP 200 même en cas d'erreur applicative :
-chaque réponse est inspectée, jamais le seul code HTTP.
+Moodle répond HTTP 200 même en cas d'erreur applicative : chaque réponse
+est inspectée, jamais le seul code HTTP.
 """
+import base64
+import hashlib
+import json
 import os
 import tempfile
+from datetime import datetime, timezone
 from html.parser import HTMLParser
 from urllib.parse import urlparse
 
 import requests
+from cryptography.fernet import Fernet, InvalidToken
 
 from utils import extract_text_from_file
 
 SUPPORTED_EXTENSIONS = {'pdf', 'docx', 'doc', 'txt', 'html', 'htm'}
 MAX_MATERIALS_MB = 50  # même plafond cumulé que l'upload manuel de cours
+
+# Fonctions utilisées aujourd'hui par CEI : leur absence casse une fonctionnalité.
+REQUIRED_FUNCTIONS = [
+    'core_webservice_get_site_info',
+    'core_course_get_courses',
+    'core_course_get_courses_by_field',
+    'core_course_get_contents',
+    'core_enrol_get_enrolled_users',
+]
+# Fonctions des phases suivantes (comptes, notes, calendrier) : signalées
+# sans bloquer, pour que la plateforme soit prête le moment venu.
+RECOMMENDED_FUNCTIONS = [
+    'core_user_get_users_by_field',
+    'core_enrol_get_users_courses',
+    'core_grades_update_grades',
+    'core_grades_create_gradecategories',
+    'core_calendar_create_calendar_events',
+]
 
 
 class MoodleError(Exception):
@@ -35,126 +59,38 @@ def is_enabled() -> bool:
     return os.getenv('MOODLE_SYNC_ENABLED', 'false').lower() == 'true'
 
 
-def _require_env(name: str) -> str:
-    value = os.getenv(name)
-    if not value:
-        raise RuntimeError(f"[moodle_sync] Variable d'environnement manquante : {name}")
-    return value
+# ── Token chiffré en base ────────────────────────────────────────────────────
+
+def _fernet() -> Fernet:
+    secret = os.getenv('SECRET_KEY')
+    if not secret:
+        raise RuntimeError('[moodle_sync] SECRET_KEY manquante — impossible de chiffrer les tokens Moodle')
+    # Clé dérivée de SECRET_KEY (déjà obligatoire) : pas de nouvelle variable
+    # à oublier en production. Si SECRET_KEY change, les tokens sont à ressaisir.
+    digest = hashlib.sha256(f'cei-moodle-token:{secret}'.encode()).digest()
+    return Fernet(base64.urlsafe_b64encode(digest))
 
 
-def _base_url() -> str:
-    return _require_env('MOODLE_BASE_URL').rstrip('/')
+def encrypt_token(token: str) -> str:
+    return _fernet().encrypt(token.encode()).decode()
 
 
-def _token() -> str:
-    return _require_env('MOODLE_WS_TOKEN')
-
-
-def _flatten(params: dict, prefix: str = '') -> dict:
-    """{'courseids': [3, 4]} -> {'courseids[0]': 3, 'courseids[1]': 4} —
-    notation imbriquée attendue par le protocole REST de Moodle."""
-    flat = {}
-    for key, value in params.items():
-        name = f'{prefix}[{key}]' if prefix else str(key)
-        if isinstance(value, dict):
-            flat.update(_flatten(value, name))
-        elif isinstance(value, (list, tuple)):
-            flat.update(_flatten(dict(enumerate(value)), name))
-        elif isinstance(value, bool):
-            flat[name] = int(value)
-        else:
-            flat[name] = value
-    return flat
-
-
-def call(wsfunction: str, params: dict | None = None, timeout: int = 60):
-    data = {'wstoken': _token(), 'moodlewsrestformat': 'json', 'wsfunction': wsfunction}
-    data.update(_flatten(params or {}))
+def decrypt_token(encrypted: str) -> str:
     try:
-        resp = requests.post(f'{_base_url()}/webservice/rest/server.php', data=data, timeout=timeout)
-    except requests.RequestException as e:
-        raise MoodleError(f'Moodle injoignable ({wsfunction}) : {e}') from e
-    try:
-        payload = resp.json()
-    except ValueError as e:
-        raise MoodleError(f'Réponse Moodle non JSON ({wsfunction}, HTTP {resp.status_code})') from e
-    if isinstance(payload, dict) and 'exception' in payload:
-        raise MoodleError(f"{wsfunction} : {payload.get('errorcode')} — {payload.get('message')}")
-    return payload
+        return _fernet().decrypt(encrypted.encode()).decode()
+    except InvalidToken as e:
+        raise MoodleError('Token illisible (SECRET_KEY modifiée ?) — ressaisir le token de cette plateforme') from e
 
 
-# ── Lecture ──────────────────────────────────────────────────────────────────
-
-def site_info() -> dict:
-    info = call('core_webservice_get_site_info')
-    return {
-        'sitename': info.get('sitename'),
-        'siteurl': info.get('siteurl'),
-        'release': info.get('release'),
-        'username': info.get('username'),
-        'functions_count': len(info.get('functions', [])),
-    }
+def normalize_base_url(url: str) -> str:
+    url = (url or '').strip().rstrip('/')
+    parsed = urlparse(url)
+    if parsed.scheme not in ('https', 'http') or not parsed.netloc:
+        raise ValueError('Adresse invalide — attendu : https://moodle.exemple.sn')
+    return url
 
 
-def list_courses() -> list[dict]:
-    """Tous les cours visibles, hors page d'accueil du site (id=1)."""
-    return [c for c in call('core_course_get_courses') if c.get('id') != 1]
-
-
-def find_course_by_code(code: str) -> dict | None:
-    res = call('core_course_get_courses_by_field', {'field': 'shortname', 'value': code})
-    courses = res.get('courses', []) if isinstance(res, dict) else []
-    return courses[0] if courses else None
-
-
-def course_materials(course_id: int) -> list[dict]:
-    """Fichiers exploitables par l'IA (PDF/DOCX/DOC/TXT, chapitres HTML) d'un
-    cours. core_course_get_contents est la seule source : sur ce Moodle la
-    matière est surtout dans des Dossiers et des Livres, et
-    mod_folder_get_folders_by_courses ne renvoie PAS le contenu des dossiers."""
-    materials = []
-    for section in call('core_course_get_contents', {'courseid': course_id}):
-        for module in section.get('modules', []) or []:
-            for item in module.get('contents', []) or []:
-                if item.get('type') != 'file':
-                    continue
-                filename = item.get('filename', '')
-                ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
-                if ext not in SUPPORTED_EXTENSIONS:
-                    continue
-                materials.append({
-                    'fileurl': item.get('fileurl'),
-                    'filename': filename,
-                    'extension': ext,
-                    'filesize': item.get('filesize') or 0,
-                    'timemodified': item.get('timemodified'),
-                    'section': section.get('name'),
-                    'module': module.get('name'),
-                    'modname': module.get('modname'),
-                    'visible': bool(module.get('visible', 1)),
-                })
-    return materials
-
-
-def enrolled_students(course_id: int) -> list[dict]:
-    """Étudiants inscrits (actifs) d'un cours. Filtrer par capacité
-    mod/assign:submit plutôt que de demander le champ roles : ~11 s au lieu
-    de ~18 s sur un cours SEJA de ~3 400 inscrits (mesuré le 25/09)."""
-    users = call('core_enrol_get_enrolled_users', {
-        'courseid': course_id,
-        'options': [
-            {'name': 'onlyactive', 'value': 1},
-            {'name': 'withcapability', 'value': 'mod/assign:submit'},
-            {'name': 'userfields', 'value': 'id,email,fullname'},
-        ],
-    }, timeout=120)
-    return [
-        {'moodle_id': u.get('id'), 'email': (u.get('email') or '').strip().lower(), 'fullname': (u.get('fullname') or '').strip()}
-        for u in users
-    ]
-
-
-# ── Téléchargement + extraction ──────────────────────────────────────────────
+# ── Client d'une plateforme ──────────────────────────────────────────────────
 
 class _HTMLText(HTMLParser):
     def __init__(self):
@@ -183,68 +119,253 @@ def _html_to_text(raw: bytes) -> str:
     return '\n'.join(line for line in lines if line)
 
 
-def _download(fileurl: str, max_bytes: int) -> bytes:
-    # Le token n'est envoyé qu'au Moodle configuré, jamais à un autre hôte.
-    if urlparse(fileurl).netloc != urlparse(_base_url()).netloc:
-        raise MoodleError('URL de fichier hors du Moodle configuré — refusée')
-    try:
-        with requests.get(fileurl, params={'token': _token()}, stream=True, timeout=120) as resp:
-            if resp.status_code != 200:
-                raise MoodleError(f'Téléchargement refusé (HTTP {resp.status_code})')
-            chunks, size = [], 0
-            for chunk in resp.iter_content(64 * 1024):
-                size += len(chunk)
-                if size > max_bytes:
-                    raise MoodleError(f'Fichier trop volumineux (max {MAX_MATERIALS_MB} Mo cumulés)')
-                chunks.append(chunk)
-    except requests.RequestException as e:
-        raise MoodleError(f'Téléchargement impossible : {e}') from e
-    raw = b''.join(chunks)
-    # Un token invalide/expiré renvoie une page d'erreur JSON au lieu du fichier
-    if raw[:1] == b'{' and b'"errorcode"' in raw[:500]:
-        raise MoodleError('Moodle a refusé le téléchargement (token ou droits)')
-    return raw
-
-
-def extract_materials(course_id: int, fileurls: list[str]) -> list[dict]:
-    """Télécharge et extrait le texte des fichiers demandés. Seuls les
-    fichiers appartenant réellement à ce cours sont acceptés : la liste est
-    re-résolue côté serveur, jamais prise telle quelle du client."""
-    available = {m['fileurl']: m for m in course_materials(course_id)}
-    unknown = [u for u in fileurls if u not in available]
-    if unknown:
-        raise MoodleError(f"{len(unknown)} fichier(s) n'appartiennent pas à ce cours Moodle")
-
-    # Un fichier en échec (ex. chapitre de Livre refusé par Moodle) est
-    # signalé via 'error' sans interrompre les autres : l'appelant décide
-    # s'il reste assez de matière. Seul le dépassement du plafond cumulé
-    # interrompt tout, pour ne jamais dépasser 50 Mo au total.
-    budget = MAX_MATERIALS_MB * 1024 * 1024
-    results = []
-    for url in dict.fromkeys(fileurls):
-        meta = available[url]
-        entry = {'filename': meta['filename'], 'module': meta['module'], 'text': '', 'error': None}
-        try:
-            raw = _download(url, budget)
-        except MoodleError as e:
-            if 'trop volumineux' in str(e):
-                raise
-            entry['error'] = str(e)
-            results.append(entry)
-            continue
-        budget -= len(raw)
-        if meta['extension'] in ('html', 'htm'):
-            text = _html_to_text(raw)
+def _flatten(params: dict, prefix: str = '') -> dict:
+    """{'courseids': [3, 4]} -> {'courseids[0]': 3, 'courseids[1]': 4} —
+    notation imbriquée attendue par le protocole REST de Moodle."""
+    flat = {}
+    for key, value in params.items():
+        name = f'{prefix}[{key}]' if prefix else str(key)
+        if isinstance(value, dict):
+            flat.update(_flatten(value, name))
+        elif isinstance(value, (list, tuple)):
+            flat.update(_flatten(dict(enumerate(value)), name))
+        elif isinstance(value, bool):
+            flat[name] = int(value)
         else:
-            fd, path = tempfile.mkstemp(suffix=f".{meta['extension']}")
+            flat[name] = value
+    return flat
+
+
+class MoodleClient:
+    def __init__(self, base_url: str, token: str):
+        self.base_url = normalize_base_url(base_url)
+        self.token = token
+
+    def call(self, wsfunction: str, params: dict | None = None, timeout: int = 60):
+        data = {'wstoken': self.token, 'moodlewsrestformat': 'json', 'wsfunction': wsfunction}
+        data.update(_flatten(params or {}))
+        try:
+            resp = requests.post(f'{self.base_url}/webservice/rest/server.php', data=data, timeout=timeout)
+        except requests.RequestException as e:
+            raise MoodleError(f'Moodle injoignable ({wsfunction}) : {e}') from e
+        try:
+            payload = resp.json()
+        except ValueError as e:
+            raise MoodleError(f'Réponse Moodle non JSON ({wsfunction}, HTTP {resp.status_code})') from e
+        if isinstance(payload, dict) and 'exception' in payload:
+            raise MoodleError(f"{wsfunction} : {payload.get('errorcode')} — {payload.get('message')}")
+        return payload
+
+    # ── Lecture ──
+
+    def site_info(self) -> dict:
+        return self.call('core_webservice_get_site_info')
+
+    def diagnose(self) -> dict:
+        """Vérifie qu'une plateforme est prête pour CEI, avec les pièges déjà
+        rencontrés sur Promo13 SEJA : fonctions absentes du service externe,
+        case « Peut télécharger des fichiers » non cochée."""
+        info = self.site_info()
+        available = {f['name'] for f in info.get('functions', [])}
+        missing = [f for f in REQUIRED_FUNCTIONS if f not in available]
+        missing_reco = [f for f in RECOMMENDED_FUNCTIONS if f not in available]
+        problems = []
+        if missing:
+            problems.append(f"Fonctions manquantes dans le service externe : {', '.join(missing)}")
+        if not info.get('downloadfiles'):
+            problems.append("Le service externe n'autorise pas le téléchargement de fichiers "
+                            "(cocher « Peut télécharger des fichiers » sur le service)")
+        return {
+            'ok': not problems,
+            'problems': problems,
+            'warnings': ([f"Fonctions utiles aux prochaines étapes absentes : {', '.join(missing_reco)}"]
+                         if missing_reco else []),
+            'site': {
+                'sitename': info.get('sitename'),
+                'release': info.get('release'),
+                'username': info.get('username'),
+                'functions_count': len(available),
+            },
+            'reminder': "Capacité mod/book:read requise sur le rôle du compte de service pour lire "
+                        "les chapitres de Livre (non vérifiable à distance).",
+        }
+
+    def list_courses(self) -> list[dict]:
+        """Tous les cours visibles, hors page d'accueil du site (id=1)."""
+        return [c for c in self.call('core_course_get_courses') if c.get('id') != 1]
+
+    def find_course_by_code(self, code: str) -> dict | None:
+        res = self.call('core_course_get_courses_by_field', {'field': 'shortname', 'value': code})
+        courses = res.get('courses', []) if isinstance(res, dict) else []
+        return courses[0] if courses else None
+
+    def course_materials(self, course_id: int) -> list[dict]:
+        """Fichiers exploitables par l'IA (PDF/DOCX/DOC/TXT, chapitres HTML).
+        core_course_get_contents est la seule source : la matière est surtout
+        dans des Dossiers et des Livres, et mod_folder_get_folders_by_courses
+        ne renvoie PAS le contenu des dossiers."""
+        materials = []
+        for section in self.call('core_course_get_contents', {'courseid': course_id}):
+            for module in section.get('modules', []) or []:
+                for item in module.get('contents', []) or []:
+                    if item.get('type') != 'file':
+                        continue
+                    filename = item.get('filename', '')
+                    ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
+                    if ext not in SUPPORTED_EXTENSIONS:
+                        continue
+                    materials.append({
+                        'fileurl': item.get('fileurl'),
+                        'filename': filename,
+                        'extension': ext,
+                        'filesize': item.get('filesize') or 0,
+                        'timemodified': item.get('timemodified'),
+                        'section': section.get('name'),
+                        'module': module.get('name'),
+                        'modname': module.get('modname'),
+                        'visible': bool(module.get('visible', 1)),
+                    })
+        return materials
+
+    def enrolled_students(self, course_id: int) -> list[dict]:
+        """Étudiants inscrits (actifs). Filtrer par capacité mod/assign:submit
+        plutôt que de demander le champ roles : ~11 s au lieu de ~18 s sur un
+        cours de ~3 400 inscrits (mesuré le 25/09)."""
+        users = self.call('core_enrol_get_enrolled_users', {
+            'courseid': course_id,
+            'options': [
+                {'name': 'onlyactive', 'value': 1},
+                {'name': 'withcapability', 'value': 'mod/assign:submit'},
+                {'name': 'userfields', 'value': 'id,email,fullname'},
+            ],
+        }, timeout=120)
+        return [
+            {'moodle_id': u.get('id'), 'email': (u.get('email') or '').strip().lower(),
+             'fullname': (u.get('fullname') or '').strip()}
+            for u in users
+        ]
+
+    # ── Téléchargement + extraction ──
+
+    def _download(self, fileurl: str, max_bytes: int) -> bytes:
+        # Le token n'est envoyé qu'à cette plateforme, jamais à un autre hôte.
+        if urlparse(fileurl).netloc != urlparse(self.base_url).netloc:
+            raise MoodleError('URL de fichier hors de la plateforme Moodle — refusée')
+        try:
+            with requests.get(fileurl, params={'token': self.token}, stream=True, timeout=120) as resp:
+                if resp.status_code != 200:
+                    raise MoodleError(f'Téléchargement refusé (HTTP {resp.status_code})')
+                chunks, size = [], 0
+                for chunk in resp.iter_content(64 * 1024):
+                    size += len(chunk)
+                    if size > max_bytes:
+                        raise MoodleError(f'Fichier trop volumineux (max {MAX_MATERIALS_MB} Mo cumulés)')
+                    chunks.append(chunk)
+        except requests.RequestException as e:
+            raise MoodleError(f'Téléchargement impossible : {e}') from e
+        raw = b''.join(chunks)
+        # Un token invalide ou un droit manquant renvoie une erreur JSON à la place du fichier
+        if raw[:1] == b'{' and b'"errorcode"' in raw[:500]:
+            raise MoodleError('Moodle a refusé le téléchargement (token ou droits)')
+        return raw
+
+    def extract_materials(self, course_id: int, fileurls: list[str]) -> list[dict]:
+        """Télécharge et extrait le texte des fichiers demandés. Seuls les
+        fichiers appartenant réellement à ce cours sont acceptés : la liste est
+        re-résolue côté serveur, jamais prise telle quelle du client. Un
+        fichier en échec est signalé via 'error' sans interrompre les autres ;
+        seul le dépassement du plafond cumulé interrompt tout."""
+        available = {m['fileurl']: m for m in self.course_materials(course_id)}
+        unknown = [u for u in fileurls if u not in available]
+        if unknown:
+            raise MoodleError(f"{len(unknown)} fichier(s) n'appartiennent pas à ce cours Moodle")
+
+        budget = MAX_MATERIALS_MB * 1024 * 1024
+        results = []
+        for url in dict.fromkeys(fileurls):
+            meta = available[url]
+            entry = {'filename': meta['filename'], 'module': meta['module'], 'text': '', 'error': None}
             try:
-                with os.fdopen(fd, 'wb') as fh:
-                    fh.write(raw)
-                text = extract_text_from_file(path) or ''
-            finally:
-                os.remove(path)
-        entry['text'] = text.strip()
-        if not entry['text']:
-            entry['error'] = 'Aucun texte extractible'
-        results.append(entry)
-    return results
+                raw = self._download(url, budget)
+            except MoodleError as e:
+                if 'trop volumineux' in str(e):
+                    raise
+                entry['error'] = str(e)
+                results.append(entry)
+                continue
+            budget -= len(raw)
+            if meta['extension'] in ('html', 'htm'):
+                text = _html_to_text(raw)
+            else:
+                fd, path = tempfile.mkstemp(suffix=f".{meta['extension']}")
+                try:
+                    with os.fdopen(fd, 'wb') as fh:
+                        fh.write(raw)
+                    text = extract_text_from_file(path) or ''
+                finally:
+                    os.remove(path)
+            entry['text'] = text.strip()
+            if not entry['text']:
+                entry['error'] = 'Aucun texte extractible'
+            results.append(entry)
+        return results
+
+
+# ── Plateformes enregistrées ─────────────────────────────────────────────────
+
+def client_for(instance) -> MoodleClient:
+    return MoodleClient(instance.base_url, decrypt_token(instance.token_encrypted))
+
+
+def record_check(session, instance, diagnosis: dict | None, error: str | None = None):
+    instance.last_check_at = datetime.now(timezone.utc)
+    instance.last_check_ok = bool(diagnosis and diagnosis['ok'])
+    instance.last_check_info = json.dumps(diagnosis if diagnosis else {'ok': False, 'problems': [error]})
+    session.commit()
+
+
+def _bootstrap_from_env(session):
+    """Reprend en base la plateforme déclarée dans le .env (config d'origine
+    de la préprod), pour que rien ne casse au passage en base. Seulement
+    quand la table est vide : une plateforme supprimée par l'admin ne
+    réapparaît pas d'elle-même."""
+    from models import MoodleInstance
+    url, token = os.getenv('MOODLE_BASE_URL'), os.getenv('MOODLE_WS_TOKEN')
+    if not url or not token or session.query(MoodleInstance).count():
+        return
+    url = normalize_base_url(url)
+    try:
+        name = MoodleClient(url, token).site_info().get('sitename') or url
+    except MoodleError:
+        name = url
+    session.add(MoodleInstance(name=name, base_url=url, token_encrypted=encrypt_token(token),
+                               token_last4=token[-4:]))
+    session.commit()
+
+
+def active_instances(session) -> list:
+    from models import MoodleInstance
+    _bootstrap_from_env(session)
+    return session.query(MoodleInstance).filter_by(is_active=True).order_by(MoodleInstance.id).all()
+
+
+def find_course_for_ec(session, ec_code: str):
+    """(plateforme, client, cours) du premier Moodle actif ayant un cours de
+    ce code, ou None. Les codes en double entre plateformes sont signalés
+    sur la page de correspondance."""
+    instances = active_instances(session)
+    errors = []
+    for instance in instances:
+        try:
+            client = client_for(instance)
+            course = client.find_course_by_code(ec_code)
+        except MoodleError as e:
+            errors.append(f'{instance.name} : {e}')
+            continue
+        if course:
+            return instance, client, course
+    # Une plateforme injoignable ne masque pas les autres ; on n'échoue que
+    # si aucune n'a pu répondre.
+    if instances and len(errors) == len(instances):
+        raise MoodleError(' ; '.join(errors))
+    return None

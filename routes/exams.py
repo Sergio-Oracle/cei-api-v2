@@ -4496,7 +4496,7 @@ def generate_exam_suggestions():
         # fichier unique ; on les concatène avant de les soumettre à l'IA.
         files = [f for f in request.files.getlist('course_files') if f and f.filename]
         # Source alternative/complémentaire : fichiers du cours Moodle de l'EC
-        # (Phase AA) — re-validés côté serveur dans moodle_sync.extract_materials.
+        # (Phase AA) — re-validés côté serveur dans MoodleClient.extract_materials.
         moodle_ec_id = request.form.get('moodle_ec_id', type=int)
         moodle_files = [u for u in request.form.getlist('moodle_files') if u]
         if not files and not (moodle_ec_id and moodle_files):
@@ -4571,10 +4571,11 @@ def generate_exam_suggestions():
                 return jsonify({'success': False, 'error': 'Synchronisation Moodle désactivée'}), 503
             try:
                 ec = resolve_ec_for_user(session, moodle_ec_id, user)
-                course = moodle_sync.find_course_by_code(ec.code)
-                if not course:
+                found = moodle_sync.find_course_for_ec(session, ec.code)
+                if not found:
                     raise LookupError(f'Aucun cours Moodle avec le code {ec.code}')
-                extracted = moodle_sync.extract_materials(course['id'], moodle_files)
+                _inst, client, course = found
+                extracted = client.extract_materials(course['id'], moodle_files)
             except PermissionError as e:
                 session.close()
                 return jsonify({'success': False, 'error': str(e)}), 403

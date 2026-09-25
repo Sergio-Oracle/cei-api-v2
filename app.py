@@ -119,6 +119,7 @@ from routes.restitution    import restitution_bp;     app.register_blueprint(res
 from routes.biometric      import biometric_bp;       app.register_blueprint(biometric_bp)
 from routes.api_clients    import api_clients_bp;     app.register_blueprint(api_clients_bp)
 from routes.oidc           import oidc_bp;            app.register_blueprint(oidc_bp)
+from routes.moodle         import moodle_bp;          app.register_blueprint(moodle_bp)
 from routes.external.student     import external_student_bp;     app.register_blueprint(external_student_bp)
 from routes.external.professor   import external_professor_bp;   app.register_blueprint(external_professor_bp)
 from routes.external.surveillant import external_surveillant_bp; app.register_blueprint(external_surveillant_bp)

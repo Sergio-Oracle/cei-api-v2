@@ -4494,11 +4494,14 @@ def generate_exam_suggestions():
         # Upload de plusieurs fichiers cours — un professeur dépose souvent son
         # support en plusieurs documents (poly + TD + annales) plutôt qu'un
         # fichier unique ; on les concatène avant de les soumettre à l'IA.
-        files = request.files.getlist('course_files')
-        if not files or all(f.filename == '' for f in files):
+        files = [f for f in request.files.getlist('course_files') if f and f.filename]
+        # Source alternative/complémentaire : fichiers du cours Moodle de l'EC
+        # (Phase AA) — re-validés côté serveur dans moodle_sync.extract_materials.
+        moodle_ec_id = request.form.get('moodle_ec_id', type=int)
+        moodle_files = [u for u in request.form.getlist('moodle_files') if u]
+        if not files and not (moodle_ec_id and moodle_files):
             session.close()
-            return jsonify({'success': False, 'error': 'Fichier cours requis'}), 400
-        files = [f for f in files if f.filename]
+            return jsonify({'success': False, 'error': 'Fichier cours requis (upload ou fichiers Moodle)'}), 400
 
         for f in files:
             if not allowed_file(f.filename):
@@ -4534,7 +4537,7 @@ def generate_exam_suggestions():
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         temp_filepaths = []
         content_parts = []
-        filename = secure_filename(files[0].filename)
+        filename = secure_filename(files[0].filename) if files else None
         try:
             for f in files:
                 fname = secure_filename(f.filename)
@@ -4558,6 +4561,32 @@ def generate_exam_suggestions():
                 if os.path.exists(p):
                     os.remove(p)
             raise
+
+        if moodle_ec_id and moodle_files:
+            from services import moodle_sync
+            from routes.moodle import resolve_ec_for_user
+            if not moodle_sync.is_enabled():
+                session.close()
+                return jsonify({'success': False, 'error': 'Synchronisation Moodle désactivée'}), 503
+            try:
+                ec = resolve_ec_for_user(session, moodle_ec_id, user)
+                course = moodle_sync.find_course_by_code(ec.code)
+                if not course:
+                    raise LookupError(f'Aucun cours Moodle avec le code {ec.code}')
+                extracted = moodle_sync.extract_materials(course['id'], moodle_files)
+            except PermissionError as e:
+                session.close()
+                return jsonify({'success': False, 'error': str(e)}), 403
+            except LookupError as e:
+                session.close()
+                return jsonify({'success': False, 'error': str(e)}), 404
+            except moodle_sync.MoodleError as e:
+                session.close()
+                return jsonify({'success': False, 'error': f'Moodle : {e}'}), 502
+            for item in extracted:
+                if item['text']:
+                    content_parts.append(f"--- Fichier Moodle: {item['filename']} ({item['module']}) ---\n{item['text']}")
+            filename = filename or f"moodle_{ec.code}"
 
         course_content = '\n\n'.join(content_parts)
 

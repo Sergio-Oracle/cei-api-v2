@@ -610,6 +610,7 @@ OPENAPI_SPEC = {
         {"name": "SSO / Fédération d'identité", "description": "Connexion via le Keycloak UNCHK (realm UNCHK) — authentifie l'utilisateur, le rôle CEI reste géré côté CEI"},
         {"name": "API Externe", "description": "Surface publique destinée à l'intégration ENT — nécessite un Bearer PASETO ET une clé X-CEI-API-Key. Documentée séparément par rôle sur /api/docs/<role> (professor/student/surveillant/superviseur), chacun avec ses propres identifiants Basic Auth."},
         {"name": "Administration",           "description": "Tableau de bord admin, utilisateurs, historique"},
+        {"name": "Moodle",                   "description": "Synchronisation avec Moodle UNCHK (webservices REST, compte de service cei-integration) — cours Moodle ↔ EC CEI par code, étudiants par email, matière de cours pour la génération IA"},
         {"name": "Académique",               "description": "Pôles, Niveaux, Formations, semestres, UE, EC, inscriptions, affectations — hiérarchie Pôle → Niveau → Formation → Semestre → UE → EC"},
         {"name": "Groupes Surveillants",      "description": "Groupes de surveillants rattachés à un ou plusieurs EC — affectation automatique à chaque nouvel examen créé pour ces EC"},
         {"name": "Import CSV",               "description": "Import en masse d'utilisateurs et de maquette pédagogique"},
@@ -3174,6 +3175,60 @@ OPENAPI_SPEC = {
         # INTELLIGENCE ARTIFICIELLE
         # ══════════════════════════════════════════════════════════════════════
 
+        "/api/admin/moodle/status": {"get": {
+            "tags": ["Moodle"], "summary": "Connectivité Moodle (admin)",
+            "description": "`enabled=false` si MOODLE_SYNC_ENABLED n'est pas activé. Sinon teste le token via `core_webservice_get_site_info`.",
+            "responses": {"200": {"description": "État de la connexion", "content": {"application/json": {"example": {
+                "enabled": True, "connected": True,
+                "site": {"sitename": "PROMO P13 SEJA DEV", "siteurl": "https://dev-promo13seja.unchk.sn", "release": "4.5.7+", "username": "cei-integration", "functions_count": 68}
+            }}}}, "403": {"$ref": "#/components/responses/Forbidden"}}
+        }},
+        "/api/admin/moodle/courses": {"get": {
+            "tags": ["Moodle"], "summary": "Correspondance cours Moodle ↔ EC CEI (admin)",
+            "description": "Un cours Moodle correspond à un EC CEI quand son `shortname` est égal au code de l'EC. Renvoie aussi les cours Moodle sans EC et les EC sans cours Moodle.",
+            "responses": {"200": {"description": "Correspondances", "content": {"application/json": {"example": {
+                "counts": {"moodle_courses": 118, "matched": 70, "moodle_courses_without_ec": 48, "ecs_without_moodle_course": 21},
+                "matched": [{"moodle_course_id": 93, "shortname": "AES1111", "fullname": "Droit constitutionnel...", "ec_id": 12, "ec_code": "AES1111", "ec_name": "...", "ue_id": 4, "ue_code": "AES111"}],
+                "moodle_courses_without_ec": [], "ecs_without_moodle_course": ["MIC2311"]
+            }}}}, "403": {"$ref": "#/components/responses/Forbidden"}, "502": {"description": "Erreur Moodle"}, "503": {"description": "Synchronisation désactivée"}}
+        }},
+        "/api/admin/moodle/sync/enrollments": {"post": {
+            "tags": ["Moodle"], "summary": "Synchroniser les inscriptions d'UN cours Moodle vers CEI (admin)",
+            "description": (
+                "Un cours par appel (~11 s pour ~3 400 inscrits) — boucler sur la liste de `/api/admin/moodle/courses`. "
+                "Les étudiants Moodle sont retrouvés dans CEI par email ; l'inscription est créée au niveau de l'UE de l'EC. "
+                "**Uniquement additif** : ne crée jamais de compte, ne retire jamais d'inscription. "
+                "`dry_run` vaut `true` par défaut — rien n'est écrit tant qu'il n'est pas explicitement `false`."
+            ),
+            "requestBody": {"required": True, "content": {"application/json": {"schema": {
+                "type": "object", "required": ["ec_code"],
+                "properties": {"ec_code": {"type": "string", "example": "AES1111"}, "dry_run": {"type": "boolean", "default": True}}
+            }}}},
+            "responses": {"200": {"description": "Bilan du cours", "content": {"application/json": {"example": {
+                "dry_run": True, "ec_code": "AES1111", "ue_code": "AES111", "moodle_course_id": 93,
+                "moodle_students": 3346, "matched_in_cei": 3220, "already_enrolled": 3100, "to_create": 120,
+                "unmatched_count": 126, "unmatched_sample": ["etudiant@unchk.edu.sn"]
+            }}}}, "400": {"description": "ec_code manquant"}, "403": {"$ref": "#/components/responses/Forbidden"},
+                "404": {"description": "EC ou cours Moodle introuvable"}, "502": {"description": "Erreur Moodle"}}
+        }},
+        "/api/moodle/ecs": {"get": {
+            "tags": ["Moodle"], "summary": "Mes EC disposant d'un cours Moodle (professeur/admin)",
+            "description": "Professeur : ses EC affectés (ECAssignment) qui ont un cours Moodle du même code. Admin : tous les EC concernés. Ne dépend pas d'un compte Moodle du professeur.",
+            "responses": {"200": {"description": "EC", "content": {"application/json": {"example": {
+                "ecs": [{"ec_id": 12, "ec_code": "AES1111", "ec_name": "...", "moodle_course_id": 93, "moodle_course_name": "Droit constitutionnel..."}]
+            }}}}, "403": {"$ref": "#/components/responses/Forbidden"}}
+        }},
+        "/api/moodle/ecs/{ec_id}/materials": {"get": {
+            "tags": ["Moodle"], "summary": "Fichiers de cours Moodle d'un EC (professeur affecté/admin)",
+            "description": "Fichiers exploitables par l'IA (PDF, DOCX, DOC, TXT, chapitres HTML des Livres) du cours Moodle de l'EC, issus de `core_course_get_contents`. Les `fileurl` renvoyées sont celles à passer dans `moodle_files` de `/api/ai/generate-exam-suggestions`.",
+            "parameters": [{"name": "ec_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+            "responses": {"200": {"description": "Fichiers", "content": {"application/json": {"example": {
+                "ec_id": 12, "ec_code": "AES1111", "moodle_course_id": 93, "moodle_course_name": "...", "max_total_mb": 50,
+                "materials": [{"fileurl": "https://.../webservice/pluginfile.php/724/mod_resource/content/0/cours.pdf", "filename": "cours.pdf",
+                               "extension": "pdf", "filesize": 204800, "section": "Séquence 1", "module": "Support de cours", "modname": "folder", "visible": True}]
+            }}}}, "403": {"$ref": "#/components/responses/Forbidden"}, "404": {"description": "EC ou cours Moodle introuvable"}}
+        }},
+
         "/api/ai/generate-exam-suggestions": {"post": {
             "tags": ["Intelligence Artificielle"],
             "summary": "Générer des suggestions d'examens depuis un ou plusieurs cours",
@@ -3185,12 +3240,18 @@ OPENAPI_SPEC = {
                 "est transmis pour la génération complète. "
                 "`difficulty` et `duration` sont des contraintes de l'enseignant, jamais laissées à la discrétion de "
                 "l'IA — les 3 suggestions renvoyées ont TOUJOURS exactement ces valeurs (écrasées côté serveur même "
-                "si le modèle en propose d'autres)."
+                "si le modèle en propose d'autres).\n\n"
+                "**Source Moodle (alternative ou complément à l'upload)** : `moodle_ec_id` + `moodle_files` (champ répété, "
+                "URLs issues de `GET /api/moodle/ecs/{ec_id}/materials`). Le serveur vérifie que l'EC appartient au "
+                "professeur, re-résout la liste des fichiers du cours Moodle et refuse toute URL qui n'en fait pas partie. "
+                "Au moins une source requise : `course_files` OU `moodle_ec_id`+`moodle_files`."
             ),
             "requestBody": {"required": True, "content": {"multipart/form-data": {"schema": {
-                "type": "object", "required": ["course_files"],
+                "type": "object",
                 "properties": {
                     "course_files":  {"type": "array", "items": {"type": "string", "format": "binary"}, "description": "Un ou plusieurs fichiers de cours PDF/DOCX/TXT (champ répété), 50 Mo cumulés max"},
+                    "moodle_ec_id":  {"type": "integer", "description": "EC dont le cours Moodle (même code) fournit la matière"},
+                    "moodle_files":  {"type": "array", "items": {"type": "string"}, "description": "fileurl Moodle à extraire (champ répété)"},
                     "difficulty":    {"type": "string", "enum": ["Facile","Moyen","Difficile"], "default": "Moyen"},
                     "student_level": {"type": "string", "example": "Licence 3"},
                     "exam_type":     {"type": "string", "example": "QCM"},

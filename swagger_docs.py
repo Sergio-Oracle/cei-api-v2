@@ -109,14 +109,16 @@ def _filter_spec_for_role(role: str) -> dict:
     filtered = copy.deepcopy(OPENAPI_SPEC)
     prefix = f'/api/external/{role}/'
     filtered['paths'] = {p: m for p, m in OPENAPI_SPEC['paths'].items() if p.startswith(prefix)}
-    # L'échange de jeton (obtenir un Bearer CEI à partir d'un access_token
-    # Keycloak) est le préalable indispensable pour appeler les routes
-    # ci-dessus depuis un backend ENT — inclus dans CHAQUE doc par rôle,
-    # pas seulement la doc admin, sinon un dev de ce module n'aurait aucun
-    # moyen d'obtenir son jeton en ne lisant que sa propre documentation.
-    exchange_path = '/api/auth/oidc/exchange'
-    if exchange_path in OPENAPI_SPEC['paths']:
-        filtered['paths'][exchange_path] = OPENAPI_SPEC['paths'][exchange_path]
+    # Deux routes d'obtention de jeton, indispensables pour appeler les
+    # routes ci-dessus mais absentes du préfixe /api/external/<rôle>/ —
+    # sans elles, un dev lisant UNIQUEMENT sa propre doc par rôle n'aurait
+    # aucun moyen visible d'obtenir un Bearer token (ni pour se connecter à
+    # la main via Swagger avec un compte de test, ni pour l'échange
+    # Keycloak côté backend ENT). Incluses dans CHAQUE doc par rôle, pas
+    # seulement la doc admin.
+    for extra_path in ('/api/auth/login', '/api/auth/oidc/exchange'):
+        if extra_path in OPENAPI_SPEC['paths']:
+            filtered['paths'][extra_path] = OPENAPI_SPEC['paths'][extra_path]
 
     used_tags = {
         tag

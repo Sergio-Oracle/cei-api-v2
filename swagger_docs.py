@@ -655,7 +655,7 @@ OPENAPI_SPEC = {
 
         "/api/auth/login": {"post": {
             "tags": ["Authentification"], "summary": "Connexion — obtenir un token PASETO v4",
-            "description": "Retourne un **access token PASETO v4.public** (15 min, à stocker en mémoire) et pose un cookie httpOnly `cei_refresh` (7 jours) pour le rafraîchissement. **Session unique (étudiants uniquement, 24/08 puis 29/08)** : si le compte a déjà une session active sur un autre appareil, la connexion est refusée avec `409` — renvoyer `force: true` pour déconnecter l'autre appareil et se connecter quand même. Depuis le 29/08, `force: true` révoque réellement l'ancien appareil dès sa PROCHAINE requête (pas seulement à sa prochaine reconnexion) : l'access token porte un `sid` interne revérifié à chaque appel `@paseto_required`, tout endpoint appelé par l'ancien appareil renvoie alors `401 {session_superseded: true}`.",
+            "description": "Retourne un **access token PASETO v4.public** (15 min, à stocker en mémoire) et pose un cookie httpOnly `cei_refresh` (7 jours) pour le rafraîchissement. **Session unique (étudiants uniquement, 24/08 puis 29/08)** : si le compte a déjà une session active sur un autre appareil, la connexion est refusée avec `409` — renvoyer `force: true` pour déconnecter l'autre appareil et se connecter quand même. Depuis le 29/08, `force: true` révoque réellement l'ancien appareil dès sa PROCHAINE requête (pas seulement à sa prochaine reconnexion) : l'access token porte un `sid` interne revérifié à chaque appel `@paseto_required`, tout endpoint appelé par l'ancien appareil renvoie alors `401 {session_superseded: true}`. **Rôle Moodle (25/09)** : un compte ÉTUDIANT qui enseigne dans un cours Moodle devient professeur à la connexion (le rôle Moodle prime) ; jamais l'inverse — professeur, admin, surveillant et superviseur gardent leur rôle.",
             "security": [],
             "requestBody": {"required": True, "content": {"application/json": {"schema": {
                 "type": "object", "required": ["email","password"],
@@ -764,7 +764,7 @@ OPENAPI_SPEC = {
                 "Échange le code contre des tokens, valide le id_token (signature JWKS + nonce), puis cherche le compte CEI par email. "
                 "**Compte inconnu de CEI mais connu de Moodle (phase 1, 25/09)** : compte créé automatiquement — enseignant dans au moins "
                 "un cours Moodle → professeur affecté aux EC de ses cours ; sinon étudiant inscrit aux UE de ses cours. Jamais de rôle "
-                "admin/surveillant/superviseur automatique ; pas de mot de passe CEI (connexion avec le mot de passe UNCHK/Moodle via ce SSO). "
+                "admin/surveillant/superviseur automatique ; pas de mot de passe CEI (connexion avec le mot de passe UNCHK/Moodle via ce SSO). Formation d'un nouvel étudiant : champ « Département » de son profil Moodle (AES → …-AES). Compte ÉTUDIANT existant qui enseigne dans Moodle → devient professeur (jamais l'inverse). "
                 "Redirige vers /dashboard (succès), /login?sso_conflict=1&retry_token=...&device_label=... (session étudiante déjà active "
                 "ailleurs) ou /login?sso_error=... avec : `not_in_moodle` (inconnu de CEI et de tout Moodle), `no_moodle_course` (aucun cours "
                 "Moodle, rôle indéterminable), `moodle_suspended`, `moodle_unavailable`, `unknown_account` (compte désactivé, ou "

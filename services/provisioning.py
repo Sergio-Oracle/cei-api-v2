@@ -17,10 +17,18 @@ Règles décidées avec l'utilisateur (25/09) :
   UNCHK/Moodle via le SSO (tous les comptes Moodle réels sont en auth oidc).
   password_hash étant NOT NULL, il reçoit une valeur aléatoire jamais
   communiquée ; « Mot de passe oublié » reste possible en secours ;
-- un compte existant n'est jamais recréé ni modifié ici.
+- compte existant : jamais recréé. Seule exception, décidée par
+  l'utilisateur le 25/09 : un compte ÉTUDIANT qui enseigne dans Moodle
+  devient PROFESSEUR (le rôle Moodle prime). Jamais l'inverse : un
+  professeur, admin, surveillant ou superviseur inscrit comme étudiant dans
+  un cours Moodle garde son rôle — une rétrogradation automatique lui ferait
+  perdre ses sujets, examens et droits ;
+- formation d'un nouvel étudiant : champ « Département » de son profil
+  Moodle (AES → formation …-AES), pas une déduction à partir de ses UE.
 """
 import secrets
 
+from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 
 from extensions import bcrypt
@@ -62,6 +70,7 @@ def _find_in_moodle(session, email):
         return None, MOODLE_SUSPENDED if suspended else NOT_IN_MOODLE
     merged = {
         'fullname': next((p['fullname'] for p in found if p['fullname']), email),
+        'department': next((p['department'] for p in found if p['department']), ''),
         'course_codes': set().union(*(p['course_codes'] for p in found)),
         'teaching_codes': set().union(*(p['teaching_codes'] for p in found)),
     }
@@ -70,13 +79,64 @@ def _find_in_moodle(session, email):
     return merged, None
 
 
+def formation_for_student(session, department, ue_ids):
+    """Formation CEI d'un étudiant d'après son département Moodle : formation
+    dont le code se termine par ce département (AES → L1-AES). Si le même
+    département existe à plusieurs niveaux (L1-AES, L2-AES), celle où
+    l'étudiant a ses UE. Département sans formation CEI (SPO, SEG…) ou
+    ambiguïté non résolue → None, jamais deviné."""
+    department = (department or '').strip().upper()
+    if not department:
+        return None
+    candidates = [f for f in session.query(Formation).all()
+                  if f.code.upper().split('-', 1)[-1] == department]
+    if len(candidates) > 1 and ue_ids:
+        counts = dict(session.query(Semester.formation_id, func.count(UE.id))
+                      .join(UE, UE.semester_id == Semester.id)
+                      .filter(UE.id.in_(ue_ids), Semester.formation_id.in_([c.id for c in candidates]))
+                      .group_by(Semester.formation_id).all())
+        if counts:
+            best = max(counts, key=counts.get)
+            candidates = [c for c in candidates if c.id == best]
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def upgrade_if_moodle_teacher(session, user):
+    """Compte ÉTUDIANT qui enseigne dans Moodle → PROFESSEUR, affecté aux EC
+    de ses cours. Jamais dans l'autre sens. Utilise la liste des enseignants
+    en cache (aucun appel Moodle pendant la connexion) et ne bloque jamais
+    une connexion : en cas de problème, le compte reste tel quel."""
+    if not user or user.role != UserRole.STUDENT or not user.email:
+        return False
+    try:
+        codes = moodle_sync.teacher_map().get(user.email.strip().lower())
+        if not codes:
+            return False
+        user.role = UserRole.PROFESSOR
+        already = {ec_id for (ec_id,) in session.query(ECAssignment.ec_id).filter_by(professor_id=user.id)}
+        ecs = session.query(EC).filter(EC.code.in_(codes)).all()
+        for ec in ecs:
+            if ec.id not in already:
+                session.add(ECAssignment(ec_id=ec.id, professor_id=user.id))
+        session.commit()
+        print(f"[provisioning] {user.email} : étudiant → professeur (enseigne dans Moodle : "
+              f"{', '.join(codes)} ; {len(ecs)} EC CEI affecté(s))")
+        return True
+    except Exception as e:
+        session.rollback()
+        print(f"[provisioning] vérification du rôle Moodle échouée pour {user.email} : {e}")
+        return False
+
+
 def provision_from_moodle(session, email):
     """Crée le compte CEI d'une personne connue de Moodle.
     Renvoie (user, None) si le compte existe ou vient d'être créé, sinon
-    (None, raison). Ne modifie jamais un compte existant."""
+    (None, raison). Un compte existant n'est modifié que dans un cas :
+    étudiant qui enseigne dans Moodle (voir upgrade_if_moodle_teacher)."""
     email = (email or '').strip().lower()
     existing = session.query(User).filter_by(email=email).first()
     if existing:
+        upgrade_if_moodle_teacher(session, existing)
         return existing, None
     if not moodle_sync.is_enabled():
         return None, UNKNOWN_ACCOUNT
@@ -115,16 +175,13 @@ def provision_from_moodle(session, email):
         ue_ids = sorted({ec.ue_id for ec in ecs})
         for ue_id in ue_ids:
             session.add(StudentUEEnrollment(student_id=user.id, ue_id=ue_id))
-        # Formation : seulement si toutes ses UE appartiennent à une seule formation
-        formation_ids = {fid for (fid,) in session.query(Semester.formation_id)
-                         .join(UE, UE.semester_id == Semester.id)
-                         .filter(UE.id.in_(ue_ids)).distinct().all()} if ue_ids else set()
-        if len(formation_ids) == 1:
-            formation = session.query(Formation).filter_by(id=formation_ids.pop()).first()
+        formation = formation_for_student(session, person['department'], ue_ids)
+        if formation:
             user.formation_id = formation.id
             if formation.niveau:
                 user.niveau = formation.niveau.code[:5]
-        detail = f"{len(ue_ids)} UE inscrite(s)"
+        detail = (f"{len(ue_ids)} UE inscrite(s), formation "
+                  f"{formation.code if formation else 'non déterminée (département ' + (person['department'] or 'vide') + ')'}")
 
     session.commit()
     print(f"[provisioning] compte créé depuis Moodle : {email} ({user.role.value}, {detail})")

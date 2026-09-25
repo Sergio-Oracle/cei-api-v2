@@ -193,6 +193,12 @@ def login():
             session.close()
             return jsonify({'error': "Votre compte a été désactivé par l'administrateur. Contactez l'administration de la plateforme pour le réactiver."}), 403
 
+        # Étudiant CEI qui enseigne dans Moodle → professeur (le rôle Moodle
+        # prime, jamais l'inverse) — même règle qu'à la connexion SSO, lue
+        # dans la liste en cache : aucun appel Moodle pendant la connexion.
+        from services.provisioning import upgrade_if_moodle_teacher
+        upgrade_if_moodle_teacher(session, user)
+
         # Session unique — étudiants uniquement (voir _session_key ci-dessus).
         # Le personnel (professeur/surveillant/superviseur/admin) est
         # légitimement connecté sur plusieurs appareils sans risque de fraude

@@ -217,9 +217,29 @@ class MoodleClient:
             'moodle_id': user['id'],
             'fullname': (user.get('fullname') or '').strip(),
             'suspended': bool(user.get('suspended')),
+            # Formation de l'étudiant : champ « Département » du profil Moodle
+            # (AES, SJ, DIL, SPO, SEG… — vérifié sur 8 667 étudiants le 25/09)
+            'department': (user.get('department') or '').strip().upper(),
             'course_codes': {c['shortname'] for c in courses},
             'teaching_codes': teaching,
         }
+
+    def teachers_by_email(self) -> dict:
+        """{email: [codes des cours enseignés]} pour TOUS les cours, en un seul
+        appel (~4 s pour 118 cours et 229 enseignants, mesuré le 25/09)."""
+        courses = self.list_courses()
+        if not courses:
+            return {}
+        code = {c['id']: c['shortname'] for c in courses}
+        res = self.call('core_enrol_get_enrolled_users_with_capability', {'coursecapabilities': [
+            {'courseid': c['id'], 'capabilities': ['mod/assign:grade']} for c in courses]}, timeout=180)
+        teachers = {}
+        for r in res:
+            for u in r.get('users', []):
+                email = (u.get('email') or '').strip().lower()
+                if email:
+                    teachers.setdefault(email, set()).add(code[r['courseid']])
+        return {e: sorted(c) for e, c in teachers.items()}
 
     def list_courses(self) -> list[dict]:
         """Tous les cours visibles, hors page d'accueil du site (id=1)."""
@@ -378,6 +398,61 @@ def active_instances(session) -> list:
     from models import MoodleInstance
     _bootstrap_from_env(session)
     return session.query(MoodleInstance).filter_by(is_active=True).order_by(MoodleInstance.id).all()
+
+
+# ── Liste des enseignants Moodle, en cache ───────────────────────────────────
+# Sert à reconnaître un compte CEI étudiant qui enseigne dans Moodle, à
+# CHAQUE connexion. Interroger Moodle par personne ferait des milliers
+# d'appels à l'ouverture d'un examen : la liste complète est obtenue en un
+# appel par plateforme, gardée 7 jours, rafraîchie en arrière-plan toutes les
+# 6 heures. Une connexion ne l'attend jamais : sans liste disponible, elle
+# se fait simplement sans cette vérification.
+
+_TEACHERS_KEY = 'cei:moodle:teachers'
+_TEACHERS_FRESH_KEY = 'cei:moodle:teachers:fresh'
+_TEACHERS_LOCK_KEY = 'cei:moodle:teachers:lock'
+
+
+def refresh_teacher_map(session) -> dict | None:
+    from cache import cache_set
+    merged, ok = {}, False
+    for inst in active_instances(session):
+        try:
+            for email, codes in client_for(inst).teachers_by_email().items():
+                merged.setdefault(email, set()).update(codes)
+            ok = True
+        except MoodleError as e:
+            print(f'[moodle_sync] liste des enseignants indisponible sur {inst.name} : {e}')
+    if not ok:
+        return None  # on garde l'ancienne liste plutôt que de l'effacer
+    data = {e: sorted(c) for e, c in merged.items()}
+    cache_set(_TEACHERS_KEY, data, ttl=7 * 86400)
+    cache_set(_TEACHERS_FRESH_KEY, 1, ttl=6 * 3600)
+    return data
+
+
+def _refresh_teacher_map_background():
+    from models import get_session
+    session = get_session()
+    try:
+        refresh_teacher_map(session)
+    except Exception as e:
+        print(f'[moodle_sync] rafraîchissement de la liste des enseignants échoué : {e}')
+    finally:
+        session.close()
+
+
+def teacher_map() -> dict:
+    """{email: [codes]} — ne bloque jamais : renvoie la liste en cache (même
+    un peu ancienne) et lance un rafraîchissement en arrière-plan si besoin."""
+    import threading
+    from cache import cache_get, cache_set_nx
+    if not is_enabled():
+        return {}
+    data = cache_get(_TEACHERS_KEY)
+    if cache_get(_TEACHERS_FRESH_KEY) is None and cache_set_nx(_TEACHERS_LOCK_KEY, 300):
+        threading.Thread(target=_refresh_teacher_map_background, daemon=True).start()
+    return data or {}
 
 
 def find_course_for_ec(session, ec_code: str):

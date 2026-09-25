@@ -318,6 +318,11 @@ class User(Base):
     notifications_last_read = Column(DateTime, nullable=True)
 
     formation_id = Column(Integer, ForeignKey('formations.id'), nullable=True)  # formation principale de l'étudiant
+    # Origine du compte : NULL = créé dans CEI (admin, import) ; 'moodle_sso' =
+    # créé automatiquement à la première connexion UNCHK d'une personne connue
+    # de Moodle. Ces comptes n'ont pas de mot de passe CEI utilisable : ils se
+    # connectent avec leur mot de passe UNCHK/Moodle via le SSO.
+    created_via = Column(String(30), nullable=True)
 
     formation = relationship('Formation')
     created_subjects = relationship('Subject', foreign_keys='Subject.creator_id', back_populates='creator')
@@ -1500,6 +1505,9 @@ def init_db():
         # formation principale de l'étudiant
         ("SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='formation_id'",
          "ALTER TABLE users ADD COLUMN formation_id INTEGER REFERENCES formations(id) ON DELETE SET NULL"),
+        # Phase 1 (25/09) — origine des comptes créés automatiquement depuis Moodle
+        ("SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='created_via'",
+         "ALTER TABLE users ADD COLUMN created_via VARCHAR(30)"),
     ]
     with engine.connect() as _conn:
         # Timeout court pour éviter le blocage au démarrage si l'app tourne déjà

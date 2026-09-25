@@ -39,12 +39,14 @@ REQUIRED_FUNCTIONS = [
     'core_course_get_courses_by_field',
     'core_course_get_contents',
     'core_enrol_get_enrolled_users',
-]
-# Fonctions des phases suivantes (comptes, notes, calendrier) : signalées
-# sans bloquer, pour que la plateforme soit prête le moment venu.
-RECOMMENDED_FUNCTIONS = [
+    # Création automatique des comptes à la connexion SSO (phase 1)
     'core_user_get_users_by_field',
     'core_enrol_get_users_courses',
+    'core_enrol_get_enrolled_users_with_capability',
+]
+# Fonctions des phases suivantes (notes, calendrier) : signalées sans
+# bloquer, pour que la plateforme soit prête le moment venu.
+RECOMMENDED_FUNCTIONS = [
     'core_grades_update_grades',
     'core_grades_create_gradecategories',
     'core_calendar_create_calendar_events',
@@ -188,6 +190,35 @@ class MoodleClient:
             },
             'reminder': "Capacité mod/book:read requise sur le rôle du compte de service pour lire "
                         "les chapitres de Livre (non vérifiable à distance).",
+        }
+
+    def find_person(self, email: str) -> dict | None:
+        """Personne Moodle et ses cours, avec ceux qu'elle enseigne.
+        Recherche par identifiant de connexion (égal à l'email UNCHK) : la
+        recherche par champ email ne renvoie rien sur ces plateformes (vérifié
+        le 25/09). Le rôle par cours vient de la capacité mod/assign:grade
+        (enseignant, éditeur ou non), en un seul appel pour tous les cours —
+        core_user_get_course_user_profiles ne donne qu'un profil par personne,
+        pas un rôle par cours."""
+        email = email.strip().lower()
+        users = self.call('core_user_get_users_by_field', {'field': 'username', 'values': [email]}) \
+            or self.call('core_user_get_users_by_field', {'field': 'email', 'values': [email]})
+        if not users:
+            return None
+        user = users[0]
+        courses = [c for c in self.call('core_enrol_get_users_courses', {'userid': user['id']}) if c.get('id') != 1]
+        teaching = set()
+        if courses:
+            res = self.call('core_enrol_get_enrolled_users_with_capability', {'coursecapabilities': [
+                {'courseid': c['id'], 'capabilities': ['mod/assign:grade']} for c in courses]})
+            teaching_ids = {r['courseid'] for r in res for u in r.get('users', []) if u.get('id') == user['id']}
+            teaching = {c['shortname'] for c in courses if c['id'] in teaching_ids}
+        return {
+            'moodle_id': user['id'],
+            'fullname': (user.get('fullname') or '').strip(),
+            'suspended': bool(user.get('suspended')),
+            'course_codes': {c['shortname'] for c in courses},
+            'teaching_codes': teaching,
         }
 
     def list_courses(self) -> list[dict]:

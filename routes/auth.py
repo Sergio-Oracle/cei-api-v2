@@ -177,6 +177,16 @@ def login():
 
         user = session.query(User).filter_by(email=email).first()
         if not user or not bcrypt.check_password_hash(user.password_hash, password):
+            # Compte créé depuis Moodle : pas de mot de passe CEI, la personne
+            # a sans doute tapé son mot de passe UNCHK ici au lieu du bouton SSO.
+            if user and user.created_via == 'moodle_sso':
+                session.close()
+                return jsonify({
+                    'error': "Ce compte se connecte avec « Se connecter avec UNCHK », avec votre mot de passe "
+                             "UNCHK habituel (le même que sur Moodle). Vous pouvez aussi définir un mot de passe "
+                             "CEI via « Mot de passe oublié ».",
+                    'use_sso': True,
+                }), 401
             session.close()
             return jsonify({'error': 'Email ou mot de passe incorrect'}), 401
         if not user.is_active:

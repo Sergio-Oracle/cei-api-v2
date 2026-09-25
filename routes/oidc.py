@@ -9,9 +9,11 @@ Routes :
                                       jeton PASETO CEI, pour un appel serveur-
                                       à-serveur à l'API externe (voir plus bas)
 
-Le rôle CEI est TOUJOURS déterminé par le compte CEI existant (jamais par
-Keycloak) — un compte email inconnu de CEI se voit refuser l'accès plutôt
-que d'être auto-créé avec un rôle deviné.
+Le rôle n'est jamais déduit de Keycloak (qui ne sert qu'à prouver
+l'identité). Compte CEI existant → son rôle CEI. Personne inconnue de CEI
+mais connue de Moodle → compte créé automatiquement, rôle déduit de Moodle
+(services/provisioning.py, phase 1 du 25/09 — remplace le refus d'origine).
+Inconnue de CEI et de tout Moodle → refus.
 """
 import os
 import secrets
@@ -28,6 +30,17 @@ from auth_paseto import (
 )
 from api_key_auth import api_key_required, api_client_allows_role
 from models import get_session, User, UserRole, TokenBlocklist
+from services.provisioning import provision_from_moodle
+
+# Messages de l'échange ENT (JSON) ; la connexion navigateur renvoie le même
+# code dans ?sso_error= et la page de connexion affiche son propre texte.
+_REFUSAL_MESSAGES = {
+    'unknown_account': 'Aucun compte CEI pour cet utilisateur',
+    'not_in_moodle': "Inconnu de CEI et d'aucune plateforme Moodle UNCHK — création manuelle par l'administration CEI",
+    'moodle_suspended': 'Compte suspendu sur Moodle',
+    'no_moodle_course': "Inscrit sur Moodle mais dans aucun cours : rôle impossible à déterminer",
+    'moodle_unavailable': 'Moodle injoignable : compte impossible à créer pour le moment, réessayer plus tard',
+}
 from cache import cache_get, cache_set, cache_delete
 
 oidc_bp = Blueprint('oidc', __name__)
@@ -120,8 +133,12 @@ def oidc_callback():
 
     session = get_session()
     try:
-        user = session.query(User).filter_by(email=email).first()
-        if not user or not user.is_active:
+        # Personne inconnue de CEI mais connue de Moodle → compte créé ici
+        # (services/provisioning.py). Inconnue partout → refus, comme avant.
+        user, reason = provision_from_moodle(session, email)
+        if not user:
+            return redirect(f"{_app_url()}/login?sso_error={reason}")
+        if not user.is_active:
             return redirect(f"{_app_url()}/login?sso_error=unknown_account")
 
         # Conflit de session — étudiants uniquement, même logique que /api/auth/login.
@@ -210,8 +227,11 @@ def oidc_exchange():
 
     session = get_session()
     try:
-        user = session.query(User).filter_by(email=email).first()
-        if not user or not user.is_active:
+        user, reason = provision_from_moodle(session, email)
+        if not user:
+            return jsonify({'error': _REFUSAL_MESSAGES.get(reason, 'Aucun compte CEI pour cet utilisateur'),
+                            'reason': reason}), 404
+        if not user.is_active:
             return jsonify({'error': 'Aucun compte CEI actif pour cet utilisateur'}), 404
 
         role_value = user.role.value

@@ -674,7 +674,7 @@ OPENAPI_SPEC = {
                         "user":         {"$ref": "#/components/schemas/User"}
                     }
                 }}}},
-                "401": {"description": "Identifiants incorrects"},
+                "401": {"description": "Identifiants incorrects. Pour un compte créé automatiquement depuis Moodle (sans mot de passe CEI), la réponse contient `use_sso: true` et invite à utiliser « Se connecter avec UNCHK »."},
                 "403": {"description": "Compte désactivé"},
                 "409": {"description": "Session déjà active sur un autre appareil (étudiants) — renvoyer avec force: true pour la déconnecter", "content": {"application/json": {"schema": {
                     "type": "object",
@@ -760,7 +760,16 @@ OPENAPI_SPEC = {
         }},
         "/api/auth/oidc/callback": {"get": {
             "tags": ["SSO / Fédération d'identité"], "summary": "Retour Keycloak — ouvre une session CEI",
-            "description": "Échange le code contre des tokens, valide le id_token (signature JWKS + nonce), cherche un compte CEI existant par email (jamais d'auto-création — le rôle CEI reste géré par l'admin CEI). Redirige vers /dashboard (succès), /login?sso_error=... (échec) ou /login?sso_conflict=1&retry_token=...&device_label=... (session étudiante déjà active ailleurs).",
+            "description": (
+                "Échange le code contre des tokens, valide le id_token (signature JWKS + nonce), puis cherche le compte CEI par email. "
+                "**Compte inconnu de CEI mais connu de Moodle (phase 1, 25/09)** : compte créé automatiquement — enseignant dans au moins "
+                "un cours Moodle → professeur affecté aux EC de ses cours ; sinon étudiant inscrit aux UE de ses cours. Jamais de rôle "
+                "admin/surveillant/superviseur automatique ; pas de mot de passe CEI (connexion avec le mot de passe UNCHK/Moodle via ce SSO). "
+                "Redirige vers /dashboard (succès), /login?sso_conflict=1&retry_token=...&device_label=... (session étudiante déjà active "
+                "ailleurs) ou /login?sso_error=... avec : `not_in_moodle` (inconnu de CEI et de tout Moodle), `no_moodle_course` (aucun cours "
+                "Moodle, rôle indéterminable), `moodle_suspended`, `moodle_unavailable`, `unknown_account` (compte désactivé, ou "
+                "synchronisation Moodle désactivée), plus les erreurs techniques du flux OIDC."
+            ),
             "security": [],
             "parameters": [
                 {"name": "code", "in": "query", "schema": {"type": "string"}},
@@ -792,7 +801,8 @@ OPENAPI_SPEC = {
                 "l'API externe CEI (`/api/external/<rôle>/*`) pour le compte de cet utilisateur, "
                 "sans jamais lui redemander ses identifiants CEI. CEI valide l'access_token auprès "
                 "de Keycloak (endpoint `userinfo` standard OIDC), retrouve le compte CEI par email "
-                "(jamais de création automatique), et retourne un jeton PASETO `Bearer` de courte "
+                "— ou le crée automatiquement si la personne est connue de Moodle (mêmes règles que "
+                "`/api/auth/oidc/callback`) — et retourne un jeton PASETO `Bearer` de courte "
                 "durée (1h) pour cet utilisateur — à utiliser ensuite avec `Authorization: Bearer "
                 "<token>` + `X-CEI-API-Key` sur les routes `/api/external/*`."
             ),
@@ -817,7 +827,7 @@ OPENAPI_SPEC = {
                 "400": {"description": "Champ manquant ou email absent du jeton Keycloak"},
                 "401": {"description": "Clé API manquante/invalide, ou jeton Keycloak invalide/expiré"},
                 "403": {"description": "Cette clé API n'est pas autorisée pour le module correspondant au rôle CEI de cet utilisateur"},
-                "404": {"description": "Aucun compte CEI actif pour cet email"}
+                "404": {"description": "Aucun compte CEI actif et création impossible — `reason` : not_in_moodle, no_moodle_course, moodle_suspended, moodle_unavailable ou unknown_account"}
             }
         }},
         # ── Étudiant ─────────────────────────────────────────────────────────

@@ -215,11 +215,23 @@ def extract_materials(course_id: int, fileurls: list[str]) -> list[dict]:
     if unknown:
         raise MoodleError(f"{len(unknown)} fichier(s) n'appartiennent pas à ce cours Moodle")
 
+    # Un fichier en échec (ex. chapitre de Livre refusé par Moodle) est
+    # signalé via 'error' sans interrompre les autres : l'appelant décide
+    # s'il reste assez de matière. Seul le dépassement du plafond cumulé
+    # interrompt tout, pour ne jamais dépasser 50 Mo au total.
     budget = MAX_MATERIALS_MB * 1024 * 1024
     results = []
     for url in dict.fromkeys(fileurls):
         meta = available[url]
-        raw = _download(url, budget)
+        entry = {'filename': meta['filename'], 'module': meta['module'], 'text': '', 'error': None}
+        try:
+            raw = _download(url, budget)
+        except MoodleError as e:
+            if 'trop volumineux' in str(e):
+                raise
+            entry['error'] = str(e)
+            results.append(entry)
+            continue
         budget -= len(raw)
         if meta['extension'] in ('html', 'htm'):
             text = _html_to_text(raw)
@@ -231,5 +243,8 @@ def extract_materials(course_id: int, fileurls: list[str]) -> list[dict]:
                 text = extract_text_from_file(path) or ''
             finally:
                 os.remove(path)
-        results.append({'filename': meta['filename'], 'module': meta['module'], 'text': text.strip()})
+        entry['text'] = text.strip()
+        if not entry['text']:
+            entry['error'] = 'Aucun texte extractible'
+        results.append(entry)
     return results

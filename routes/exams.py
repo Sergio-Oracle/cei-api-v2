@@ -4562,6 +4562,7 @@ def generate_exam_suggestions():
                     os.remove(p)
             raise
 
+        moodle_skipped = []
         if moodle_ec_id and moodle_files:
             from services import moodle_sync
             from routes.moodle import resolve_ec_for_user
@@ -4583,9 +4584,14 @@ def generate_exam_suggestions():
             except moodle_sync.MoodleError as e:
                 session.close()
                 return jsonify({'success': False, 'error': f'Moodle : {e}'}), 502
-            for item in extracted:
-                if item['text']:
-                    content_parts.append(f"--- Fichier Moodle: {item['filename']} ({item['module']}) ---\n{item['text']}")
+            moodle_skipped = [{'filename': i['filename'], 'error': i['error']} for i in extracted if not i['text']]
+            usable = [i for i in extracted if i['text']]
+            if not usable and not content_parts:
+                session.close()
+                return jsonify({'success': False, 'error': "Aucun fichier Moodle n'a pu être exploité",
+                                'moodle_skipped': moodle_skipped}), 502
+            for item in usable:
+                content_parts.append(f"--- Fichier Moodle: {item['filename']} ({item['module']}) ---\n{item['text']}")
             filename = filename or f"moodle_{ec.code}"
 
         course_content = '\n\n'.join(content_parts)
@@ -4712,7 +4718,7 @@ Réponds UNIQUEMENT avec un JSON valide dans ce format exact (OBLIGATOIREMENT 3 
                 if os.path.exists(p):
                     os.remove(p)
             session.close()
-            return jsonify({**cached, 'from_cache': True})
+            return jsonify({**cached, 'from_cache': True, 'moodle_skipped': moodle_skipped})
 
         # fast=True — sortie courte (3 titres + descriptions), même profil que le
         # résumé de transcription audio : le modèle Ollama lourd est instable sur ce
@@ -4782,7 +4788,7 @@ Réponds UNIQUEMENT avec un JSON valide dans ce format exact (OBLIGATOIREMENT 3 
             }
             cache_set(cache_key, payload, ttl=7200)   # cache 2 hours
             session.close()
-            return jsonify(payload)
+            return jsonify({**payload, 'moodle_skipped': moodle_skipped})
         else:
             for p in temp_filepaths:
                 if os.path.exists(p):

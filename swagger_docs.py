@@ -3244,7 +3244,9 @@ OPENAPI_SPEC = {
                 "**Source Moodle (alternative ou complément à l'upload)** : `moodle_ec_id` + `moodle_files` (champ répété, "
                 "URLs issues de `GET /api/moodle/ecs/{ec_id}/materials`). Le serveur vérifie que l'EC appartient au "
                 "professeur, re-résout la liste des fichiers du cours Moodle et refuse toute URL qui n'en fait pas partie. "
-                "Au moins une source requise : `course_files` OU `moodle_ec_id`+`moodle_files`."
+                "Au moins une source requise : `course_files` OU `moodle_ec_id`+`moodle_files`. "
+                "Un fichier Moodle inexploitable (téléchargement refusé, aucun texte) est ignoré et listé dans "
+                "`moodle_skipped` de la réponse ; erreur 502 uniquement si aucune source ne donne de texte."
             ),
             "requestBody": {"required": True, "content": {"multipart/form-data": {"schema": {
                 "type": "object",

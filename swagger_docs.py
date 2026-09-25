@@ -165,7 +165,12 @@ def _filter_spec_for_role(role: str) -> dict:
         f"`POST /api/auth/login` ou le SSO UNCHK)\n"
         f"2. Une clé API d'intégration (`X-CEI-API-Key`) autorisée pour le module **{role_label}** — "
         f"fournie par l'administrateur CEI\n\n"
-        f"Cliquez **Authorize** ci-dessus, renseignez les deux, puis **Try it out** sur une route."
+        f"Cliquez **Authorize** ci-dessus, renseignez les deux, puis **Try it out** sur une route.\n\n"
+        f"> **Le jeton expire au bout d'1h** et n'est **pas** conservé d'une visite à l'autre sur "
+        f"cette page (volontairement — un jeton oublié plusieurs jours dans le navigateur provoque "
+        f"un `401 Token expiré` qui ressemble à tort à un bug de l'API). À chaque nouvelle session "
+        f"de test : refaites `POST /api/auth/login`, copiez le **nouveau** `access_token`, et "
+        f"recliquez **Authorize** avec cette valeur avant de tester une route."
     )
     return filtered
 
@@ -5119,7 +5124,13 @@ _SWAGGER_HTML = """<!DOCTYPE html>
     deepLinking: true,
     filter: true,
     tryItOutEnabled: true,
-    persistAuthorization: true,
+    // Volontairement désactivé (pas un oubli) : le jeton Bearer expire au
+    // bout d'1h, et un jeton persistant dans le navigateur pendant des
+    // jours donne un "Token expiré" trompeur qui ressemble à un bug de
+    // l'API — voir la mésaventure du 25/09. Sans persistance, la fenêtre
+    // "Authorize" repart à zéro à chaque chargement de page : on est
+    // obligé de ressaisir un jeton forcément à jour.
+    persistAuthorization: false,
     displayRequestDuration: true,
     docExpansion: 'none',
     defaultModelsExpandDepth: 2,

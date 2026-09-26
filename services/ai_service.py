@@ -18,12 +18,17 @@ from threading import BoundedSemaphore
 GEMINI_MODEL      = "models/gemini-2.5-flash"
 DEEPSEEK_API_URL  = "https://api.deepseek.com/chat/completions"
 DEEPSEEK_MODEL    = "deepseek-chat"
+# Les fournisseurs retirent leurs modèles sans préavis (constaté le 25/09 :
+# llama-3.3-70b-versatile, gemma-4-31b et gpt-oss-20b:free avaient tous
+# disparu, faisant tomber toute la chaîne sur Ollama) — surchargeables par
+# .env pour qu'un prochain retrait se corrige sans changement de code.
+# Valeurs par défaut vérifiées disponibles et fonctionnelles le 25/09.
 GROQ_API_URL       = "https://api.groq.com/openai/v1/chat/completions"
-GROQ_MODEL         = "llama-3.3-70b-versatile"
+GROQ_MODEL         = os.getenv("GROQ_MODEL", "openai/gpt-oss-120b")
 CEREBRAS_API_URL   = "https://api.cerebras.ai/v1/chat/completions"
-CEREBRAS_MODEL     = "gemma-4-31b"
+CEREBRAS_MODEL     = os.getenv("CEREBRAS_MODEL", "gpt-oss-120b")
 OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
-OPENROUTER_MODEL   = "openai/gpt-oss-20b:free"
+OPENROUTER_MODEL   = os.getenv("OPENROUTER_MODEL", "nvidia/nemotron-3-super-120b-a12b:free")
 
 _anthropic_client   = None
 _gemini_clients: list = []

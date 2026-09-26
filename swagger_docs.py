@@ -424,6 +424,7 @@ OPENAPI_SPEC = {
     ],
     "tags": [
         {"name": "Authentification",         "description": "Connexion PASETO v4, rafraîchissement token, déconnexion, profil, mot de passe"},
+        {"name": "SSO / Fédération d'identité", "description": "Connexion via le Keycloak UNCHK (realm UNCHK) — authentifie l'utilisateur, le rôle CEI reste géré côté CEI"},
         {"name": "Administration",           "description": "Tableau de bord admin, utilisateurs, historique"},
         {"name": "Académique",               "description": "Pôles, Niveaux, Formations, semestres, UE, EC, inscriptions, affectations — hiérarchie Pôle → Niveau → Formation → Semestre → UE → EC"},
         {"name": "Groupes Surveillants",      "description": "Groupes de surveillants rattachés à un ou plusieurs EC — affectation automatique à chaque nouvel examen créé pour ces EC"},
@@ -560,6 +561,37 @@ OPENAPI_SPEC = {
             "responses": {
                 "200": {"description": "Déconnecté avec succès"},
                 "401": {"description": "Token access manquant"}
+            }
+        }},
+        "/api/auth/oidc/login": {"get": {
+            "tags": ["SSO / Fédération d'identité"], "summary": "Démarre le login SSO via le Keycloak UNCHK",
+            "description": "Redirige (302) vers le realm Keycloak UNCHK (senid.unchk.sn), même serveur que Moodle. Route destinée à être ouverte par navigation directe (lien/bouton), pas par fetch/XHR.",
+            "security": [],
+            "responses": {"302": {"description": "Redirection vers Keycloak"}}
+        }},
+        "/api/auth/oidc/callback": {"get": {
+            "tags": ["SSO / Fédération d'identité"], "summary": "Retour Keycloak — ouvre une session CEI",
+            "description": "Échange le code contre des tokens, valide le id_token (signature JWKS + nonce), cherche un compte CEI existant par email (jamais d'auto-création — le rôle CEI reste géré par l'admin CEI). Redirige vers /dashboard (succès), /login?sso_error=... (échec) ou /login?sso_conflict=1&retry_token=...&device_label=... (session étudiante déjà active ailleurs).",
+            "security": [],
+            "parameters": [
+                {"name": "code", "in": "query", "schema": {"type": "string"}},
+                {"name": "state", "in": "query", "schema": {"type": "string"}},
+                {"name": "error", "in": "query", "schema": {"type": "string"}}
+            ],
+            "responses": {"302": {"description": "Redirection vers le frontend (succès ou erreur)"}}
+        }},
+        "/api/auth/oidc/force-login": {"post": {
+            "tags": ["SSO / Fédération d'identité"], "summary": "Confirme l'ouverture de session malgré un conflit (étudiant déjà connecté ailleurs)",
+            "security": [],
+            "requestBody": {"required": True, "content": {"application/json": {"schema": {
+                "type": "object", "required": ["retry_token"],
+                "properties": {"retry_token": {"type": "string", "description": "Fourni dans le paramètre sso_conflict de la redirection du callback"}}
+            }}}},
+            "responses": {
+                "200": {"description": "Session ouverte", "content": {"application/json": {"schema": {
+                    "type": "object", "properties": {"success": {"type": "boolean"}}
+                }}}},
+                "400": {"description": "retry_token invalide ou expiré"}
             }
         }},
         "/api/auth/public-key": {"get": {

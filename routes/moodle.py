@@ -10,6 +10,7 @@ Admin — plateformes (ajoutées depuis la page Moodle, sans changement de code)
 
 Admin — synchronisation :
   GET  /api/admin/moodle/courses                   correspondance cours Moodle ↔ EC CEI
+  POST /api/admin/moodle/sync/structure            maquette manquante créée depuis les catégories Moodle
   POST /api/admin/moodle/sync/course               synchronisation complète d'UN cours par appel
 
 Professeur (ou admin) :
@@ -29,6 +30,7 @@ from models import (get_session, User, UserRole, EC, UE, ECAssignment, StudentUE
 from services import moodle_sync
 from services.moodle_sync import MoodleClient, MoodleError
 from services.provisioning import sync_course
+from services.moodle_structure import build_structure
 
 moodle_bp = Blueprint('moodle', __name__)
 
@@ -332,6 +334,43 @@ def moodle_sync_course():
         return jsonify({'dry_run': dry_run, 'instance_id': inst.id, 'instance': inst.name,
                         'ec_code': ec.code, 'ue_code': ue.code if ue else None,
                         'moodle_course_id': course['id'], **report})
+    except Exception as e:
+        session.rollback()
+        return jsonify({'error': str(e)}), 500
+    finally:
+        session.close()
+
+
+@moodle_bp.route('/api/admin/moodle/sync/structure', methods=['POST'])
+@paseto_required
+def moodle_sync_structure():
+    """Crée la maquette manquante (formations, semestres, UE, EC) à partir des
+    catégories Moodle, avant la synchronisation cours par cours. dry_run
+    vaut true par défaut. Rapide : deux appels Moodle par plateforme."""
+    session = get_session()
+    if not require_admin(session):
+        return jsonify({'error': 'Accès réservé aux administrateurs'}), 403
+    try:
+        if not moodle_sync.is_enabled():
+            return _disabled()
+        data = request.get_json(silent=True) or {}
+        dry_run = data.get('dry_run', True) is not False
+        if data.get('instance_id'):
+            try:
+                instances = [_instance_or_404(session, data['instance_id'])]
+            except LookupError as e:
+                return jsonify({'error': str(e)}), 404
+        else:
+            instances = moodle_sync.active_instances(session)
+        results = []
+        for inst in instances:
+            try:
+                report = build_structure(session, inst, moodle_sync.client_for(inst), dry_run=dry_run)
+                results.append({'instance_id': inst.id, 'instance': inst.name, **report})
+            except MoodleError as e:
+                session.rollback()
+                results.append({'instance_id': inst.id, 'instance': inst.name, 'error': str(e)})
+        return jsonify({'dry_run': dry_run, 'instances': results})
     except Exception as e:
         session.rollback()
         return jsonify({'error': str(e)}), 500

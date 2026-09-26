@@ -3251,6 +3251,27 @@ OPENAPI_SPEC = {
                 "moodle_courses_without_ec": [], "ecs_without_moodle_course": ["MIC2311"], "duplicate_codes": {}, "errors": []
             }}}}, "403": {"$ref": "#/components/responses/Forbidden"}, "503": {"description": "Synchronisation désactivée"}}
         }},
+        "/api/admin/moodle/sync/structure": {"post": {
+            "tags": ["Moodle"], "summary": "Créer la maquette manquante depuis les catégories Moodle (admin)",
+            "description": (
+                "Les catégories Moodle reproduisent la maquette : Formation > Niveau > Semestre > UE > cours. Chaque cours Moodle sans EC "
+                "CEI devient un EC (code et nom du cours), avec au besoin son UE (identifiée par sa catégorie Moodle, code selon la "
+                "convention existante : AES1111 → AES111, cours transversaux → UN/<filière>, sinon d'après « UE n »), son semestre et sa "
+                "formation (<niveau>-<filière>, nom de la catégorie). Une formation au nom provisoire « … — créée depuis Moodle » reçoit "
+                "son vrai nom. Les cours hors de cette structure (tests, cours magistral) sont ignorés. UE et EC créés marqués "
+                "`values_confirmed=false` (crédits, coefficients, CC/EX par défaut) jusqu'à l'import de la maquette officielle. "
+                "Uniquement additif ; `dry_run` vaut `true` par défaut."
+            ),
+            "requestBody": {"content": {"application/json": {"schema": {"type": "object", "properties": {
+                "instance_id": {"type": "integer", "description": "Plateforme ciblée ; absent → toutes les plateformes actives"},
+                "dry_run": {"type": "boolean", "default": True}}}}}},
+            "responses": {"200": {"description": "Bilan par plateforme", "content": {"application/json": {"example": {
+                "dry_run": True, "instances": [{"instance_id": 1, "instance": "Promo13 SEJA (préprod)",
+                    "formations": ["L1-SEG (Sciences économiques et de gestion)"], "formations_renamed": ["L1-SPO → Science politique"],
+                    "semesters": ["L1-SEG S1"], "ues": ["SEG111 (L1-SEG S1 — UE 1 : Fondamentaux en Gestion)"], "ecs": ["SEG1111"],
+                    "ue_links": 30, "skipped": [{"code": "TEST-DITSI", "reason": "hors maquette (TEST)"}]}]
+            }}}}, "403": {"$ref": "#/components/responses/Forbidden"}}
+        }},
         "/api/admin/moodle/sync/course": {"post": {
             "tags": ["Moodle"], "summary": "Synchroniser UN cours Moodle vers CEI (admin)",
             "description": (

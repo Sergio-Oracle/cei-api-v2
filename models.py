@@ -183,6 +183,12 @@ class UE(Base):
     credits = Column(Integer, default=6)
     ue_type = Column(String(50), default='obligatoire')
     is_active = Column(Boolean, default=True)
+    # Créées depuis Moodle (feuille de route, phase structure) : crédits et
+    # type pris par défaut, à confirmer par l'import de la maquette officielle.
+    values_confirmed = Column(Boolean, default=True)
+    # Catégorie Moodle de l'UE : identité stable, indépendante du code des cours.
+    moodle_instance_id = Column(Integer, ForeignKey('moodle_instances.id', ondelete='SET NULL'), nullable=True)
+    moodle_category_id = Column(Integer, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     semester = relationship('Semester', back_populates='ues')
@@ -201,6 +207,7 @@ class UE(Base):
             'ecs_count': len(self.ecs) if self.ecs else 0,
             'students_count': len(self.enrollments) if self.enrollments else 0,
             'is_active': self.is_active,
+            'values_confirmed': self.values_confirmed is not False,
             'created_at': self.created_at.isoformat() if self.created_at else None
         }
 
@@ -221,6 +228,10 @@ class EC(Base):
     cc_percentage = Column(Integer, default=40)
     ex_percentage = Column(Integer, default=60)
     is_active = Column(Boolean, default=True)
+    # Créé depuis Moodle : coefficient, heures et CC/EX par défaut, à confirmer
+    # par l'import de la maquette officielle — un relevé de notes refuse un EC
+    # non confirmé (une valeur par défaut y fausserait les moyennes).
+    values_confirmed = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     ue = relationship('UE', back_populates='ecs')
@@ -247,6 +258,7 @@ class EC(Base):
             'cc_percentage': self.cc_percentage if self.cc_percentage is not None else 40,
             'ex_percentage': self.ex_percentage if self.ex_percentage is not None else 60,
             'is_active': self.is_active,
+            'values_confirmed': self.values_confirmed is not False,
             'assigned_professor_id': self.assignments[0].professor_id if self.assignments else None,
             'assigned_professors': [a.professor_id for a in self.assignments],
             # Paire (id d'affectation, professeur) — l'id d'affectation est
@@ -1509,6 +1521,15 @@ def init_db():
         # Phase 1 (25/09) — origine des comptes créés automatiquement depuis Moodle
         ("SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='created_via'",
          "ALTER TABLE users ADD COLUMN created_via VARCHAR(30)"),
+        # Structure créée depuis Moodle (26/09) — valeurs à confirmer + lien catégorie
+        ("SELECT 1 FROM information_schema.columns WHERE table_name='ues' AND column_name='values_confirmed'",
+         "ALTER TABLE ues ADD COLUMN values_confirmed BOOLEAN DEFAULT TRUE"),
+        ("SELECT 1 FROM information_schema.columns WHERE table_name='ues' AND column_name='moodle_instance_id'",
+         "ALTER TABLE ues ADD COLUMN moodle_instance_id INTEGER REFERENCES moodle_instances(id) ON DELETE SET NULL"),
+        ("SELECT 1 FROM information_schema.columns WHERE table_name='ues' AND column_name='moodle_category_id'",
+         "ALTER TABLE ues ADD COLUMN moodle_category_id INTEGER"),
+        ("SELECT 1 FROM information_schema.columns WHERE table_name='ecs' AND column_name='values_confirmed'",
+         "ALTER TABLE ecs ADD COLUMN values_confirmed BOOLEAN DEFAULT TRUE"),
     ]
     with engine.connect() as _conn:
         # Timeout court pour éviter le blocage au démarrage si l'app tourne déjà

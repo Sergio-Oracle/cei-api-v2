@@ -179,7 +179,7 @@ def login():
         if not user or not bcrypt.check_password_hash(user.password_hash, password):
             # Compte créé depuis Moodle : pas de mot de passe CEI, la personne
             # a sans doute tapé son mot de passe UNCHK ici au lieu du bouton SSO.
-            if user and user.created_via == 'moodle_sso':
+            if user and user.created_via in ('moodle_sso', 'moodle_sync'):
                 session.close()
                 return jsonify({
                     'error': "Ce compte se connecte avec « Se connecter avec UNCHK », avec votre mot de passe "

@@ -320,8 +320,9 @@ class User(Base):
     formation_id = Column(Integer, ForeignKey('formations.id'), nullable=True)  # formation principale de l'étudiant
     # Origine du compte : NULL = créé dans CEI (admin, import) ; 'moodle_sso' =
     # créé automatiquement à la première connexion UNCHK d'une personne connue
-    # de Moodle. Ces comptes n'ont pas de mot de passe CEI utilisable : ils se
-    # connectent avec leur mot de passe UNCHK/Moodle via le SSO.
+    # de Moodle ; 'moodle_sync' = créé par la synchronisation admin d'un cours.
+    # Ces comptes n'ont pas de mot de passe CEI utilisable : ils se connectent
+    # avec leur mot de passe UNCHK/Moodle via le SSO.
     created_via = Column(String(30), nullable=True)
 
     formation = relationship('Formation')

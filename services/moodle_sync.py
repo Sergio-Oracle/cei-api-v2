@@ -287,13 +287,25 @@ class MoodleClient:
             'options': [
                 {'name': 'onlyactive', 'value': 1},
                 {'name': 'withcapability', 'value': 'mod/assign:submit'},
-                {'name': 'userfields', 'value': 'id,email,fullname'},
+                {'name': 'userfields', 'value': 'id,email,fullname,department'},
             ],
         }, timeout=120)
         return [
             {'moodle_id': u.get('id'), 'email': (u.get('email') or '').strip().lower(),
-             'fullname': (u.get('fullname') or '').strip()}
+             'fullname': (u.get('fullname') or '').strip(),
+             'department': (u.get('department') or '').strip().upper()}
             for u in users
+        ]
+
+    def course_teachers(self, course_id: int) -> list[dict]:
+        """Enseignants d'un cours (éditeurs ou non) : capacité mod/assign:grade."""
+        res = self.call('core_enrol_get_enrolled_users_with_capability', {
+            'coursecapabilities': [{'courseid': course_id, 'capabilities': ['mod/assign:grade']}]})
+        users = res[0].get('users', []) if res else []
+        return [
+            {'moodle_id': u.get('id'), 'email': (u.get('email') or '').strip().lower(),
+             'fullname': (u.get('fullname') or '').strip()}
+            for u in users if u.get('email')
         ]
 
     # ── Téléchargement + extraction ──

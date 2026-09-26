@@ -10,7 +10,7 @@ Admin — plateformes (ajoutées depuis la page Moodle, sans changement de code)
 
 Admin — synchronisation :
   GET  /api/admin/moodle/courses                   correspondance cours Moodle ↔ EC CEI
-  POST /api/admin/moodle/sync/enrollments          inscriptions Moodle → CEI, UN cours par appel
+  POST /api/admin/moodle/sync/course               synchronisation complète d'UN cours par appel
 
 Professeur (ou admin) :
   GET  /api/moodle/ecs                             mes EC disposant d'un cours Moodle
@@ -28,6 +28,7 @@ from models import (get_session, User, UserRole, EC, UE, ECAssignment, StudentUE
                     MoodleInstance, Pole)
 from services import moodle_sync
 from services.moodle_sync import MoodleClient, MoodleError
+from services.provisioning import sync_course
 
 moodle_bp = Blueprint('moodle', __name__)
 
@@ -290,13 +291,13 @@ def moodle_courses_mapping():
         session.close()
 
 
-@moodle_bp.route('/api/admin/moodle/sync/enrollments', methods=['POST'])
+@moodle_bp.route('/api/admin/moodle/sync/course', methods=['POST'])
 @paseto_required
-def moodle_sync_enrollments():
-    """Un cours par appel (~11 s pour ~3 400 inscrits côté Moodle) : l'appelant
-    boucle sur la liste de /api/admin/moodle/courses. Uniquement additif —
-    n'ajoute que les inscriptions UE manquantes, ne crée jamais de compte et
-    ne retire jamais d'inscription. dry_run vaut true par défaut."""
+def moodle_sync_course():
+    """Synchronisation complète d'UN cours (≈10 s pour ~3 400 inscrits) :
+    l'appelant boucle sur la liste de /api/admin/moodle/courses et affiche la
+    progression. Mêmes règles que la connexion (services/provisioning.py) ;
+    uniquement additif ; dry_run vaut true par défaut."""
     session = get_session()
     if not require_admin(session):
         return jsonify({'error': 'Accès réservé aux administrateurs'}), 403
@@ -311,7 +312,6 @@ def moodle_sync_enrollments():
         ec = session.query(EC).filter_by(code=ec_code).first()
         if not ec:
             return jsonify({'error': f'EC {ec_code} introuvable dans CEI'}), 404
-
         try:
             if data.get('instance_id'):
                 inst = _instance_or_404(session, data['instance_id'])
@@ -322,45 +322,16 @@ def moodle_sync_enrollments():
                 inst, client, course = found if found else (None, None, None)
             if not course:
                 return jsonify({'error': f'Aucun cours Moodle avec le code {ec_code}'}), 404
-            students = client.enrolled_students(course['id'])
+            report = sync_course(session, ec, client, course, dry_run=dry_run)
         except LookupError as e:
             return jsonify({'error': str(e)}), 404
         except MoodleError as e:
+            session.rollback()
             return _moodle_error(e)
-
-        emails = {s['email'] for s in students if s['email']}
-        cei_students = {}
-        email_list = list(emails)
-        for i in range(0, len(email_list), 1000):
-            for uid, email in session.query(User.id, User.email).filter(
-                    User.role == UserRole.STUDENT,
-                    User.email.in_(email_list[i:i + 1000])).all():
-                cei_students[email.lower()] = uid
-        already = {sid for (sid,) in session.query(StudentUEEnrollment.student_id).filter_by(ue_id=ec.ue_id).all()}
-
-        matched_ids = set(cei_students.values())
-        to_create = sorted(matched_ids - already)
-        unmatched = sorted(e for e in emails if e not in cei_students)
-
-        if not dry_run and to_create:
-            session.bulk_save_objects([StudentUEEnrollment(student_id=sid, ue_id=ec.ue_id) for sid in to_create])
-            session.commit()
-
         ue = session.query(UE).filter_by(id=ec.ue_id).first()
-        return jsonify({
-            'dry_run': dry_run,
-            'instance_id': inst.id,
-            'instance': inst.name,
-            'ec_code': ec.code,
-            'ue_code': ue.code if ue else None,
-            'moodle_course_id': course['id'],
-            'moodle_students': len(students),
-            'matched_in_cei': len(matched_ids),
-            'already_enrolled': len(matched_ids & already),
-            'to_create' if dry_run else 'created': len(to_create),
-            'unmatched_count': len(unmatched),
-            'unmatched_sample': unmatched[:20],
-        })
+        return jsonify({'dry_run': dry_run, 'instance_id': inst.id, 'instance': inst.name,
+                        'ec_code': ec.code, 'ue_code': ue.code if ue else None,
+                        'moodle_course_id': course['id'], **report})
     except Exception as e:
         session.rollback()
         return jsonify({'error': str(e)}), 500

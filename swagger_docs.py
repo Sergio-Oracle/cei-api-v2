@@ -3251,12 +3251,14 @@ OPENAPI_SPEC = {
                 "moodle_courses_without_ec": [], "ecs_without_moodle_course": ["MIC2311"], "duplicate_codes": {}, "errors": []
             }}}}, "403": {"$ref": "#/components/responses/Forbidden"}, "503": {"description": "Synchronisation désactivée"}}
         }},
-        "/api/admin/moodle/sync/enrollments": {"post": {
-            "tags": ["Moodle"], "summary": "Synchroniser les inscriptions d'UN cours Moodle vers CEI (admin)",
+        "/api/admin/moodle/sync/course": {"post": {
+            "tags": ["Moodle"], "summary": "Synchroniser UN cours Moodle vers CEI (admin)",
             "description": (
-                "Un cours par appel (~11 s pour ~3 400 inscrits) — boucler sur la liste de `/api/admin/moodle/courses`. "
-                "Les étudiants Moodle sont retrouvés dans CEI par email ; l'inscription est créée au niveau de l'UE de l'EC. "
-                "**Uniquement additif** : ne crée jamais de compte, ne retire jamais d'inscription. "
+                "Un cours par appel (~10 s pour ~3 400 inscrits) — boucler sur `/api/admin/moodle/courses`. Mêmes règles que la "
+                "connexion SSO : **enseignants** du cours → compte professeur créé s'il manque, compte étudiant qui enseigne → "
+                "professeur, affectation à l'EC ; **étudiants** → compte créé s'il manque (formation depuis le département Moodle), "
+                "formation complétée si vide, inscription à l'UE de l'EC. Comptes créés sans mot de passe CEI (connexion par SSO). "
+                "**Uniquement additif** : aucun compte supprimé, aucune inscription retirée, aucun rôle autre qu'étudiant modifié. "
                 "`dry_run` vaut `true` par défaut — rien n'est écrit tant qu'il n'est pas explicitement `false`."
             ),
             "requestBody": {"required": True, "content": {"application/json": {"schema": {
@@ -3267,8 +3269,9 @@ OPENAPI_SPEC = {
             }}}},
             "responses": {"200": {"description": "Bilan du cours", "content": {"application/json": {"example": {
                 "dry_run": True, "instance_id": 1, "instance": "Promo13 SEJA (préprod)", "ec_code": "AES1111", "ue_code": "AES111", "moodle_course_id": 93,
-                "moodle_students": 3346, "matched_in_cei": 3220, "already_enrolled": 3100, "to_create": 120,
-                "unmatched_count": 126, "unmatched_sample": ["etudiant@unchk.edu.sn"]
+                "teachers": {"moodle": 11, "created": 10, "upgraded": 0, "assignments_added": 10, "other_role": [], "created_sample": ["tuteur@unchk.edu.sn"]},
+                "students": {"moodle": 3346, "created": 127, "enrollments_added": 127, "already_enrolled": 3219, "formation_filled": 0,
+                             "other_role": 0, "without_formation": {}, "created_sample": ["etudiant@unchk.edu.sn"]}
             }}}}, "400": {"description": "ec_code manquant"}, "403": {"$ref": "#/components/responses/Forbidden"},
                 "404": {"description": "EC ou cours Moodle introuvable"}, "502": {"description": "Erreur Moodle"}}
         }},

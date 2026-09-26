@@ -128,6 +128,124 @@ def upgrade_if_moodle_teacher(session, user):
         return False
 
 
+def sync_course(session, ec, client, course, dry_run=True, sample_size=20):
+    """Synchronise UN cours Moodle (= un EC CEI) avec les mêmes règles que la
+    connexion : comptes manquants créés, étudiant qui enseigne → professeur,
+    affectations EC, inscriptions à l'UE, formation depuis le département
+    Moodle. Uniquement additif : aucun compte supprimé, aucune inscription
+    retirée, aucun rôle autre qu'étudiant modifié. dry_run → compte sans
+    rien écrire. Renvoie un bilan détaillé."""
+    students = client.enrolled_students(course['id'])
+    teachers = client.course_teachers(course['id'])
+    teacher_emails = {t['email'] for t in teachers}
+
+    emails = sorted({x['email'] for x in students + teachers if x['email']})
+    existing = {}
+    for i in range(0, len(emails), 1000):
+        for u in session.query(User).filter(User.email.in_(emails[i:i + 1000])).all():
+            existing[u.email.lower()] = u
+
+    # Une empreinte aléatoire commune à tous les comptes créés par cet appel :
+    # personne ne connaît le mot de passe sous-jacent (connexion par SSO) et
+    # on évite un calcul bcrypt par compte.
+    pw_hash = None if dry_run else bcrypt.generate_password_hash(secrets.token_urlsafe(32)).decode('utf-8')
+
+    def new_user(email, fullname, role, formation=None):
+        u = User(email=email, full_name=(fullname or email)[:100], role=role, password_hash=pw_hash,
+                 is_active=True, email_verified=True, has_email=True, created_via='moodle_sync')
+        if formation:
+            u.formation_id = formation.id
+            if formation.niveau:
+                u.niveau = formation.niveau.code[:5]
+        session.add(u)
+        return u
+
+    t_rep = {'moodle': len(teachers), 'created': 0, 'upgraded': 0, 'assignments_added': 0,
+             'other_role': [], 'created_sample': []}
+    s_rep = {'moodle': len(students), 'created': 0, 'enrollments_added': 0, 'already_enrolled': 0,
+             'formation_filled': 0, 'other_role': 0, 'without_formation': {}, 'created_sample': []}
+
+    # ── Enseignants ──
+    assigned = {pid for (pid,) in session.query(ECAssignment.professor_id).filter_by(ec_id=ec.id)}
+    for t in teachers:
+        u = existing.get(t['email'])
+        if u is None:
+            t_rep['created'] += 1
+            if len(t_rep['created_sample']) < sample_size:
+                t_rep['created_sample'].append(t['email'])
+            if not dry_run:
+                u = new_user(t['email'], t['fullname'], UserRole.PROFESSOR)
+                session.flush()
+                existing[t['email']] = u
+        elif u.role == UserRole.STUDENT:
+            t_rep['upgraded'] += 1
+            if not dry_run:
+                u.role = UserRole.PROFESSOR
+        elif u.role != UserRole.PROFESSOR:
+            t_rep['other_role'].append({'email': t['email'], 'role': u.role.value})
+            continue
+        if u is None or u.id not in assigned:
+            t_rep['assignments_added'] += 1
+            if not dry_run:
+                session.add(ECAssignment(ec_id=ec.id, professor_id=u.id))
+                assigned.add(u.id)
+
+    # ── Étudiants ──
+    enrolled = {sid for (sid,) in session.query(StudentUEEnrollment.student_id).filter_by(ue_id=ec.ue_id)}
+    formations = {}
+
+    def formation_of(dept):
+        if dept not in formations:
+            formations[dept] = formation_for_student(session, dept, [ec.ue_id])
+        return formations[dept]
+
+    to_enroll = []
+    for s in students:
+        email = s['email']
+        if not email or email in teacher_emails:
+            continue
+        u = existing.get(email)
+        formation = formation_of(s['department'])
+        if u is None:
+            s_rep['created'] += 1
+            s_rep['enrollments_added'] += 1
+            if len(s_rep['created_sample']) < sample_size:
+                s_rep['created_sample'].append(email)
+            if not formation:
+                key = s['department'] or '(vide)'
+                s_rep['without_formation'][key] = s_rep['without_formation'].get(key, 0) + 1
+            if not dry_run:
+                u = new_user(email, s['fullname'], UserRole.STUDENT, formation)
+                existing[email] = u
+                to_enroll.append(u)
+            continue
+        if u.role != UserRole.STUDENT:
+            s_rep['other_role'] += 1  # ex. professeur inscrit comme étudiant dans Moodle : jamais modifié
+            continue
+        if u.formation_id is None and formation:
+            s_rep['formation_filled'] += 1
+            if not dry_run:
+                u.formation_id = formation.id
+                if formation.niveau:
+                    u.niveau = formation.niveau.code[:5]
+        if u.id in enrolled:
+            s_rep['already_enrolled'] += 1
+        else:
+            s_rep['enrollments_added'] += 1
+            if not dry_run:
+                to_enroll.append(u)
+
+    if not dry_run:
+        session.flush()  # identifiants des comptes créés
+        for u in to_enroll:
+            if u.id not in enrolled:
+                session.add(StudentUEEnrollment(student_id=u.id, ue_id=ec.ue_id))
+                enrolled.add(u.id)
+        session.commit()
+
+    return {'teachers': t_rep, 'students': s_rep}
+
+
 def provision_from_moodle(session, email):
     """Crée le compte CEI d'une personne connue de Moodle.
     Renvoie (user, None) si le compte existe ou vient d'être créé, sinon

@@ -25,7 +25,7 @@ from sqlalchemy.orm import joinedload
 
 from auth_paseto import paseto_required, get_current_user_id
 from helpers import require_admin
-from models import (get_session, User, UserRole, EC, UE, ECAssignment, StudentUEEnrollment,
+from models import (get_session, User, UserRole, EC, UE, Semester, ECAssignment, StudentUEEnrollment,
                     MoodleInstance, Pole)
 from services import moodle_sync
 from services.moodle_sync import MoodleClient, MoodleError
@@ -385,6 +385,25 @@ def moodle_sync_structure():
 
 # ── Professeur ───────────────────────────────────────────────────────────────
 
+_LEVEL_LABELS = {'L': 'Licence', 'M': 'Master'}
+
+
+def _student_level(formation):
+    """Niveau des étudiants pour l'IA (« Licence 1 »…), déduit de la maquette :
+    code du niveau (L1, M2) sinon champ level de la formation. None si
+    indéterminable — l'interface demande alors le niveau à l'enseignant."""
+    if not formation:
+        return None
+    code = (formation.niveau.code if formation.niveau else '') or ''
+    if len(code) == 2 and code[0].upper() in _LEVEL_LABELS and code[1].isdigit():
+        return f"{_LEVEL_LABELS[code[0].upper()]} {code[1]}"
+    level = (formation.level or '').strip()
+    for prefix in ('Licence', 'Master'):
+        if level.lower().startswith(prefix.lower()) and level[-1:].isdigit():
+            return f"{prefix} {level[-1]}"
+    return None
+
+
 @moodle_bp.route('/api/moodle/ecs', methods=['GET'])
 @paseto_required
 def moodle_my_ecs():
@@ -397,7 +416,7 @@ def moodle_my_ecs():
             return jsonify({'error': 'Accès non autorisé'}), 403
         if not moodle_sync.is_enabled():
             return _disabled()
-        q = session.query(EC)
+        q = session.query(EC).options(joinedload(EC.ue).joinedload(UE.semester).joinedload(Semester.formation))
         if user.role == UserRole.PROFESSOR:
             q = q.join(ECAssignment, ECAssignment.ec_id == EC.id).filter(ECAssignment.professor_id == user.id)
         ecs = q.order_by(EC.code).all()
@@ -412,9 +431,17 @@ def moodle_my_ecs():
         for ec in ecs:
             if ec.code in courses:
                 inst, c = courses[ec.code]
+                formation = ec.ue.semester.formation if ec.ue and ec.ue.semester else None
                 result.append({'ec_id': ec.id, 'ec_code': ec.code, 'ec_name': ec.name,
                                'instance': inst.name, 'moodle_course_id': c['id'],
-                               'moodle_course_name': c['fullname']})
+                               'moodle_course_name': c['fullname'],
+                               'ue_code': ec.ue.code if ec.ue else None,
+                               'formation_id': formation.id if formation else None,
+                               'formation_code': formation.code if formation else None,
+                               'formation_name': formation.name if formation else None,
+                               'pole_id': formation.pole_id if formation else None,
+                               'pole_name': formation.pole.name if formation and formation.pole else None,
+                               'student_level': _student_level(formation)})
         return jsonify({'ecs': result})
     finally:
         session.close()
@@ -441,7 +468,7 @@ def moodle_ec_materials(ec_id):
             if not found:
                 return jsonify({'error': f'Aucun cours Moodle avec le code {ec.code}'}), 404
             inst, client, course = found
-            materials = client.course_materials(course['id'])
+            materials = client.course_materials(course['id'], include_unsupported=True)
         except MoodleError as e:
             return _moodle_error(e)
         return jsonify({

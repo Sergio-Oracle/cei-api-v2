@@ -3318,18 +3318,21 @@ OPENAPI_SPEC = {
         }},
         "/api/moodle/ecs": {"get": {
             "tags": ["Moodle"], "summary": "Mes EC disposant d'un cours Moodle (professeur/admin)",
-            "description": "Professeur : ses EC affectés (ECAssignment) qui ont un cours Moodle du même code. Admin : tous les EC concernés. Ne dépend pas d'un compte Moodle du professeur.",
+            "description": "Professeur : ses EC affectés (ECAssignment) qui ont un cours Moodle du même code. Admin : tous les EC concernés. Ne dépend pas d'un compte Moodle du professeur. Chaque EC porte aussi sa formation, son pôle et le niveau des étudiants déduit de la maquette (`student_level`, ex. « Licence 1 », null si indéterminable) : l'onglet « Depuis Moodle » de Générer Suggestions n'a donc pas à les demander.",
             "responses": {"200": {"description": "EC", "content": {"application/json": {"example": {
-                "ecs": [{"ec_id": 12, "ec_code": "AES1111", "ec_name": "...", "moodle_course_id": 93, "moodle_course_name": "Droit constitutionnel..."}]
+                "ecs": [{"ec_id": 12, "ec_code": "AES1111", "ec_name": "...", "ue_code": "AES111", "instance": "Promo13 SEJA",
+                         "moodle_course_id": 93, "moodle_course_name": "Droit constitutionnel...",
+                         "formation_id": 39, "formation_code": "L1-AES", "formation_name": "Administration économique et sociale",
+                         "pole_id": 3, "pole_name": "SEJA", "student_level": "Licence 1"}]
             }}}}, "403": {"$ref": "#/components/responses/Forbidden"}}
         }},
         "/api/moodle/ecs/{ec_id}/materials": {"get": {
             "tags": ["Moodle"], "summary": "Fichiers de cours Moodle d'un EC (professeur affecté/admin)",
-            "description": "Fichiers exploitables par l'IA (PDF, DOCX, DOC, TXT, chapitres HTML des Livres) du cours Moodle de l'EC, issus de `core_course_get_contents`. Les `fileurl` renvoyées sont celles à passer dans `moodle_files` de `/api/ai/generate-exam-suggestions`.",
+            "description": "Fichiers exploitables par l'IA (PDF, DOCX, DOC, TXT, chapitres HTML des Livres) du cours Moodle de l'EC, issus de `core_course_get_contents`. Les autres fichiers du cours sont aussi listés avec `supported=false` (affichés grisés, refusés à l'extraction). `title` = titre du chapitre pour un Livre, sinon le nom du fichier. Les `fileurl` renvoyées (supported=true) sont celles à passer dans `moodle_files` de `/api/ai/generate-exam-suggestions`.",
             "parameters": [{"name": "ec_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
             "responses": {"200": {"description": "Fichiers", "content": {"application/json": {"example": {
                 "ec_id": 12, "ec_code": "AES1111", "moodle_course_id": 93, "moodle_course_name": "...", "max_total_mb": 50,
-                "materials": [{"fileurl": "https://.../webservice/pluginfile.php/724/mod_resource/content/0/cours.pdf", "filename": "cours.pdf",
+                "materials": [{"fileurl": "https://.../webservice/pluginfile.php/724/mod_resource/content/0/cours.pdf", "filename": "cours.pdf", "title": "cours.pdf", "supported": True,
                                "extension": "pdf", "filesize": 204800, "section": "Séquence 1", "module": "Support de cours", "modname": "folder", "visible": True}]
             }}}}, "403": {"$ref": "#/components/responses/Forbidden"}, "404": {"description": "EC ou cours Moodle introuvable"}}
         }},

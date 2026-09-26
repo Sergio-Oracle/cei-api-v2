@@ -250,8 +250,10 @@ class MoodleClient:
         courses = res.get('courses', []) if isinstance(res, dict) else []
         return courses[0] if courses else None
 
-    def course_materials(self, course_id: int) -> list[dict]:
+    def course_materials(self, course_id: int, include_unsupported: bool = False) -> list[dict]:
         """Fichiers exploitables par l'IA (PDF/DOCX/DOC/TXT, chapitres HTML).
+        include_unsupported=True ajoute les autres fichiers (supported=False),
+        pour les montrer grisés à l'enseignant — jamais téléchargés.
         core_course_get_contents est la seule source : la matière est surtout
         dans des Dossiers et des Livres, et mod_folder_get_folders_by_courses
         ne renvoie PAS le contenu des dossiers."""
@@ -263,9 +265,14 @@ class MoodleClient:
                         continue
                     filename = item.get('filename', '')
                     ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
-                    if ext not in SUPPORTED_EXTENSIONS:
+                    supported = ext in SUPPORTED_EXTENSIONS
+                    if not supported and not include_unsupported:
                         continue
                     materials.append({
+                        'supported': supported,
+                        # Chapitre de livre : le fichier s'appelle index.html,
+                        # son titre est dans 'content'.
+                        'title': (item.get('content') if ext in ('html', 'htm') else None) or filename,
                         'fileurl': item.get('fileurl'),
                         'filename': filename,
                         'extension': ext,

@@ -128,7 +128,7 @@ def upgrade_if_moodle_teacher(session, user):
         return False
 
 
-def sync_course(session, ec, client, course, dry_run=True, sample_size=20):
+def sync_course(session, ec, client, course, dry_run=True):
     """Synchronise UN cours Moodle (= un EC CEI) avec les mêmes règles que la
     connexion : comptes manquants créés, étudiant qui enseigne → professeur,
     affectations EC, inscriptions à l'UE, formation depuis le département
@@ -160,10 +160,15 @@ def sync_course(session, ec, client, course, dry_run=True, sample_size=20):
         session.add(u)
         return u
 
+    # Listes d'emails (et pas seulement des totaux) : en simulation, rien
+    # n'est créé entre deux cours, donc un même étudiant absent de CEI
+    # apparaît dans chacun de ses cours — l'interface dédoublonne le bilan
+    # global à partir de ces listes.
     t_rep = {'moodle': len(teachers), 'created': 0, 'upgraded': 0, 'assignments_added': 0,
-             'other_role': [], 'created_sample': []}
+             'other_role': [], 'created_emails': [], 'upgraded_emails': []}
     s_rep = {'moodle': len(students), 'created': 0, 'enrollments_added': 0, 'already_enrolled': 0,
-             'formation_filled': 0, 'other_role': 0, 'without_formation': {}, 'created_sample': []}
+             'formation_filled': 0, 'other_role': 0, 'without_formation': {},
+             'created_emails': [], 'enrolled_emails': [], 'formation_filled_emails': []}
 
     # ── Enseignants ──
     assigned = {pid for (pid,) in session.query(ECAssignment.professor_id).filter_by(ec_id=ec.id)}
@@ -171,14 +176,14 @@ def sync_course(session, ec, client, course, dry_run=True, sample_size=20):
         u = existing.get(t['email'])
         if u is None:
             t_rep['created'] += 1
-            if len(t_rep['created_sample']) < sample_size:
-                t_rep['created_sample'].append(t['email'])
+            t_rep['created_emails'].append(t['email'])
             if not dry_run:
                 u = new_user(t['email'], t['fullname'], UserRole.PROFESSOR)
                 session.flush()
                 existing[t['email']] = u
         elif u.role == UserRole.STUDENT:
             t_rep['upgraded'] += 1
+            t_rep['upgraded_emails'].append(t['email'])
             if not dry_run:
                 u.role = UserRole.PROFESSOR
         elif u.role != UserRole.PROFESSOR:
@@ -209,11 +214,11 @@ def sync_course(session, ec, client, course, dry_run=True, sample_size=20):
         if u is None:
             s_rep['created'] += 1
             s_rep['enrollments_added'] += 1
-            if len(s_rep['created_sample']) < sample_size:
-                s_rep['created_sample'].append(email)
+            s_rep['created_emails'].append(email)
+            s_rep['enrolled_emails'].append(email)
             if not formation:
                 key = s['department'] or '(vide)'
-                s_rep['without_formation'][key] = s_rep['without_formation'].get(key, 0) + 1
+                s_rep['without_formation'].setdefault(key, []).append(email)
             if not dry_run:
                 u = new_user(email, s['fullname'], UserRole.STUDENT, formation)
                 existing[email] = u
@@ -224,6 +229,7 @@ def sync_course(session, ec, client, course, dry_run=True, sample_size=20):
             continue
         if u.formation_id is None and formation:
             s_rep['formation_filled'] += 1
+            s_rep['formation_filled_emails'].append(email)
             if not dry_run:
                 u.formation_id = formation.id
                 if formation.niveau:
@@ -232,6 +238,7 @@ def sync_course(session, ec, client, course, dry_run=True, sample_size=20):
             s_rep['already_enrolled'] += 1
         else:
             s_rep['enrollments_added'] += 1
+            s_rep['enrolled_emails'].append(email)
             if not dry_run:
                 to_enroll.append(u)
 

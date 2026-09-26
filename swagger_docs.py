@@ -3259,7 +3259,7 @@ OPENAPI_SPEC = {
                 "professeur, affectation à l'EC ; **étudiants** → compte créé s'il manque (formation depuis le département Moodle), "
                 "formation complétée si vide, inscription à l'UE de l'EC. Comptes créés sans mot de passe CEI (connexion par SSO). "
                 "**Uniquement additif** : aucun compte supprimé, aucune inscription retirée, aucun rôle autre qu'étudiant modifié. "
-                "`dry_run` vaut `true` par défaut — rien n'est écrit tant qu'il n'est pas explicitement `false`."
+                "`dry_run` vaut `true` par défaut — rien n'est écrit tant qu'il n'est pas explicitement `false`. Les listes d'emails permettent de dédoublonner un bilan sur plusieurs cours : en simulation, un même étudiant absent de CEI apparaît dans chacun de ses cours."
             ),
             "requestBody": {"required": True, "content": {"application/json": {"schema": {
                 "type": "object", "required": ["ec_code"],
@@ -3269,9 +3269,11 @@ OPENAPI_SPEC = {
             }}}},
             "responses": {"200": {"description": "Bilan du cours", "content": {"application/json": {"example": {
                 "dry_run": True, "instance_id": 1, "instance": "Promo13 SEJA (préprod)", "ec_code": "AES1111", "ue_code": "AES111", "moodle_course_id": 93,
-                "teachers": {"moodle": 11, "created": 10, "upgraded": 0, "assignments_added": 10, "other_role": [], "created_sample": ["tuteur@unchk.edu.sn"]},
+                "teachers": {"moodle": 11, "created": 10, "upgraded": 0, "assignments_added": 10, "other_role": [],
+                             "created_emails": ["tuteur@unchk.edu.sn"], "upgraded_emails": []},
                 "students": {"moodle": 3346, "created": 127, "enrollments_added": 127, "already_enrolled": 3219, "formation_filled": 0,
-                             "other_role": 0, "without_formation": {}, "created_sample": ["etudiant@unchk.edu.sn"]}
+                             "other_role": 0, "without_formation": {"SPO": ["etudiant.spo@unchk.edu.sn"]},
+                             "created_emails": ["etudiant@unchk.edu.sn"], "enrolled_emails": ["etudiant@unchk.edu.sn"], "formation_filled_emails": []}
             }}}}, "400": {"description": "ec_code manquant"}, "403": {"$ref": "#/components/responses/Forbidden"},
                 "404": {"description": "EC ou cours Moodle introuvable"}, "502": {"description": "Erreur Moodle"}}
         }},

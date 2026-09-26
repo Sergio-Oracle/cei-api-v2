@@ -31,6 +31,7 @@ from services import moodle_sync
 from services.moodle_sync import MoodleClient, MoodleError
 from services.provisioning import sync_course
 from services.moodle_structure import build_structure
+from routes.formations import _invalidate_academic_cache
 
 moodle_bp = Blueprint('moodle', __name__)
 
@@ -330,6 +331,8 @@ def moodle_sync_course():
         except MoodleError as e:
             session.rollback()
             return _moodle_error(e)
+        if not dry_run and report.get('students', {}).get('formations_created'):
+            _invalidate_academic_cache()
         ue = session.query(UE).filter_by(id=ec.ue_id).first()
         return jsonify({'dry_run': dry_run, 'instance_id': inst.id, 'instance': inst.name,
                         'ec_code': ec.code, 'ue_code': ue.code if ue else None,
@@ -370,6 +373,8 @@ def moodle_sync_structure():
             except MoodleError as e:
                 session.rollback()
                 results.append({'instance_id': inst.id, 'instance': inst.name, 'error': str(e)})
+        if not dry_run:
+            _invalidate_academic_cache()
         return jsonify({'dry_run': dry_run, 'instances': results})
     except Exception as e:
         session.rollback()

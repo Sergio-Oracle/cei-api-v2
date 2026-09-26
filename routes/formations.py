@@ -743,6 +743,8 @@ def update_ue(uid):
             ue.code = data['code']
         for field in ('name', 'credits', 'ue_type', 'is_active'):
             if field in data: setattr(ue, field, data[field])
+        if 'credits' in data:
+            ue.values_confirmed = True   # saisis par l'admin → plus « à confirmer »
         session.commit(); result = ue.to_dict(); session.close()
         _invalidate_academic_cache()
         return jsonify({'success': True, 'ue': result})
@@ -817,6 +819,8 @@ def update_ec(eid):
             ec.code = data['code']
         for field in ('name', 'cm', 'td', 'tp', 'tpe', 'vht', 'coefficient', 'cc_percentage', 'ex_percentage', 'is_active'):
             if field in data: setattr(ec, field, data[field])
+        if any(f in data for f in ('coefficient', 'cc_percentage', 'ex_percentage')):
+            ec.values_confirmed = True   # saisis par l'admin → plus « à confirmer »
         session.commit(); result = ec.to_dict(); session.close()
         _invalidate_academic_cache()
         return jsonify({'success': True, 'ec': result})

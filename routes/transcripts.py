@@ -72,6 +72,21 @@ def generate_transcript(student_id, semester_id):
         if not ues:
             session.close(); return jsonify({'error': 'Aucune UE configurée pour ce semestre'}), 400
 
+        # UE/EC créés depuis Moodle : crédits, coefficients et CC/EX sont des
+        # valeurs par défaut tant que la maquette officielle n'a pas été
+        # importée — un relevé calculé dessus serait faux, donc refusé.
+        unconfirmed = [ue.code for ue in ues if ue.values_confirmed is False] + \
+                      [ec.code for ue in ues for ec in ue.ecs if ec.is_active and ec.values_confirmed is False]
+        if unconfirmed:
+            session.close()
+            return jsonify({
+                'error': ("Maquette incomplète pour ce semestre : crédits, coefficients ou répartition CC/EX "
+                          f"à confirmer pour {', '.join(unconfirmed[:8])}"
+                          f"{f' (et {len(unconfirmed) - 8} autres)' if len(unconfirmed) > 8 else ''}. "
+                          "Importez la maquette Excel officielle de ce semestre (Maquette → Import Excel), puis relancez."),
+                'unconfirmed_codes': unconfirmed,
+            }), 409
+
         _epoch = _dt(2000, 1, 1)
         ue_results = []
         total_notes_found = 0

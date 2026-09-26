@@ -1913,8 +1913,8 @@ OPENAPI_SPEC = {
         }},
         "/api/admin/maquette/import-excel-confirm": {"post": {
             "tags": ["Import CSV"],
-            "summary": "Confirmer un import Excel prévisualisé (crée réellement les UE/EC)",
-            "description": "Prend en entrée exactement le tableau 'ues' renvoyé par import-excel-preview (éventuellement édité) ; les entrées already_exists=true sont ignorées.",
+            "summary": "Confirmer un import Excel prévisualisé (crée les UE/EC manquants, complète les existants)",
+            "description": "Prend en entrée exactement le tableau 'ues' renvoyé par import-excel-preview (éventuellement édité). La maquette officielle fait foi pour les valeurs pédagogiques : une UE déjà existante (already_exists=true, par exemple créée depuis Moodle) reçoit crédits et type ; un EC existant reçoit coefficient et répartition CC/EX (0 % accepté). Nom et rattachement ne sont jamais modifiés. Tout élément importé passe values_confirmed=true, ce qui débloque les relevés de notes.",
             "requestBody": {"required": True, "content": {"application/json": {"schema": {
                 "type": "object", "required": ["semester_id", "ues"],
                 "properties": {
@@ -1926,7 +1926,9 @@ OPENAPI_SPEC = {
                 "type": "object",
                 "properties": {
                     "success": {"type": "boolean"}, "created_ues": {"type": "integer"},
-                    "created_ecs": {"type": "integer"}, "skipped_existing": {"type": "integer"}
+                    "created_ecs": {"type": "integer"},
+                    "completed_ues": {"type": "integer", "description": "UE existantes complétées"},
+                    "completed_ecs": {"type": "integer", "description": "EC existants complétés"}
                 }
             }}}}}
         }},
@@ -3656,11 +3658,14 @@ OPENAPI_SPEC = {
 
         "/api/transcripts/generate/{student_id}/{semester_id}": {"post": {
             "tags": ["Relevés de notes"], "summary": "Générer un relevé de notes",
+            "description": "Refusé (409) tant qu'une UE ou un EC actif du semestre est « à confirmer » (values_confirmed=false : créé depuis Moodle avec crédits/coefficients/CC-EX par défaut) — importer la maquette Excel officielle du semestre ou saisir ces valeurs dans la Maquette.",
             "parameters": [
                 {"name": "student_id",  "in": "path", "required": True, "schema": {"type": "integer"}},
                 {"name": "semester_id", "in": "path", "required": True, "schema": {"type": "integer"}}
             ],
-            "responses": {"200": {"description": "Relevé généré", "content": {"application/json": {"schema": {
+            "responses": {"409": {"description": "Maquette incomplète : valeurs à confirmer", "content": {"application/json": {"schema": {
+                "type": "object", "properties": {"error": {"type": "string"}, "unconfirmed_codes": {"type": "array", "items": {"type": "string"}}}
+            }}}}, "200": {"description": "Relevé généré", "content": {"application/json": {"schema": {
                 "type": "object",
                 "properties": {
                     "transcript_id":    {"type": "integer"},

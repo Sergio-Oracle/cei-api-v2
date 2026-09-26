@@ -984,7 +984,11 @@ def register_csv_routes(app):
                 session_db.close()
                 return jsonify({'error': 'Semestre cible invalide'}), 400
 
-            created_ues, created_ecs, skipped = [], [], []
+            # Maquette officielle = source des valeurs pédagogiques. Une UE ou un
+            # EC déjà présent (notamment créé depuis Moodle, sans crédits ni
+            # coefficients) est COMPLÉTÉ plutôt qu'ignoré : seules les valeurs
+            # pédagogiques sont mises à jour, jamais le nom ni le rattachement.
+            created_ues, created_ecs, completed_ues, completed_ecs = [], [], [], []
             for u in ues:
                 ue_code = (u.get('code') or '').strip()
                 if not ue_code:
@@ -992,36 +996,56 @@ def register_csv_routes(app):
                 ue = session_db.query(UE).filter_by(code=ue_code).first()
                 if not ue:
                     ue = UE(semester_id=semester.id, code=ue_code, name=u.get('name') or ue_code,
-                            credits=int(u.get('credits') or 6), ue_type=u.get('ue_type') or 'obligatoire')
+                            credits=int(u.get('credits') or 6), ue_type=u.get('ue_type') or 'obligatoire',
+                            values_confirmed=True)
                     session_db.add(ue)
                     session_db.flush()
                     created_ues.append(ue_code)
+                else:
+                    if u.get('credits') is not None:
+                        ue.credits = int(u['credits'])
+                    if u.get('ue_type'):
+                        ue.ue_type = u['ue_type']
+                    ue.values_confirmed = True
+                    completed_ues.append(ue_code)
                 for e in (u.get('ecs') or []):
                     ec_code = (e.get('code') or '').strip()
                     if not ec_code:
-                        continue
-                    if session_db.query(EC).filter_by(code=ec_code).first():
-                        skipped.append(ec_code)
                         continue
                     # Attention : utiliser "or" ici tronquerait un pourcentage
                     # CC/EX légitimement à 0 (ex: "Legal Tech [CC:0%, EX:100%]"
                     # dans les maquettes réelles) — il faut un test explicite sur None.
                     cc_pct = e.get('cc_percentage')
                     ex_pct = e.get('ex_percentage')
+                    ec = session_db.query(EC).filter_by(code=ec_code).first()
+                    if ec:
+                        if e.get('coefficient') is not None:
+                            ec.coefficient = int(e['coefficient'])
+                        if cc_pct is not None:
+                            ec.cc_percentage = int(cc_pct)
+                        if ex_pct is not None:
+                            ec.ex_percentage = int(ex_pct)
+                        ec.values_confirmed = True
+                        completed_ecs.append(ec_code)
+                        continue
                     session_db.add(EC(
                         ue_id=ue.id, code=ec_code, name=e.get('name') or ec_code,
                         coefficient=int(e.get('coefficient') or 1),
                         cc_percentage=int(cc_pct) if cc_pct is not None else 40,
                         ex_percentage=int(ex_pct) if ex_pct is not None else 60,
+                        values_confirmed=True,
                     ))
                     created_ecs.append(ec_code)
             session_db.commit()
             session_db.close()
+            from routes.formations import _invalidate_academic_cache
+            _invalidate_academic_cache()
             return jsonify({
                 'success': True,
                 'created_ues': len(created_ues),
                 'created_ecs': len(created_ecs),
-                'skipped_existing': len(skipped),
+                'completed_ues': len(completed_ues),
+                'completed_ecs': len(completed_ecs),
             })
         except Exception as e:
             session_db.rollback()

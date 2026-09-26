@@ -101,6 +101,46 @@ def formation_for_student(session, department, ue_ids):
     return candidates[0] if len(candidates) == 1 else None
 
 
+def ensure_formation_for_department(session, department, ec, dry_run=False):
+    """Formation d'un étudiant d'après son département Moodle, CRÉÉE si elle
+    n'existe pas encore (décision utilisateur du 26/09 : pas de passage
+    manuel par la maquette puis nouvelle synchronisation). Rien n'est
+    inventé : niveau et pôle sont ceux de la formation à laquelle appartient
+    le cours réellement suivi (ec), le code suit la convention existante
+    (<niveau>-<département>, ex. L1-SPO). Seul le nom complet est provisoire,
+    à compléter par l'admin dans la maquette.
+    Renvoie (formation ou None, code créé ou à créer ou None)."""
+    department = (department or '').strip().upper()
+    formation = formation_for_student(session, department, [ec.ue_id] if ec else [])
+    if formation or not department or not ec:
+        return formation, None
+    source = (session.query(Formation)
+              .join(Semester, Semester.formation_id == Formation.id)
+              .join(UE, UE.semester_id == Semester.id)
+              .filter(UE.id == ec.ue_id).first())
+    if not source or not source.niveau:
+        return None, None
+    code = f'{source.niveau.code}-{department}'
+    existing = session.query(Formation).filter_by(code=code).first()
+    if existing:
+        return existing, None
+    if dry_run:
+        return None, code
+    created = Formation(
+        code=code, name=f'{department} — créée depuis Moodle', level=source.level,
+        niveau_id=source.niveau_id, pole_id=source.pole_id, department=department, is_active=True,
+        description=(f'Créée automatiquement depuis le département Moodle « {department} » ; niveau et pôle '
+                     f'repris du cours {ec.code}. À compléter dans la maquette : nom complet, semestres.'),
+    )
+    try:
+        with session.begin_nested():  # une création simultanée du même code n'annule pas le reste
+            session.add(created)
+    except IntegrityError:
+        return session.query(Formation).filter_by(code=code).first(), None
+    print(f'[provisioning] formation créée automatiquement : {code} (pôle/niveau du cours {ec.code})')
+    return created, code
+
+
 def upgrade_if_moodle_teacher(session, user):
     """Compte ÉTUDIANT qui enseigne dans Moodle → PROFESSEUR, affecté aux EC
     de ses cours. Jamais dans l'autre sens. Utilise la liste des enseignants
@@ -167,7 +207,7 @@ def sync_course(session, ec, client, course, dry_run=True):
     t_rep = {'moodle': len(teachers), 'created': 0, 'upgraded': 0, 'assignments_added': 0,
              'other_role': [], 'created_emails': [], 'upgraded_emails': []}
     s_rep = {'moodle': len(students), 'created': 0, 'enrollments_added': 0, 'already_enrolled': 0,
-             'formation_filled': 0, 'other_role': 0, 'without_formation': {},
+             'formation_filled': 0, 'other_role': 0, 'without_formation': {}, 'formations_created': [],
              'created_emails': [], 'enrolled_emails': [], 'formation_filled_emails': []}
 
     # ── Enseignants ──
@@ -197,11 +237,14 @@ def sync_course(session, ec, client, course, dry_run=True):
 
     # ── Étudiants ──
     enrolled = {sid for (sid,) in session.query(StudentUEEnrollment.student_id).filter_by(ue_id=ec.ue_id)}
-    formations = {}
+    formations = {}   # département → (formation ou None, code créé / à créer ou None)
 
     def formation_of(dept):
         if dept not in formations:
-            formations[dept] = formation_for_student(session, dept, [ec.ue_id])
+            formation, new_code = ensure_formation_for_department(session, dept, ec, dry_run=dry_run)
+            formations[dept] = (formation, new_code)
+            if new_code:
+                s_rep['formations_created'].append(new_code)
         return formations[dept]
 
     to_enroll = []
@@ -210,13 +253,15 @@ def sync_course(session, ec, client, course, dry_run=True):
         if not email or email in teacher_emails:
             continue
         u = existing.get(email)
-        formation = formation_of(s['department'])
+        formation, new_code = formation_of(s['department'])
         if u is None:
             s_rep['created'] += 1
             s_rep['enrollments_added'] += 1
             s_rep['created_emails'].append(email)
             s_rep['enrolled_emails'].append(email)
-            if not formation:
+            # Sans formation seulement si le département est vide ou si le
+            # cours n'a lui-même ni niveau ni pôle (création impossible).
+            if not formation and not new_code:
                 key = s['department'] or '(vide)'
                 s_rep['without_formation'].setdefault(key, []).append(email)
             if not dry_run:
@@ -227,10 +272,10 @@ def sync_course(session, ec, client, course, dry_run=True):
         if u.role != UserRole.STUDENT:
             s_rep['other_role'] += 1  # ex. professeur inscrit comme étudiant dans Moodle : jamais modifié
             continue
-        if u.formation_id is None and formation:
+        if u.formation_id is None and (formation or new_code):
             s_rep['formation_filled'] += 1
             s_rep['formation_filled_emails'].append(email)
-            if not dry_run:
+            if not dry_run and formation:
                 u.formation_id = formation.id
                 if formation.niveau:
                     u.niveau = formation.niveau.code[:5]
@@ -301,6 +346,10 @@ def provision_from_moodle(session, email):
         for ue_id in ue_ids:
             session.add(StudentUEEnrollment(student_id=user.id, ue_id=ue_id))
         formation = formation_for_student(session, person['department'], ue_ids)
+        if not formation and person['department'] and ecs:
+            # Département sans formation CEI : créée depuis le niveau/pôle du
+            # cours suivi (même règle que la synchronisation admin).
+            formation, _ = ensure_formation_for_department(session, person['department'], ecs[0])
         if formation:
             user.formation_id = formation.id
             if formation.niveau:

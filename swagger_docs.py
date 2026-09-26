@@ -3257,7 +3257,7 @@ OPENAPI_SPEC = {
                 "Un cours par appel (~10 s pour ~3 400 inscrits) — boucler sur `/api/admin/moodle/courses`. Mêmes règles que la "
                 "connexion SSO : **enseignants** du cours → compte professeur créé s'il manque, compte étudiant qui enseigne → "
                 "professeur, affectation à l'EC ; **étudiants** → compte créé s'il manque (formation depuis le département Moodle), "
-                "formation complétée si vide, inscription à l'UE de l'EC. Comptes créés sans mot de passe CEI (connexion par SSO). "
+                "formation complétée si vide, inscription à l'UE de l'EC. Comptes créés sans mot de passe CEI (connexion par SSO). Département Moodle sans formation CEI → formation créée automatiquement (`<niveau>-<département>`, niveau et pôle repris du cours ; liste dans `students.formations_created`). "
                 "**Uniquement additif** : aucun compte supprimé, aucune inscription retirée, aucun rôle autre qu'étudiant modifié. "
                 "`dry_run` vaut `true` par défaut — rien n'est écrit tant qu'il n'est pas explicitement `false`. Les listes d'emails permettent de dédoublonner un bilan sur plusieurs cours : en simulation, un même étudiant absent de CEI apparaît dans chacun de ses cours."
             ),

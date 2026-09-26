@@ -752,6 +752,14 @@ OPENAPI_SPEC = {
                 "401": {"description": "Token access manquant"}
             }
         }},
+        "/api/auth/oidc/enabled": {"get": {
+            "tags": ["SSO / Fédération d'identité"], "summary": "Le SSO UNCHK est-il configuré sur ce serveur ?",
+            "description": "Public. La page de connexion n'affiche le bouton « Se connecter avec UNCHK » que si enabled=true (variables OIDC_ISSUER, OIDC_CLIENT_ID, OIDC_CLIENT_SECRET et OIDC_REDIRECT_URI présentes).",
+            "security": [],
+            "responses": {"200": {"description": "État", "content": {"application/json": {"schema": {
+                "type": "object", "properties": {"enabled": {"type": "boolean"}}
+            }}}}}
+        }},
         "/api/auth/oidc/login": {"get": {
             "tags": ["SSO / Fédération d'identité"], "summary": "Démarre le login SSO via le Keycloak UNCHK",
             "description": "Redirige (302) vers le realm Keycloak UNCHK (senid.unchk.sn), même serveur que Moodle. Route destinée à être ouverte par navigation directe (lien/bouton), pas par fetch/XHR.",

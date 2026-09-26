@@ -92,9 +92,26 @@ def _issue_session_and_redirect(user: User, target: str):
     return resp
 
 
+_REQUIRED_ENVS = ('OIDC_ISSUER', 'OIDC_CLIENT_ID', 'OIDC_CLIENT_SECRET', 'OIDC_REDIRECT_URI')
+
+
+def _configured() -> bool:
+    return all(os.getenv(k) for k in _REQUIRED_ENVS)
+
+
+@oidc_bp.route('/api/auth/oidc/enabled', methods=['GET'])
+def oidc_enabled():
+    """Indique à la page de connexion s'il faut afficher le bouton UNCHK :
+    tant que le client Keycloak n'est pas configuré sur ce serveur, le bouton
+    reste masqué au lieu de mener à une erreur."""
+    return jsonify({'enabled': _configured()})
+
+
 @oidc_bp.route('/api/auth/oidc/login', methods=['GET'])
 @limiter.limit("30 per minute")
 def oidc_login():
+    if not _configured():
+        return redirect(f"{_app_url()}/login?sso_error=not_configured")
     state = secrets.token_urlsafe(32)
     nonce = secrets.token_urlsafe(32)
     cache_set(f"cei:oidc:state:{state}", {'nonce': nonce}, ttl=_STATE_TTL)

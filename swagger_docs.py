@@ -1534,6 +1534,14 @@ OPENAPI_SPEC = {
                 "responses": {"200": {"description": "Supprimé"}}
             }
         },
+        "/api/admin/semesters/{sid}/confirm-values": {"post": {
+            "tags": ["Académique"], "summary": "Confirmer les valeurs « à confirmer » d'un semestre (admin)",
+            "description": "Marque values_confirmed=true sur toutes les UE et EC du semestre créés depuis Moodle avec des valeurs par défaut (crédits, coefficients, CC/EX), sans modifier ces valeurs. Débloque la génération des relevés de notes du semestre.",
+            "parameters": [{"name": "sid", "in": "path", "required": True, "schema": {"type": "integer"}}],
+            "responses": {"200": {"description": "Valeurs confirmées", "content": {"application/json": {"schema": {
+                "type": "object", "properties": {"success": {"type": "boolean"}, "confirmed_ues": {"type": "integer"}, "confirmed_ecs": {"type": "integer"}}
+            }}}}, "404": {"description": "Semestre non trouvé"}}
+        }},
         "/api/admin/ues": {"post": {
             "tags": ["Académique"], "summary": "Créer une UE (admin)",
             "requestBody": {"required": True, "content": {"application/json": {"schema": {

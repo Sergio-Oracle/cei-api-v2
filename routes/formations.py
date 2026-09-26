@@ -681,6 +681,38 @@ def update_semester(sid):
         return jsonify({'error': str(e)}), 500
 
 
+@formations_bp.route('/api/admin/semesters/<int:sid>/confirm-values', methods=['POST'])
+@paseto_required
+def confirm_semester_values(sid):
+    """Valide en un clic les valeurs pédagogiques (crédits, coefficients, CC/EX)
+    de toutes les UE/EC « à confirmer » d'un semestre — pour quand les valeurs
+    affichées sont les bonnes et qu'aucune maquette Excel n'est disponible.
+    Les valeurs elles-mêmes ne sont pas modifiées."""
+    try:
+        session = get_session()
+        ok, _ = _is_admin(session)
+        if not ok: session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
+        s = session.query(Semester).filter_by(id=sid).first()
+        if not s: session.close(); return jsonify({'error': 'Semestre non trouvé'}), 404
+        ues = session.query(UE).filter_by(semester_id=sid).all()
+        ue_ids = [u.id for u in ues]
+        n_ues = sum(1 for u in ues if u.values_confirmed is False)
+        n_ecs = session.query(EC).filter(EC.ue_id.in_(ue_ids), EC.values_confirmed.is_(False)).count() if ue_ids else 0
+        if n_ues:
+            session.query(UE).filter(UE.semester_id == sid, UE.values_confirmed.is_(False)) \
+                .update({UE.values_confirmed: True}, synchronize_session=False)
+        if n_ecs:
+            session.query(EC).filter(EC.ue_id.in_(ue_ids), EC.values_confirmed.is_(False)) \
+                .update({EC.values_confirmed: True}, synchronize_session=False)
+        session.commit(); session.close()
+        _invalidate_academic_cache()
+        return jsonify({'success': True, 'confirmed_ues': n_ues, 'confirmed_ecs': n_ecs})
+    except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
+        return jsonify({'error': str(e)}), 500
+
+
 @formations_bp.route('/api/admin/semesters/<int:sid>', methods=['DELETE'])
 @paseto_required
 def delete_semester(sid):

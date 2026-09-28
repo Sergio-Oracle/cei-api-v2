@@ -3269,6 +3269,15 @@ OPENAPI_SPEC = {
                 "moodle_courses_without_ec": [], "ecs_without_moodle_course": ["MIC2311"], "duplicate_codes": {}, "errors": []
             }}}}, "403": {"$ref": "#/components/responses/Forbidden"}, "503": {"description": "Synchronisation désactivée"}}
         }},
+        "/api/admin/moodle/calendar/sync": {"post": {
+            "tags": ["Moodle"], "summary": "Publier les dates d'examen dans les calendriers Moodle (rattrapage, admin)",
+            "description": "Automatique en temps normal : la création, la modification (titre, horaire, prolongation) et la suppression d'un examen publient, remplacent ou retirent en arrière-plan un événement de cours « Examen CEI : titre » dans le cours Moodle de l'EC du sujet (même code), sans jamais bloquer CEI si Moodle est indisponible. Cette route rattrape les examens planifiés ou en cours non terminés (examens antérieurs à la fonctionnalité, panne Moodle). dry_run vaut true par défaut. Moodle ne sachant déplacer un événement que d'un jour, un changement d'heure ou de durée remplace l'événement.",
+            "requestBody": {"content": {"application/json": {"schema": {"type": "object", "properties": {"dry_run": {"type": "boolean", "default": True}}}}}},
+            "responses": {"200": {"description": "Bilan", "content": {"application/json": {"example": {
+                "dry_run": False, "created": ["Examen AES1111 (02/11/2026 09:00 UTC)"], "updated": [], "unchanged": [], "removed": [],
+                "skipped": [{"exam": "Examen X (…)", "reason": "aucun cours Moodle MIC2101"}], "errors": []
+            }}}}, "403": {"$ref": "#/components/responses/Forbidden"}}
+        }},
         "/api/admin/moodle/sync/structure": {"post": {
             "tags": ["Moodle"], "summary": "Créer la maquette manquante depuis les catégories Moodle (admin)",
             "description": (

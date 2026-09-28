@@ -1305,6 +1305,22 @@ class ApiClient(Base):
         }
 
 
+class MoodleExamEvent(Base):
+    """Événement du calendrier Moodle publié pour un examen CEI (phase 4) :
+    un par examen, dans le cours Moodle de l'EC du sujet. exam_id n'est pas
+    une clé étrangère : la ligne doit survivre à la suppression de l'examen,
+    le temps de retirer l'événement côté Moodle."""
+    __tablename__ = 'moodle_exam_events'
+    id               = Column(Integer, primary_key=True)
+    exam_id          = Column(Integer, nullable=False, unique=True, index=True)
+    instance_id      = Column(Integer, ForeignKey('moodle_instances.id', ondelete='SET NULL'), nullable=True)
+    moodle_course_id = Column(Integer, nullable=True)
+    moodle_event_id  = Column(Integer, nullable=True)
+    signature        = Column(String(64), nullable=True)   # empreinte titre+horaire publiés
+    synced_at        = Column(DateTime(timezone=True), nullable=True)
+    last_error       = Column(Text, nullable=True)
+
+
 class MoodleInstance(Base):
     """Plateforme Moodle UNCHK synchronisée avec CEI — ajoutée par l'admin
     depuis la page Moodle, sans changement de code (une par plateforme :

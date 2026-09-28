@@ -136,6 +136,7 @@ def external_professor_create_exam():
         )
         session.add(exam)
         session.commit()
+        from services.moodle_calendar import schedule_sync; schedule_sync(exam.id)
         return jsonify({'success': True, 'exam': exam.to_dict()}), 201
     except Exception as e:
         session.rollback()
@@ -186,6 +187,7 @@ def external_professor_update_exam(exam_id):
             exam.end_time = exam.start_time + timedelta(minutes=exam.duration_minutes)
 
         session.commit()
+        from services.moodle_calendar import schedule_sync; schedule_sync(exam.id)
         return jsonify({'success': True, 'exam': exam.to_dict()})
     except Exception as e:
         session.rollback()

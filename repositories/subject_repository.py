@@ -138,8 +138,10 @@ class SubjectRepository:
     @staticmethod
     def delete_with_cascade(subject_id: int) -> None:
         """Delete a subject and all its dependent records."""
+        removed_exam_ids = []
         with db_session() as session:
             for exam in session.query(OnlineExam).filter_by(subject_id=subject_id).all():
+                removed_exam_ids.append(exam.id)
                 attempt_ids = [
                     a.id for a in session.query(ExamAttempt.id).filter_by(exam_id=exam.id).all()
                 ]
@@ -166,3 +168,6 @@ class SubjectRepository:
             subj = session.query(Subject).filter_by(id=subject_id).first()
             if subj:
                 session.delete(subj)
+        # Hors du bloc : la suppression est validée, on retire leurs dates du calendrier Moodle.
+        from services.moodle_calendar import schedule_remove
+        schedule_remove(*removed_exam_ids)

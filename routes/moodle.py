@@ -344,6 +344,30 @@ def moodle_sync_course():
         session.close()
 
 
+@moodle_bp.route('/api/admin/moodle/calendar/sync', methods=['POST'])
+@paseto_required
+def moodle_calendar_sync():
+    """Rattrapage des dates d'examen dans les calendriers Moodle : publie ou
+    met à jour les examens planifiés ou en cours non terminés. En temps
+    normal c'est automatique (création, modification, suppression d'un
+    examen) ; ceci sert après une panne Moodle ou pour les examens créés
+    avant la phase 4. dry_run vaut true par défaut."""
+    from services.moodle_calendar import sync_upcoming
+    session = get_session()
+    if not require_admin(session):
+        return jsonify({'error': 'Accès réservé aux administrateurs'}), 403
+    try:
+        if not moodle_sync.is_enabled():
+            return _disabled()
+        dry_run = (request.get_json(silent=True) or {}).get('dry_run', True) is not False
+        return jsonify({'dry_run': dry_run, **sync_upcoming(session, dry_run=dry_run)})
+    except Exception as e:
+        session.rollback()
+        return jsonify({'error': str(e)}), 500
+    finally:
+        session.close()
+
+
 @moodle_bp.route('/api/admin/moodle/sync/structure', methods=['POST'])
 @paseto_required
 def moodle_sync_structure():

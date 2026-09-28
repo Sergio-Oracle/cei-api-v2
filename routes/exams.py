@@ -287,6 +287,7 @@ def create_online_exam():
             except Exception:
                 pass
 
+        from services.moodle_calendar import schedule_sync; schedule_sync(exam_dict['id'])  # date publiée dans le calendrier Moodle (arrière-plan)
         return jsonify({'success': True, 'exam': exam_dict}), 201
     except Exception as e:
         print(f"Erreur create_online_exam: {e}")
@@ -385,6 +386,7 @@ def extend_online_exam(exam_id):
         session.commit()
         exam_dict = exam.to_dict()
         session.close()
+        from services.moodle_calendar import schedule_sync; schedule_sync(exam_id)  # date publiée dans le calendrier Moodle (arrière-plan)
         return jsonify({
             'success': True,
             'message': f'Durée prolongée de {extra_minutes} minutes',
@@ -550,6 +552,7 @@ def edit_online_exam(exam_id):
         session.commit()
         result = exam.to_dict()
         session.close()
+        from services.moodle_calendar import schedule_sync; schedule_sync(exam_id)  # date publiée dans le calendrier Moodle (arrière-plan)
         return jsonify({'success': True, 'exam': result})
     except Exception as e:
         if session:
@@ -613,6 +616,7 @@ def delete_online_exam(exam_id):
         session.delete(exam)
         session.commit()
         session.close()
+        from services.moodle_calendar import schedule_remove; schedule_remove(exam_id)  # retire l'événement Moodle
 
         return jsonify({'success': True, 'message': 'Examen supprimé avec succès'})
     except Exception as e:

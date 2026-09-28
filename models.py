@@ -773,6 +773,7 @@ class OnlineExam(Base):
             'id': self.id,
             'subject_id': self.subject_id,
             'subject_title': self.subject.title if self.subject else None,
+            'ec_id': self.subject.ec_id if self.subject else None,
             'title': self.title,
             'instructions': self.instructions,
             'duration_minutes': self.duration_minutes,
@@ -1343,6 +1344,11 @@ class MoodleInstance(Base):
     updated_at          = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc),
                                  onupdate=lambda: datetime.now(timezone.utc))
     created_by_admin_id = Column(Integer, ForeignKey('users.id'), nullable=True)
+    # LTI 1.3 (phase 6) — valeurs affichées par Moodle après l'enregistrement
+    # de CEI comme outil externe. L'émetteur (issuer) est base_url.
+    lti_client_id       = Column(String(255), nullable=True)
+    lti_deployment_id   = Column(String(255), nullable=True)
+    lti_type_id         = Column(Integer, nullable=True)   # id de l'outil dans Moodle (typeid=…)
 
     pole = relationship('Pole')
 
@@ -1359,7 +1365,26 @@ class MoodleInstance(Base):
             'last_check_ok': self.last_check_ok,
             'last_check': json.loads(self.last_check_info) if self.last_check_info else None,
             'created_at': self.created_at.isoformat() if self.created_at else None,
+            'lti_client_id': self.lti_client_id,
+            'lti_deployment_id': self.lti_deployment_id,
+            'lti_type_id': self.lti_type_id,
+            'lti_configured': bool(self.lti_client_id and self.lti_deployment_id),
         }
+
+
+class LtiLineItem(Base):
+    """Colonne du carnet de notes Moodle créée par CEI (LTI AGS) pour un
+    examen, dans le cours Moodle de son EC — une par examen, rattachée à
+    l'outil CEI de la plateforme."""
+    __tablename__ = 'lti_line_items'
+    id               = Column(Integer, primary_key=True)
+    exam_id          = Column(Integer, nullable=False, unique=True, index=True)
+    instance_id      = Column(Integer, ForeignKey('moodle_instances.id', ondelete='CASCADE'), nullable=False)
+    moodle_course_id = Column(Integer, nullable=False)
+    lineitem_url     = Column(String(500), nullable=False)
+    pushed_at        = Column(DateTime(timezone=True), nullable=True)
+    pushed_count     = Column(Integer, default=0)
+    last_error       = Column(Text, nullable=True)
 
 
 class CameraLog(Base):
@@ -1535,6 +1560,12 @@ def init_db():
         ("SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='formation_id'",
          "ALTER TABLE users ADD COLUMN formation_id INTEGER REFERENCES formations(id) ON DELETE SET NULL"),
         # Phase 1 (25/09) — origine des comptes créés automatiquement depuis Moodle
+        ("SELECT 1 FROM information_schema.columns WHERE table_name='moodle_instances' AND column_name='lti_client_id'",
+         "ALTER TABLE moodle_instances ADD COLUMN lti_client_id VARCHAR(255)"),
+        ("SELECT 1 FROM information_schema.columns WHERE table_name='moodle_instances' AND column_name='lti_deployment_id'",
+         "ALTER TABLE moodle_instances ADD COLUMN lti_deployment_id VARCHAR(255)"),
+        ("SELECT 1 FROM information_schema.columns WHERE table_name='moodle_instances' AND column_name='lti_type_id'",
+         "ALTER TABLE moodle_instances ADD COLUMN lti_type_id INTEGER"),
         ("SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='created_via'",
          "ALTER TABLE users ADD COLUMN created_via VARCHAR(30)"),
         # Structure créée depuis Moodle (26/09) — valeurs à confirmer + lien catégorie

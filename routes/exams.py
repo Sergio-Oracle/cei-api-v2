@@ -3012,6 +3012,8 @@ def publish_exam_results(exam_id):
                 daemon=True,
             ).start()
 
+        if published:
+            from services.lti import schedule_push; schedule_push(exam_id)  # notes → carnet Moodle (LTI, arrière-plan)
         return jsonify({'success': True, 'results_published': published})
     except Exception as e:
         print(f"publish_exam_results {exam_id}: {e}")

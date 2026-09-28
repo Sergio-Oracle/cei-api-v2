@@ -3269,6 +3269,53 @@ OPENAPI_SPEC = {
                 "moodle_courses_without_ec": [], "ecs_without_moodle_course": ["MIC2311"], "duplicate_codes": {}, "errors": []
             }}}}, "403": {"$ref": "#/components/responses/Forbidden"}, "503": {"description": "Synchronisation désactivée"}}
         }},
+        "/api/lti/jwks": {"get": {
+            "tags": ["Moodle"], "summary": "LTI 1.3 — clé publique de CEI (JWKS)", "security": [],
+            "description": "À renseigner dans Moodle comme « Keyset URL » de l'outil CEI : Moodle y vérifie la signature des demandes de jeton de service de CEI (dépôt des notes). Clé RSA générée au premier usage, propre à chaque serveur (lti_private.pem, non versionnée).",
+            "responses": {"200": {"description": "JWKS", "content": {"application/json": {"example": {"keys": [{"kty": "RSA", "kid": "3bd7e154d2b90a0b", "alg": "RS256", "use": "sig", "n": "...", "e": "AQAB"}]}}}}}
+        }},
+        "/api/lti/login": {"get": {
+            "tags": ["Moodle"], "summary": "LTI 1.3 — connexion initiée par Moodle (initiate login URL)", "security": [],
+            "description": "Appelée par Moodle (GET ou POST) quand un utilisateur ouvre l'activité « Examens CEI ». Retrouve la plateforme par iss + client_id, mémorise state/nonce (Redis, 5 min, usage unique) et redirige vers /mod/lti/auth.php de Moodle (form_post).",
+            "parameters": [{"name": n, "in": "query", "schema": {"type": "string"}} for n in ("iss", "client_id", "login_hint", "lti_message_hint", "target_link_uri", "lti_deployment_id")],
+            "responses": {"302": {"description": "Redirection vers Moodle"}, "400": {"description": "Plateforme non configurée (page HTML)"}}
+        }},
+        "/api/lti/launch": {"post": {
+            "tags": ["Moodle"], "summary": "LTI 1.3 — lancement (tool URL / redirection URI)", "security": [],
+            "description": "Reçoit id_token + state de Moodle. Vérifie la signature (clés publiques de Moodle), l'audience, l'émetteur, le nonce, le déploiement, la version 1.3.0 et le type LtiResourceLinkRequest. Personne identifiée par l'email (même règle que le SSO : compte créé si connue de Moodle), cours Moodle → EC par son code (claim context.label). Répond une page HTML qui ouvre la session via /api/lti/session (ou propose un nouvel onglet si Moodle l'affiche dans un cadre). Retient le type_id de l'outil depuis le claim AGS.",
+            "requestBody": {"required": True, "content": {"application/x-www-form-urlencoded": {"schema": {"type": "object", "properties": {"id_token": {"type": "string"}, "state": {"type": "string"}}}}}},
+            "responses": {"200": {"description": "Page HTML d'ouverture"}, "400": {"description": "Lancement refusé (page HTML explicative)"}}
+        }},
+        "/api/lti/session": {"get": {
+            "tags": ["Moodle"], "summary": "LTI 1.3 — ouverture de la session CEI", "security": [],
+            "description": "Échange le code à usage unique (2 min) produit par le lancement contre la session CEI (cookies cei_refresh et cei_logged_in, comme la connexion normale) puis mène à /lti/course/<ec_id>.",
+            "parameters": [{"name": "code", "in": "query", "required": True, "schema": {"type": "string"}}],
+            "responses": {"200": {"description": "Page HTML + cookies de session"}, "400": {"description": "Code expiré ou déjà utilisé"}}
+        }},
+        "/api/lti/course/{ec_id}": {"get": {
+            "tags": ["Moodle"], "summary": "LTI 1.3 — fiche de l'EC ouvert depuis Moodle",
+            "parameters": [{"name": "ec_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+            "responses": {"200": {"description": "EC", "content": {"application/json": {"example": {"ec_id": 76, "ec_code": "AES1111", "ec_name": "Droit constitutionnel...", "formation_code": "L1-AES"}}}}, "404": {"description": "EC introuvable"}}
+        }},
+        "/api/admin/moodle/lti/tool-config": {"get": {
+            "tags": ["Moodle"], "summary": "LTI 1.3 — valeurs à saisir dans Moodle pour enregistrer CEI (admin)",
+            "responses": {"200": {"description": "URLs", "content": {"application/json": {"example": {
+                "tool_url": "https://preprod-cei.unchk.sn/api/lti/launch", "initiate_login_url": "https://preprod-cei.unchk.sn/api/lti/login",
+                "redirection_uris": "https://preprod-cei.unchk.sn/api/lti/launch", "public_keyset_url": "https://preprod-cei.unchk.sn/api/lti/jwks",
+                "lti_version": "LTI 1.3", "public_key_type": "Keyset URL"}}}}, "403": {"$ref": "#/components/responses/Forbidden"}}
+        }},
+        "/api/admin/moodle/lti/grades": {"get": {
+            "tags": ["Moodle"], "summary": "Examens aux résultats publiés et état du dépôt de leurs notes dans Moodle (admin)",
+            "responses": {"200": {"description": "Liste", "content": {"application/json": {"example": {"exams": [{"exam_id": 12, "title": "Partiel 1", "ec_id": 76, "pushed_at": "2026-11-05T10:00:00+00:00", "pushed_count": 312, "last_error": None}]}}}}}
+        }},
+        "/api/admin/moodle/lti/grades/{exam_id}": {"post": {
+            "tags": ["Moodle"], "summary": "Déposer les notes publiées d'un examen dans le carnet Moodle (LTI AGS, admin)",
+            "description": "Automatique à la publication des résultats (PUT /api/online_exams/{id}/publish-results) ; ceci sert au rattrapage. Crée si besoin la colonne « Examen CEI – titre » (resourceId cei-exam-<id>, sur 20) dans le cours Moodle de l'EC, puis dépose la note de chaque étudiant inscrit au cours (identifiant Moodle retrouvé par email). dry_run vaut true par défaut.",
+            "parameters": [{"name": "exam_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+            "requestBody": {"content": {"application/json": {"schema": {"type": "object", "properties": {"dry_run": {"type": "boolean", "default": True}}}}}},
+            "responses": {"200": {"description": "Bilan", "content": {"application/json": {"example": {"dry_run": False, "exam_id": 12, "pushed": 312, "not_in_moodle": ["x@unchk.edu.sn"], "skipped": None, "error": None}}}},
+                          "502": {"description": "Moodle refuse (jeton de service ou notes)"}}
+        }},
         "/api/admin/moodle/calendar/sync": {"post": {
             "tags": ["Moodle"], "summary": "Publier les dates d'examen dans les calendriers Moodle (rattrapage, admin)",
             "description": "Automatique en temps normal : la création, la modification (titre, horaire, prolongation) et la suppression d'un examen publient, remplacent ou retirent en arrière-plan un événement de cours « Examen CEI : titre » dans le cours Moodle de l'EC du sujet (même code), sans jamais bloquer CEI si Moodle est indisponible. Cette route rattrape les examens planifiés ou en cours non terminés (examens antérieurs à la fonctionnalité, panne Moodle). dry_run vaut true par défaut. Moodle ne sachant déplacer un événement que d'un jour, un changement d'heure ou de durée remplace l'événement.",

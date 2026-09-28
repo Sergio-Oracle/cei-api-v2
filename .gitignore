@@ -41,3 +41,6 @@ agent_heartbeat.json
 
 # Rapports de tests générés
 tests/reports/
+
+# Clé privée LTI 1.3 de CEI (générée au premier démarrage, propre à chaque serveur)
+lti_private.pem

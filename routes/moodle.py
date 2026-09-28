@@ -158,6 +158,14 @@ def moodle_instances_update(instance_id):
             inst.pole_id = data['pole_id'] or None
         if 'is_active' in data:
             inst.is_active = bool(data['is_active'])
+        for field in ('lti_client_id', 'lti_deployment_id'):
+            if field in data:
+                setattr(inst, field, (str(data[field] or '').strip() or None))
+        if 'lti_type_id' in data:
+            raw = str(data['lti_type_id'] or '').strip()
+            if raw and not raw.isdigit():
+                return jsonify({'error': "L'identifiant de l'outil (type_id) doit être un nombre"}), 400
+            inst.lti_type_id = int(raw) if raw else None
 
         new_url = inst.base_url
         if data.get('base_url'):

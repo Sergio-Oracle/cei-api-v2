@@ -120,6 +120,7 @@ from routes.biometric      import biometric_bp;       app.register_blueprint(bio
 from routes.api_clients    import api_clients_bp;     app.register_blueprint(api_clients_bp)
 from routes.oidc           import oidc_bp;            app.register_blueprint(oidc_bp)
 from routes.lti            import lti_bp;             app.register_blueprint(lti_bp)
+from services import moodle_auto as _moodle_auto
 from routes.moodle         import moodle_bp;          app.register_blueprint(moodle_bp)
 from routes.external.student     import external_student_bp;     app.register_blueprint(external_student_bp)
 from routes.external.professor   import external_professor_bp;   app.register_blueprint(external_professor_bp)
@@ -134,6 +135,10 @@ register_csv_routes(app)
 # ── Middleware : request-ID + timing ─────────────────────────────────────────
 @app.before_request
 def _before_request():
+    # Synchronisation automatique Moodle : un fil par processus, démarré ici
+    # (et non à l'import : gunicorn charge l'application avant de dupliquer
+    # ses processus, un fil démarré à l'import ne survivrait pas). No-op après.
+    _moodle_auto.start_scheduler()
     g.t0         = time.monotonic()
     g.request_id = request.headers.get('X-Request-ID', uuid.uuid4().hex[:8])
 

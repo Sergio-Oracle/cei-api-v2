@@ -1349,6 +1349,16 @@ class MoodleInstance(Base):
     lti_client_id       = Column(String(255), nullable=True)
     lti_deployment_id   = Column(String(255), nullable=True)
     lti_type_id         = Column(Integer, nullable=True)   # id de l'outil dans Moodle (typeid=…)
+    # Cours modèle contenant UNIQUEMENT l'activité CEI, copiée dans chaque cours à la synchronisation.
+    lti_template_course = Column(String(100), nullable=True)
+    # Webhook : Moodle prévient CEI de chaque changement (secret propre à la plateforme).
+    webhook_secret      = Column(String(64), nullable=True)
+    webhook_last_at     = Column(DateTime(timezone=True), nullable=True)
+    # Synchronisation automatique (webhook + filet de sécurité programmé).
+    auto_sync_enabled   = Column(Boolean, default=False)
+    auto_sync_last_at   = Column(DateTime(timezone=True), nullable=True)
+    auto_sync_last_full_at = Column(DateTime(timezone=True), nullable=True)
+    auto_sync_last_report  = Column(Text, nullable=True)   # JSON
 
     pole = relationship('Pole')
 
@@ -1369,6 +1379,13 @@ class MoodleInstance(Base):
             'lti_deployment_id': self.lti_deployment_id,
             'lti_type_id': self.lti_type_id,
             'lti_configured': bool(self.lti_client_id and self.lti_deployment_id),
+            'lti_template_course': self.lti_template_course,
+            'webhook_configured': bool(self.webhook_secret),
+            'webhook_last_at': self.webhook_last_at.isoformat() if self.webhook_last_at else None,
+            'auto_sync_enabled': bool(self.auto_sync_enabled),
+            'auto_sync_last_at': self.auto_sync_last_at.isoformat() if self.auto_sync_last_at else None,
+            'auto_sync_last_full_at': self.auto_sync_last_full_at.isoformat() if self.auto_sync_last_full_at else None,
+            'auto_sync_last_report': json.loads(self.auto_sync_last_report) if self.auto_sync_last_report else None,
         }
 
 
@@ -1560,6 +1577,20 @@ def init_db():
         ("SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='formation_id'",
          "ALTER TABLE users ADD COLUMN formation_id INTEGER REFERENCES formations(id) ON DELETE SET NULL"),
         # Phase 1 (25/09) — origine des comptes créés automatiquement depuis Moodle
+        ("SELECT 1 FROM information_schema.columns WHERE table_name='moodle_instances' AND column_name='lti_template_course'",
+         "ALTER TABLE moodle_instances ADD COLUMN lti_template_course VARCHAR(100)"),
+        ("SELECT 1 FROM information_schema.columns WHERE table_name='moodle_instances' AND column_name='webhook_secret'",
+         "ALTER TABLE moodle_instances ADD COLUMN webhook_secret VARCHAR(64)"),
+        ("SELECT 1 FROM information_schema.columns WHERE table_name='moodle_instances' AND column_name='webhook_last_at'",
+         "ALTER TABLE moodle_instances ADD COLUMN webhook_last_at TIMESTAMP WITH TIME ZONE"),
+        ("SELECT 1 FROM information_schema.columns WHERE table_name='moodle_instances' AND column_name='auto_sync_enabled'",
+         "ALTER TABLE moodle_instances ADD COLUMN auto_sync_enabled BOOLEAN DEFAULT FALSE"),
+        ("SELECT 1 FROM information_schema.columns WHERE table_name='moodle_instances' AND column_name='auto_sync_last_at'",
+         "ALTER TABLE moodle_instances ADD COLUMN auto_sync_last_at TIMESTAMP WITH TIME ZONE"),
+        ("SELECT 1 FROM information_schema.columns WHERE table_name='moodle_instances' AND column_name='auto_sync_last_full_at'",
+         "ALTER TABLE moodle_instances ADD COLUMN auto_sync_last_full_at TIMESTAMP WITH TIME ZONE"),
+        ("SELECT 1 FROM information_schema.columns WHERE table_name='moodle_instances' AND column_name='auto_sync_last_report'",
+         "ALTER TABLE moodle_instances ADD COLUMN auto_sync_last_report TEXT"),
         ("SELECT 1 FROM information_schema.columns WHERE table_name='moodle_instances' AND column_name='lti_client_id'",
          "ALTER TABLE moodle_instances ADD COLUMN lti_client_id VARCHAR(255)"),
         ("SELECT 1 FROM information_schema.columns WHERE table_name='moodle_instances' AND column_name='lti_deployment_id'",

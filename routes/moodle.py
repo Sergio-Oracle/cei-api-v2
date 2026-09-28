@@ -20,6 +20,12 @@ Professeur (ou admin) :
 L'extraction de la matière pour l'IA passe par POST /api/ai/generate-exam-suggestions
 (champs moodle_ec_id + moodle_files), pour réutiliser tout le pipeline existant.
 """
+import hmac
+import json
+import os
+import secrets
+from datetime import datetime, timezone
+
 from flask import Blueprint, jsonify, request
 from sqlalchemy.orm import joinedload
 
@@ -31,6 +37,9 @@ from services import moodle_sync
 from services.moodle_sync import MoodleClient, MoodleError
 from services.provisioning import sync_course
 from services.moodle_structure import build_structure
+from services.moodle_activity import ensure_activity
+from services import moodle_auto
+from extensions import limiter
 from routes.formations import _invalidate_academic_cache
 
 moodle_bp = Blueprint('moodle', __name__)
@@ -158,6 +167,10 @@ def moodle_instances_update(instance_id):
             inst.pole_id = data['pole_id'] or None
         if 'is_active' in data:
             inst.is_active = bool(data['is_active'])
+        if 'lti_template_course' in data:
+            inst.lti_template_course = (str(data['lti_template_course'] or '').strip() or None)
+        if 'auto_sync_enabled' in data:
+            inst.auto_sync_enabled = bool(data['auto_sync_enabled'])
         for field in ('lti_client_id', 'lti_deployment_id'):
             if field in data:
                 setattr(inst, field, (str(data[field] or '').strip() or None))
@@ -334,6 +347,8 @@ def moodle_sync_course():
             if not course:
                 return jsonify({'error': f'Aucun cours Moodle avec le code {ec_code}'}), 404
             report = sync_course(session, ec, client, course, dry_run=dry_run)
+            # Activité « CEI » : copiée depuis le cours modèle si le cours ne l'a pas encore.
+            report['activity'] = ensure_activity(inst, client, course, dry_run=dry_run)
         except LookupError as e:
             return jsonify({'error': str(e)}), 404
         except MoodleError as e:
@@ -348,6 +363,116 @@ def moodle_sync_course():
     except Exception as e:
         session.rollback()
         return jsonify({'error': str(e)}), 500
+    finally:
+        session.close()
+
+
+# ── Webhook : Moodle prévient CEI de chaque changement ─────────────────────
+
+WEBHOOK_EVENTS = [
+    '\\core\\event\\course_created', '\\core\\event\\course_updated', '\\core\\event\\course_restored',
+    '\\core\\event\\course_category_created', '\\core\\event\\course_category_updated',
+    '\\core\\event\\user_enrolment_created', '\\core\\event\\user_enrolment_updated',
+    '\\core\\event\\user_enrolment_deleted', '\\core\\event\\role_assigned', '\\core\\event\\role_unassigned',
+]
+
+
+def _webhook_url(inst) -> str:
+    return f"{os.getenv('APP_URL', 'https://dev-cei.ddns.net').rstrip('/')}/api/moodle/webhook/{inst.id}?token={inst.webhook_secret}"
+
+
+@moodle_bp.route('/api/moodle/webhook/<int:instance_id>', methods=['POST'])
+@limiter.limit("600 per minute")
+def moodle_webhook(instance_id):
+    """Reçoit les événements Moodle (JSON : un événement ou une liste ;
+    champs Moodle standard eventname, courseid, relateduserid…). Authentifié
+    par le secret de la plateforme (paramètre token, en-tête
+    X-CEI-Webhook-Token ou champ token). Répond immédiatement : le travail
+    est fait par la file de synchronisation automatique."""
+    session = get_session()
+    try:
+        inst = session.get(MoodleInstance, instance_id)
+        body = request.get_json(silent=True)
+        if body is None and request.form:
+            raw = request.form.get('data') or request.form.get('event')
+            body = json.loads(raw) if raw else request.form.to_dict()
+        token = (request.args.get('token') or request.headers.get('X-CEI-Webhook-Token')
+                 or (body.get('token') if isinstance(body, dict) else '') or '')
+        if not inst or not inst.webhook_secret or not hmac.compare_digest(str(token), inst.webhook_secret):
+            return jsonify({'error': 'Webhook non autorisé'}), 401
+        if isinstance(body, dict) and isinstance(body.get('events'), list):
+            events = body['events']
+        elif isinstance(body, list):
+            events = body
+        else:
+            events = [body or {}]
+        result = moodle_auto.enqueue_events(inst.id, [e for e in events if isinstance(e, dict)])
+        inst.webhook_last_at = datetime.now(timezone.utc)
+        session.commit()
+        return jsonify(result), 202
+    finally:
+        session.close()
+
+
+@moodle_bp.route('/api/admin/moodle/instances/<int:instance_id>/webhook', methods=['GET', 'POST'])
+@paseto_required
+def moodle_webhook_config(instance_id):
+    """GET : adresse du webhook à configurer dans Moodle (secret créé au
+    premier appel). POST : nouveau secret (l'ancienne adresse cesse de marcher)."""
+    session = get_session()
+    if not require_admin(session):
+        return jsonify({'error': 'Accès réservé aux administrateurs'}), 403
+    try:
+        inst = _instance_or_404(session, instance_id)
+        if request.method == 'POST' or not inst.webhook_secret:
+            inst.webhook_secret = secrets.token_urlsafe(32)
+            session.commit()
+        return jsonify({'url': _webhook_url(inst), 'events': WEBHOOK_EVENTS,
+                        'last_received_at': inst.webhook_last_at.isoformat() if inst.webhook_last_at else None})
+    except LookupError as e:
+        return jsonify({'error': str(e)}), 404
+    finally:
+        session.close()
+
+
+@moodle_bp.route('/api/admin/moodle/instances/<int:instance_id>/lti/template', methods=['GET'])
+@paseto_required
+def moodle_lti_template(instance_id):
+    """Vérifie le cours modèle de l'activité CEI (exactement une activité,
+    l'outil externe CEI) avant toute copie dans les cours."""
+    from services.moodle_activity import template_for
+    from cache import cache_delete
+    session = get_session()
+    if not require_admin(session):
+        return jsonify({'error': 'Accès réservé aux administrateurs'}), 403
+    try:
+        inst = _instance_or_404(session, instance_id)
+        cache_delete(f"cei:moodle:template:{inst.id}:{inst.lti_template_course}")
+        return jsonify(template_for(inst, moodle_sync.client_for(inst)))
+    except LookupError as e:
+        return jsonify({'error': str(e)}), 404
+    except MoodleError as e:
+        return _moodle_error(e)
+    finally:
+        session.close()
+
+
+@moodle_bp.route('/api/admin/moodle/instances/<int:instance_id>/auto-sync/run', methods=['POST'])
+@paseto_required
+def moodle_auto_sync_run(instance_id):
+    """Lance tout de suite une passe de synchronisation automatique
+    (full=true : toutes les inscriptions, sinon maquette + activité CEI + enseignants)."""
+    session = get_session()
+    if not require_admin(session):
+        return jsonify({'error': 'Accès réservé aux administrateurs'}), 403
+    try:
+        inst = _instance_or_404(session, instance_id)
+        full = bool((request.get_json(silent=True) or {}).get('full'))
+        if not moodle_auto.run_in_background(inst.id, full):
+            return jsonify({'error': 'Une synchronisation est déjà en cours pour cette plateforme'}), 409
+        return jsonify({'started': True, 'full': full}), 202
+    except LookupError as e:
+        return jsonify({'error': str(e)}), 404
     finally:
         session.close()
 

@@ -106,6 +106,78 @@ def platform_for(session, issuer: str, client_id: str | None = None):
     return inst
 
 
+# ── Enregistrement dynamique (LTI Advantage Dynamic Registration) ──────────
+
+TOOL_CONFIG = 'https://purl.imsglobal.org/spec/lti-tool-configuration'
+
+
+def register_dynamic(session, openid_configuration: str, registration_token: str, tool_base: str):
+    """L'admin colle l'adresse d'enregistrement de CEI dans Moodle ; Moodle
+    ouvre /api/lti/register avec son adresse de configuration. CEI s'y
+    enregistre et retient lui-même l'identifiant client et le déploiement :
+    rien à recopier. Seules les plateformes déjà ajoutées dans CEI (page
+    Moodle) sont acceptées, et CEI ne contacte que leur propre adresse."""
+    from models import MoodleInstance
+    host = urlsplit(openid_configuration or '').netloc.lower()
+    inst = next((i for i in session.query(MoodleInstance).filter_by(is_active=True).all()
+                 if urlsplit(i.base_url).netloc.lower() == host), None) if host else None
+    if not inst:
+        raise LtiError("Cette plateforme Moodle n'est pas encore déclarée dans CEI. Ajoutez-la d'abord dans "
+                       "CEI (Administration → Moodle → Plateformes), puis recommencez l'enregistrement.")
+    r = requests.get(openid_configuration, timeout=TIMEOUT)
+    if r.status_code != 200:
+        raise LtiError(f"Configuration Moodle illisible ({r.status_code}).")
+    cfg = r.json()
+    if (cfg.get('issuer') or '').rstrip('/') != inst.base_url:
+        raise LtiError("L'émetteur annoncé par Moodle ne correspond pas à la plateforme déclarée dans CEI.")
+    domain = urlsplit(tool_base).netloc
+    payload = {
+        'application_type': 'web',
+        'response_types': ['id_token'],
+        'grant_types': ['implicit', 'client_credentials'],
+        'initiate_login_uri': f"{tool_base}/api/lti/login",
+        'redirect_uris': [f"{tool_base}/api/lti/launch"],
+        'client_name': "CEI — Centre d'Examen Intelligent",
+        'jwks_uri': f"{tool_base}/api/lti/jwks",
+        'token_endpoint_auth_method': 'private_key_jwt',
+        'scope': AGS_SCOPES,
+        TOOL_CONFIG: {
+            'domain': domain,
+            'target_link_uri': f"{tool_base}/api/lti/launch",
+            'description': "Examens en ligne surveillés de l'UNCHK (CEI).",
+            'claims': ['iss', 'sub', 'name', 'given_name', 'family_name', 'email'],
+            'messages': [{'type': 'LtiResourceLinkRequest', 'target_link_uri': f"{tool_base}/api/lti/launch",
+                          'label': 'CEI'}],
+        },
+    }
+    headers = {'Content-Type': 'application/json', 'Accept': 'application/json'}
+    if registration_token:
+        headers['Authorization'] = f"Bearer {registration_token}"
+    r = requests.post(cfg['registration_endpoint'], json=payload, headers=headers, timeout=TIMEOUT)
+    if r.status_code >= 300:
+        raise LtiError(f"Moodle refuse l'enregistrement ({r.status_code}) : {r.text[:300]}")
+    reg = r.json()
+    deployment = str((reg.get(TOOL_CONFIG) or {}).get('deployment_id') or '')
+    if not reg.get('client_id') or not deployment:
+        raise LtiError("Réponse d'enregistrement Moodle incomplète (identifiant client ou déploiement absent).")
+    inst.lti_client_id, inst.lti_deployment_id = reg['client_id'], deployment
+    if deployment.isdigit():
+        inst.lti_type_id = int(deployment)   # Moodle : deployment_id = id de l'outil
+    session.commit()
+    return inst
+
+
+def return_url(inst, claims) -> str:
+    """Adresse de retour vers Moodle (bouton « Retour à Moodle », déconnexion,
+    flèche Retour) : celle fournie par Moodle si elle est bien sur la
+    plateforme, sinon la page du cours."""
+    url = ((claims.get(LTI + 'launch_presentation') or {}).get('return_url') or '').strip()
+    if url and urlsplit(url).netloc.lower() == urlsplit(inst.base_url).netloc.lower():
+        return url
+    course_id = str((claims.get(LTI + 'context') or {}).get('id') or '')
+    return f"{inst.base_url}/course/view.php?id={course_id}" if course_id.isdigit() else f"{inst.base_url}/my/"
+
+
 # ── Connexion (OIDC third-party initiated login) ────────────────────────────
 
 def login_redirect(session, params: dict, launch_url: str) -> str:

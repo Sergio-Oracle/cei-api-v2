@@ -1,20 +1,23 @@
 """
 Routes LTI 1.3 (phase 6) — voir services/lti.py pour l'organisation.
 
-Parcours d'un lancement depuis l'activité « Examens CEI » d'un cours Moodle :
+Parcours d'un clic sur l'activité « CEI » d'un cours Moodle (lancement
+« Fenêtre existante » : CEI remplace Moodle dans la même fenêtre) :
   1. /api/lti/login   : Moodle initie la connexion → redirection vers Moodle
                         avec state + nonce (Redis, usage unique).
   2. /api/lti/launch  : Moodle poste le jeton signé → vérifié, personne
                         identifiée par son email (même règle que le SSO :
-                        compte créé si connu de Moodle), cours → EC par code.
-                        Répond une petite page qui ouvre la session CEI.
+                        compte créé si connu de Moodle). Répond une page qui
+                        ouvre la session CEI.
   3. /api/lti/session : échange un code à usage unique (2 min) contre la
-                        session CEI (mêmes cookies que la connexion normale)
-                        puis mène à /lti/course/<ec_id>.
-L'étape 3 existe parce que l'activité doit s'ouvrir dans une nouvelle
-fenêtre (caméra, plein écran) : si Moodle l'affiche quand même dans un
-cadre, les cookies y seraient bloqués — la page propose alors un bouton qui
-ouvre CEI dans un onglet, où la session s'ouvre normalement.
+                        session CEI (mêmes cookies que la connexion normale),
+                        puis /lti/enter mène au tableau de bord du rôle.
+/lti/enter garde l'adresse de retour vers Moodle : la flèche « Retour » du
+navigateur, le bouton « Retour à Moodle » et la déconnexion y ramènent.
+Si Moodle affiche malgré tout l'activité dans un cadre, la page propose un
+bouton qui fait passer CEI en pleine fenêtre.
+/api/lti/register : enregistrement dynamique (l'admin colle une adresse
+dans Moodle, CEI retient lui-même son identifiant client et son déploiement).
 """
 import html
 import secrets
@@ -26,7 +29,7 @@ from auth_paseto import paseto_required, get_current_user_id, session_key
 from extensions import limiter
 from helpers import require_admin, utcnow
 from cache import cache_get, cache_set, cache_delete
-from models import get_session, User, UserRole, EC, OnlineExam, LtiLineItem
+from models import get_session, User, UserRole, OnlineExam, LtiLineItem
 from routes.oidc import _app_url, _issue_session_and_redirect
 from services import lti
 from services.lti import LtiError
@@ -94,18 +97,14 @@ def lti_launch():
         inst, claims = lti.validate_launch(session, request.form.get('id_token', ''), request.form.get('state', ''))
         email = (claims.get('email') or '').strip().lower()
         if not email:
-            return _error_page("Moodle n'a pas transmis votre adresse email. L'administrateur Moodle doit régler "
-                               "l'outil CEI sur « Partager l'adresse email du lanceur : Toujours ».")
-        context = claims.get(lti.LTI + 'context') or {}
-        code = (context.get('label') or '').strip()
-        ec = session.query(EC).filter_by(code=code).first() if code else None
-        if not ec:
-            return _error_page(f"Le cours Moodle « {context.get('title') or code} » n'est relié à aucun EC dans CEI "
-                               f"(code {code or 'absent'}).")
-
+            return _framable_by(_error_page("Moodle n'a pas transmis votre adresse email. L'administrateur Moodle doit "
+                                            "régler l'outil CEI sur « Partager l'adresse email du lanceur : Toujours »."),
+                                inst.base_url)
+        back = lti.return_url(inst, claims)
         user, reason = provision_from_moodle(session, email)
         if not user or not user.is_active:
-            return _error_page("Votre compte n'a pas pu être ouvert dans CEI. Contactez l'administration CEI.", 403)
+            return _framable_by(_error_page("Votre compte n'a pas pu être ouvert dans CEI. Contactez l'administration CEI.", 403),
+                                inst.base_url)
 
         # Session étudiante déjà ouverte ailleurs : même confirmation que le SSO.
         if user.role == UserRole.STUDENT and cache_get(session_key(user.id)):
@@ -113,22 +112,23 @@ def lti_launch():
             retry_token = secrets.token_urlsafe(24)
             cache_set(f"cei:oidc:retry:{retry_token}", {'user_id': user.id}, ttl=120)
             target = f"{_app_url()}/login?" + urlencode({
-                'sso_conflict': '1', 'retry_token': retry_token,
+                'sso_conflict': '1', 'retry_token': retry_token, 'lti_back': back,
                 'device_label': existing.get('device_label', 'un autre appareil')})
         else:
             code_value = secrets.token_urlsafe(32)
-            cache_set(f"cei:lti:code:{code_value}", {'user_id': user.id, 'ec_id': ec.id}, ttl=_CODE_TTL)
+            cache_set(f"cei:lti:code:{code_value}", {'user_id': user.id, 'back': back}, ttl=_CODE_TTL)
             target = f"{_app_url()}/api/lti/session?code={code_value}"
 
         safe = html.escape(target, quote=True)
-        return _framable_by(_page('Examens CEI', f"""<h1>Examens CEI — {html.escape(ec.code)}</h1>
+        return _framable_by(_page('CEI', f"""<h1>Centre d'Examen Intelligent</h1>
 <p id="msg">Ouverture de CEI…</p>
-<p><a class="btn" id="go" href="{safe}" target="_blank" rel="noopener" style="display:none">Ouvrir mes examens CEI</a></p>
+<p><a class="btn" id="go" href="{safe}" target="_top" style="display:none">Ouvrir CEI</a></p>
 <script>
-  // Dans un cadre, CEI ne peut ni ouvrir sa session ni accéder à la caméra :
-  // on propose un nouvel onglet. Sinon on y va directement.
+  // Normalement CEI remplace Moodle (lancement « Fenêtre existante »). Si
+  // Moodle l'a placé dans un cadre, le navigateur n'autorise la sortie du
+  // cadre que sur un clic : on affiche alors un bouton.
   if (window.top !== window.self) {{
-    document.getElementById('msg').textContent = "CEI doit s'ouvrir dans un nouvel onglet (caméra et plein écran de l'examen).";
+    document.getElementById('msg').textContent = "Cliquez pour ouvrir CEI en pleine fenêtre (caméra et plein écran des examens).";
     document.getElementById('go').style.display = 'inline-block';
   }} else {{ window.location.replace({target!r}); }}
 </script>"""), inst.base_url)
@@ -138,13 +138,17 @@ def lti_launch():
         session.close()
 
 
+_DASHBOARDS = {UserRole.ADMIN: 'admin', UserRole.PROFESSOR: 'professor', UserRole.STUDENT: 'student',
+               UserRole.SURVEILLANT: 'surveillant', UserRole.SUPERVISEUR: 'superviseur'}
+
+
 @lti_bp.route('/api/lti/session', methods=['GET'])
 @limiter.limit("60 per minute")
 def lti_session():
     code = request.args.get('code', '')
     entry = cache_get(f"cei:lti:code:{code}") if code else None
     if not entry:
-        return _error_page("Lien expiré. Rouvrez l'activité « Examens CEI » depuis Moodle.")
+        return _error_page("Lien expiré. Cliquez à nouveau sur l'activité « CEI » dans Moodle.")
     cache_delete(f"cei:lti:code:{code}")
     session = get_session()
     try:
@@ -153,12 +157,14 @@ def lti_session():
             return _error_page("Compte CEI introuvable ou désactivé.", 403)
         user.last_login = utcnow()
         session.commit()
-        target = f"{_app_url()}/lti/course/{entry['ec_id']}"
-        # Cookies de session posés ici (navigation de premier niveau sur CEI),
-        # puis redirection par la page elle-même : la navigation suivante part
-        # de CEI, les cookies SameSite=Strict y sont donc bien envoyés.
+        target = f"{_app_url()}/lti/enter?" + urlencode({
+            'to': f"/dashboard/{_DASHBOARDS.get(user.role, 'student')}",
+            'back': entry.get('back') or '', 'k': secrets.token_urlsafe(8)})
+        # Cookies posés ici (navigation de premier niveau sur CEI), puis
+        # redirection par la page elle-même (replace : cette étape ne reste pas
+        # dans l'historique du navigateur).
         issued = _issue_session_and_redirect(user, target)
-        page = _page('Examens CEI', f"<p>Ouverture de vos examens…</p><script>window.location.replace({target!r});</script>")
+        page = _page('CEI', f"<p>Ouverture de CEI…</p><script>window.location.replace({target!r});</script>")
         for header in issued.headers.getlist('Set-Cookie'):
             page.headers.add('Set-Cookie', header)
         return page
@@ -166,19 +172,27 @@ def lti_session():
         session.close()
 
 
-@lti_bp.route('/api/lti/course/<int:ec_id>', methods=['GET'])
-@paseto_required
-def lti_course(ec_id):
-    """EC ouvert depuis Moodle : sa fiche, pour la page /lti/course/<id>. La
-    liste des examens vient de /api/online_exams (mêmes règles de visibilité)."""
+@lti_bp.route('/api/lti/register', methods=['GET'])
+@limiter.limit("20 per minute")
+def lti_register():
+    """Enregistrement dynamique LTI : Moodle ouvre cette page (dans une fenêtre
+    ou un cadre) avec openid_configuration et registration_token."""
     session = get_session()
     try:
-        ec = session.get(EC, ec_id)
-        if not ec:
-            return jsonify({'error': 'EC introuvable'}), 404
-        formation = ec.ue.semester.formation if ec.ue and ec.ue.semester else None
-        return jsonify({'ec_id': ec.id, 'ec_code': ec.code, 'ec_name': ec.name,
-                        'formation_code': formation.code if formation else None})
+        inst = lti.register_dynamic(session, request.args.get('openid_configuration', ''),
+                                    request.args.get('registration_token', ''), _app_url())
+        return _framable_by(_page('CEI enregistré', f"""<h1>CEI est enregistré dans {html.escape(inst.name)}</h1>
+<p>Identifiant client et déploiement retenus automatiquement par CEI. Dans Moodle, activez l'outil
+(« Gérer les outils »), puis lancez la synchronisation depuis CEI.</p>
+<script>
+  setTimeout(function () {{
+    (window.opener || window.parent).postMessage({{subject: 'org.imsglobal.lti.close'}}, '*');
+  }}, 2500);
+</script>"""), inst.base_url)
+    except LtiError as e:
+        return _framable_by(_error_page(str(e)), "https://*.unchk.sn")
+    except Exception as e:
+        return _framable_by(_error_page(f"Enregistrement impossible : {e}"), "https://*.unchk.sn")
     finally:
         session.close()
 
@@ -195,6 +209,7 @@ def lti_tool_config():
             return jsonify({'error': 'Accès réservé aux administrateurs'}), 403
         base = _app_url()
         return jsonify({
+            'registration_url': f"{base}/api/lti/register",
             'tool_url': f"{base}/api/lti/launch",
             'initiate_login_url': f"{base}/api/lti/login",
             'redirection_uris': f"{base}/api/lti/launch",

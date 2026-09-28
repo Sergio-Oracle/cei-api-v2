@@ -3239,7 +3239,11 @@ OPENAPI_SPEC = {
                 "parameters": [{"name": "instance_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
                 "requestBody": {"content": {"application/json": {"schema": {"type": "object", "properties": {
                     "name": {"type": "string"}, "base_url": {"type": "string"}, "token": {"type": "string"},
-                    "pole_id": {"type": "integer", "nullable": True}, "is_active": {"type": "boolean"}}}}}},
+                    "pole_id": {"type": "integer", "nullable": True}, "is_active": {"type": "boolean"},
+                    "lti_client_id": {"type": "string", "description": "Normalement rempli par l'enregistrement dynamique"},
+                    "lti_deployment_id": {"type": "string"}, "lti_type_id": {"type": "integer"},
+                    "lti_template_course": {"type": "string", "description": "Nom abrégé du cours modèle contenant uniquement l'activité CEI"},
+                    "auto_sync_enabled": {"type": "boolean", "description": "Passe horaire + passe complète de nuit"}}}}}},
                 "responses": {"200": {"description": "Plateforme modifiée"}, "400": {"description": "Paramètres invalides ou connexion impossible"},
                               "403": {"$ref": "#/components/responses/Forbidden"}, "404": {"description": "Plateforme introuvable"}}
             },
@@ -3282,25 +3286,56 @@ OPENAPI_SPEC = {
         }},
         "/api/lti/launch": {"post": {
             "tags": ["Moodle"], "summary": "LTI 1.3 — lancement (tool URL / redirection URI)", "security": [],
-            "description": "Reçoit id_token + state de Moodle. Vérifie la signature (clés publiques de Moodle), l'audience, l'émetteur, le nonce, le déploiement, la version 1.3.0 et le type LtiResourceLinkRequest. Personne identifiée par l'email (même règle que le SSO : compte créé si connue de Moodle), cours Moodle → EC par son code (claim context.label). Répond une page HTML qui ouvre la session via /api/lti/session (ou propose un nouvel onglet si Moodle l'affiche dans un cadre). Retient le type_id de l'outil depuis le claim AGS.",
+            "description": "Reçoit id_token + state de Moodle. Vérifie la signature (clés publiques de Moodle), l'audience, l'émetteur, le nonce, le déploiement, la version 1.3.0 et le type LtiResourceLinkRequest. Personne identifiée par l'email (même règle que le SSO : compte créé si connue de Moodle), aucun EC requis (on ouvre le tableau de bord). Adresse de retour : launch_presentation.return_url si elle est sur la plateforme, sinon la page du cours. Répond une page HTML qui ouvre la session via /api/lti/session (ou, si Moodle l'affiche dans un cadre, un bouton qui passe CEI en pleine fenêtre). Retient le type_id de l'outil depuis le claim AGS.",
             "requestBody": {"required": True, "content": {"application/x-www-form-urlencoded": {"schema": {"type": "object", "properties": {"id_token": {"type": "string"}, "state": {"type": "string"}}}}}},
             "responses": {"200": {"description": "Page HTML d'ouverture"}, "400": {"description": "Lancement refusé (page HTML explicative)"}}
         }},
         "/api/lti/session": {"get": {
             "tags": ["Moodle"], "summary": "LTI 1.3 — ouverture de la session CEI", "security": [],
-            "description": "Échange le code à usage unique (2 min) produit par le lancement contre la session CEI (cookies cei_refresh et cei_logged_in, comme la connexion normale) puis mène à /lti/course/<ec_id>.",
+            "description": "Échange le code à usage unique (2 min) produit par le lancement contre la session CEI (cookies cei_refresh et cei_logged_in, comme la connexion normale) puis mène à /lti/enter, qui garde l'adresse de retour vers Moodle et ouvre le tableau de bord du rôle (étudiant, enseignant, admin…). La flèche Retour du navigateur, le bouton « Retour à Moodle » et la déconnexion ramènent au cours Moodle.",
             "parameters": [{"name": "code", "in": "query", "required": True, "schema": {"type": "string"}}],
             "responses": {"200": {"description": "Page HTML + cookies de session"}, "400": {"description": "Code expiré ou déjà utilisé"}}
         }},
-        "/api/lti/course/{ec_id}": {"get": {
-            "tags": ["Moodle"], "summary": "LTI 1.3 — fiche de l'EC ouvert depuis Moodle",
-            "parameters": [{"name": "ec_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
-            "responses": {"200": {"description": "EC", "content": {"application/json": {"example": {"ec_id": 76, "ec_code": "AES1111", "ec_name": "Droit constitutionnel...", "formation_code": "L1-AES"}}}}, "404": {"description": "EC introuvable"}}
+        "/api/lti/register": {"get": {
+            "tags": ["Moodle"], "summary": "LTI 1.3 — enregistrement dynamique de CEI dans Moodle", "security": [],
+            "description": "Adresse à coller une fois dans Moodle (Gérer les outils → URL de l'outil → Ajouter LTI Advantage). Moodle l'ouvre avec openid_configuration et registration_token ; CEI s'enregistre (connexion, redirection, JWKS, services de notes, nom et email) et retient seul l'identifiant client et le déploiement (= type_id). Seules les plateformes déjà déclarées dans CEI sont acceptées ; CEI ne contacte que leur adresse.",
+            "parameters": [{"name": "openid_configuration", "in": "query", "required": True, "schema": {"type": "string"}},
+                           {"name": "registration_token", "in": "query", "schema": {"type": "string"}}],
+            "responses": {"200": {"description": "Page HTML (postMessage org.imsglobal.lti.close)"}, "400": {"description": "Plateforme non déclarée ou refus Moodle (page HTML)"}}
+        }},
+        "/api/moodle/webhook/{instance_id}": {"post": {
+            "tags": ["Moodle"], "summary": "Webhook : Moodle prévient CEI d'un changement", "security": [],
+            "description": "Authentifié par le secret de la plateforme (paramètre token, en-tête X-CEI-Webhook-Token ou champ token). Corps JSON : un événement Moodle, une liste, ou {events:[...]} (champs standard eventname, courseid…). Événements de cours, d'inscription et de rôle → synchronisation du cours (maquette si nouveau cours, comptes, inscriptions, affectations, activité CEI) ; catégories → maquette. Regroupement : une seule synchronisation par cours, 60 s après son dernier événement. Répond 202 immédiatement.",
+            "parameters": [{"name": "instance_id", "in": "path", "required": True, "schema": {"type": "integer"}},
+                           {"name": "token", "in": "query", "schema": {"type": "string"}}],
+            "requestBody": {"content": {"application/json": {"example": {"eventname": "\\core\\event\\user_enrolment_created", "courseid": 93, "relateduserid": 8976}}}},
+            "responses": {"202": {"description": "Mis en file", "content": {"application/json": {"example": {"queued": 1, "ignored": 0}}}}, "401": {"description": "Secret invalide"}}
+        }},
+        "/api/admin/moodle/instances/{instance_id}/webhook": {"get": {
+            "tags": ["Moodle"], "summary": "Adresse du webhook à déclarer dans Moodle (admin)",
+            "description": "Crée le secret au premier appel. POST : nouveau secret (l'ancienne adresse cesse de fonctionner).",
+            "parameters": [{"name": "instance_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+            "responses": {"200": {"description": "Adresse", "content": {"application/json": {"example": {"url": "https://preprod-cei.unchk.sn/api/moodle/webhook/1?token=…", "events": ["\\core\\event\\course_created"], "last_received_at": None}}}}}
+        }},
+        "/api/admin/moodle/instances/{instance_id}/auto-sync/run": {"post": {
+            "tags": ["Moodle"], "summary": "Lancer tout de suite une passe de synchronisation automatique (admin)",
+            "description": "full=false : maquette, nouveaux cours, activité CEI, enseignants (ce que fait la passe horaire) ; full=true : toutes les inscriptions (passe de nuit, plusieurs minutes). Arrière-plan ; 409 si une passe tourne déjà. Activer/désactiver la passe programmée : PUT /api/admin/moodle/instances/{id} avec auto_sync_enabled.",
+            "parameters": [{"name": "instance_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+            "requestBody": {"content": {"application/json": {"schema": {"type": "object", "properties": {"full": {"type": "boolean", "default": False}}}}}},
+            "responses": {"202": {"description": "Lancée"}, "409": {"description": "Déjà en cours"}}
+        }},
+        "/api/admin/moodle/instances/{instance_id}/lti/template": {"get": {
+            "tags": ["Moodle"], "summary": "Vérifier le cours modèle de l'activité CEI (admin)",
+            "description": "Le cours modèle (lti_template_course, nom abrégé) doit contenir exactement une activité : l'outil externe CEI (y compris sans forum Annonces, qui serait sinon dupliqué dans chaque cours). Elle est copiée dans chaque cours par core_course_import_course à chaque synchronisation.",
+            "parameters": [{"name": "instance_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+            "responses": {"200": {"description": "Résultat", "content": {"application/json": {"examples": {
+                "ok": {"value": {"course": {"id": 95, "shortname": "MODELE-CEI"}, "module": {"name": "CEI"}}},
+                "probleme": {"value": {"problem": "Le cours modèle « TEST JOKKO » contient d'autres activités (Annonces)…"}}}}}}}
         }},
         "/api/admin/moodle/lti/tool-config": {"get": {
             "tags": ["Moodle"], "summary": "LTI 1.3 — valeurs à saisir dans Moodle pour enregistrer CEI (admin)",
             "responses": {"200": {"description": "URLs", "content": {"application/json": {"example": {
-                "tool_url": "https://preprod-cei.unchk.sn/api/lti/launch", "initiate_login_url": "https://preprod-cei.unchk.sn/api/lti/login",
+                "registration_url": "https://preprod-cei.unchk.sn/api/lti/register", "tool_url": "https://preprod-cei.unchk.sn/api/lti/launch", "initiate_login_url": "https://preprod-cei.unchk.sn/api/lti/login",
                 "redirection_uris": "https://preprod-cei.unchk.sn/api/lti/launch", "public_keyset_url": "https://preprod-cei.unchk.sn/api/lti/jwks",
                 "lti_version": "LTI 1.3", "public_key_type": "Keyset URL"}}}}, "403": {"$ref": "#/components/responses/Forbidden"}}
         }},

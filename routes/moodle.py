@@ -433,16 +433,17 @@ def moodle_webhook_config(instance_id):
 @moodle_bp.route('/api/admin/moodle/instances/<int:instance_id>/auto-sync/run', methods=['POST'])
 @paseto_required
 def moodle_auto_sync_run(instance_id):
-    """Lance tout de suite une synchronisation complète de la plateforme
-    (maquette puis tous les cours) en arrière-plan — celle qui tourne aussi
-    chaque nuit. 409 si elle tourne déjà."""
+    """Demande une synchronisation complète de la plateforme (maquette puis
+    tous les cours) — celle qui tourne aussi chaque nuit — au service
+    cei-moodle-sync, qui la lance au passage suivant. 409 si déjà demandée."""
     session = get_session()
     if not require_admin(session):
         return jsonify({'error': 'Accès réservé aux administrateurs'}), 403
     try:
         inst = _instance_or_404(session, instance_id)
-        if not moodle_auto.run_full_in_background(inst.id):
-            return jsonify({'error': 'Une synchronisation complète est déjà en cours pour cette plateforme'}), 409
+        if not moodle_auto.request_full(inst.id):
+            return jsonify({'error': 'Une synchronisation complète est déjà demandée ou en cours pour cette plateforme'}), 409
+        # Faite par le service cei-moodle-sync (au plus 30 s plus tard), jamais par l'API web.
         return jsonify({'started': True}), 202
     except LookupError as e:
         return jsonify({'error': str(e)}), 404

@@ -1,0 +1,26 @@
+# Service de synchronisation automatique Moodle → CEI (préprod et production,
+# mêmes chemins que cei-agent.service). Installation (une fois, en root) :
+#   sudo cp /home/serge/projet-cei/cei-api-v2/deploy/cei-moodle-sync.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now cei-moodle-sync
+[Unit]
+Description=CEI — Synchronisation automatique Moodle (surveillance des changements)
+After=network.target postgresql.service redis-server.service cei-api-v2.service
+Wants=cei-api-v2.service
+
+[Service]
+Type=simple
+User=serge
+WorkingDirectory=/home/serge/projet-cei/cei-api-v2
+EnvironmentFile=/home/serge/projet-cei/cei-api-v2/.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/serge/projet-cei/cei-api-v2/.venv-base/bin/python /home/serge/projet-cei/cei-api-v2/moodle_worker/run.py
+Restart=always
+RestartSec=10
+# Service de fond : jamais prioritaire sur l'API web ni sur la base.
+Nice=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cei-moodle-sync
+
+[Install]
+WantedBy=multi-user.target

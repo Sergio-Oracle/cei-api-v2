@@ -3248,7 +3248,7 @@ OPENAPI_SPEC = {
                     "pole_id": {"type": "integer", "nullable": True}, "is_active": {"type": "boolean"},
                     "lti_client_id": {"type": "string", "description": "Normalement rempli par l'enregistrement dynamique"},
                     "lti_deployment_id": {"type": "string"}, "lti_type_id": {"type": "integer"},
-                    "auto_sync_enabled": {"type": "boolean", "description": "Surveillance des changements Moodle (cours/catégories chaque minute, enseignants toutes les 5 min, inscrits de chaque cours toutes les ~10 min) + synchronisation complète la nuit"}}}}}},
+                    "auto_sync_enabled": {"type": "boolean", "description": "Surveillance des changements Moodle par le service cei-moodle-sync (cours/catégories chaque minute, enseignants toutes les 5 min, inscrits de chaque cours toutes les 15 min, une requête légère à la fois) + synchronisation complète la nuit"}}}}}},
                 "responses": {"200": {"description": "Plateforme modifiée"}, "400": {"description": "Paramètres invalides ou connexion impossible"},
                               "403": {"$ref": "#/components/responses/Forbidden"}, "404": {"description": "Plateforme introuvable"}}
             },
@@ -3324,7 +3324,7 @@ OPENAPI_SPEC = {
         }},
         "/api/admin/moodle/instances/{instance_id}/auto-sync/run": {"post": {
             "tags": ["Moodle"], "summary": "Lancer tout de suite une synchronisation complète (admin)",
-            "description": "Maquette puis tous les cours de la plateforme, en arrière-plan (celle qui tourne aussi chaque nuit à 1 h UTC). 409 si elle tourne déjà. En temps normal, la surveillance des changements (auto_sync_enabled) synchronise seule chaque cours modifié.",
+            "description": "Demande au service cei-moodle-sync (processus dédié, jamais l'API web) une synchronisation complète : maquette puis tous les cours de la plateforme, lancée au passage suivant (≤ 30 s) — celle qui tourne aussi chaque nuit à 1 h UTC. 409 si déjà demandée ou en cours. En temps normal, la surveillance des changements (auto_sync_enabled) synchronise seule chaque cours modifié.",
             "parameters": [{"name": "instance_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
             "responses": {"202": {"description": "Lancée"}, "409": {"description": "Déjà en cours"}}
         }},

@@ -22,9 +22,14 @@ Si l'UNCHK installe un jour une extension de webhooks sur Moodle, les
 événements reçus sur /api/moodle/webhook/<plateforme> alimentent la même
 file (enqueue_events) : la réaction devient quasi immédiate.
 
-Le planificateur tourne dans chaque processus gunicorn (démarré à la
-première requête, gunicorn chargeant l'application avant de dupliquer ses
-processus) ; un verrou Redis fait qu'un seul agit à chaque passage.
+Tout tourne dans le service dédié cei-moodle-sync (moodle_worker/run.py),
+un seul processus, jamais dans l'API web. Rythme choisi pour ménager Moodle
+(mesuré le 29/09 : lire les inscrits des 114 cours prend 153 s au total, un
+appel à la fois) : les inscrits sont relus sur un cycle de 15 minutes, soit
+4 cours par passage de 30 s — Moodle est occupé par CEI ~15 % du temps, par
+une seule requête légère à la fois. Seules exceptions, dans l'API web car
+ponctuelles et liées à une action : mise à jour d'une personne à sa
+connexion, d'un cours à la création/activation d'un examen.
 """
 import hashlib
 import json
@@ -41,7 +46,8 @@ DEBOUNCE_SECONDS = 60
 MAX_PER_TICK = 5              # cours synchronisés par passage (file)
 COURSES_EVERY = 60            # s — liste des cours et catégories
 TEACHERS_EVERY = 300          # s — enseignants
-ENROL_BUDGET_SECONDS = 15     # temps de lecture d'empreintes par passage
+ENROL_CYCLE_SECONDS = 900     # chaque cours relu toutes les 15 min
+ENROL_BUDGET_SECONDS = 15     # plafond de temps de lecture par passage
 FULL_HOUR_UTC = 1
 
 COURSE_EVENTS = {
@@ -51,8 +57,6 @@ COURSE_EVENTS = {
 }
 STRUCTURE_EVENTS = {'course_category_created', 'course_category_updated', 'course_category_deleted'}
 
-_started = False
-_start_lock = threading.Lock()
 
 
 def _k(inst_id: int, what: str) -> str:
@@ -128,8 +132,9 @@ def watch_teachers(inst, session) -> list:
 
 
 def watch_enrolments(inst, client, session) -> list:
-    """Empreinte des inscrits, cours par cours, à tour de rôle et dans un
-    budget de temps : chaque cours relié à un EC est revu toutes les ~10 min."""
+    """Empreinte des inscrits, cours par cours, à tour de rôle : juste assez
+    de cours par passage pour que chacun soit relu en ENROL_CYCLE_SECONDS
+    (114 cours → 4 par passage), sans jamais dépasser ENROL_BUDGET_SECONDS."""
     from models import EC
     codes = {c for (c,) in session.query(EC.code).all()}
     courses = sorted((c for c in client.list_courses() if c['shortname'] in codes), key=lambda c: c['id'])
@@ -140,7 +145,8 @@ def watch_enrolments(inst, client, session) -> list:
     prints = cache_get(_k(inst.id, 'watch:enrol')) or {}
     items, start = [], time.monotonic()
     checked = 0
-    while checked < len(courses) and time.monotonic() - start < ENROL_BUDGET_SECONDS:
+    quota = max(1, -(-len(courses) * TICK_SECONDS // ENROL_CYCLE_SECONDS))   # arrondi supérieur
+    while checked < min(quota, len(courses)) and time.monotonic() - start < ENROL_BUDGET_SECONDS:
         course = courses[(pos + checked) % len(courses)]
         checked += 1
         users = client.call('core_enrol_get_enrolled_users', {'courseid': course['id'], 'options': [
@@ -267,24 +273,26 @@ def _record(session, inst, kind: str, detail) -> None:
     session.commit()
 
 
-def run_full_in_background(instance_id: int) -> bool:
-    """False si une passe complète tourne déjà pour cette plateforme."""
-    if not cache_set_nx(_k(instance_id, 'job'), 3600):
+def request_full(instance_id: int) -> bool:
+    """Demande (bouton de la page Moodle) une synchronisation complète, faite
+    par le service cei-moodle-sync au passage suivant. False si une passe
+    complète est déjà demandée ou en cours."""
+    if cache_get(_k(instance_id, 'job')):
         return False
+    return cache_set_nx(_k(instance_id, 'full_request'), 3600)
 
-    def job():
-        from models import get_session, MoodleInstance
-        session = get_session()
-        try:
-            run_full(session, session.get(MoodleInstance, instance_id))
-        except Exception as e:
-            print(f"[moodle_auto] passe complète {instance_id} : {e}")
-        finally:
-            session.close()
-            cache_delete(_k(instance_id, 'job'))
 
-    threading.Thread(target=job, daemon=True, name='moodle-full').start()
-    return True
+def _run_full_guarded(session, inst) -> None:
+    if not cache_set_nx(_k(inst.id, 'job'), 3 * 3600):
+        return
+    try:
+        run_full(session, inst)
+    except Exception as e:
+        session.rollback()
+        print(f"[moodle_auto] synchronisation complète {inst.name} : {e}")
+    finally:
+        cache_delete(_k(inst.id, 'job'))
+        cache_delete(_k(inst.id, 'full_request'))
 
 
 def _every(inst_id: int, what: str, seconds: int) -> bool:
@@ -313,10 +321,12 @@ def _tick() -> None:
                         found += watch_teachers(inst, session)
                     found += watch_enrolments(inst, client, session)
                     _enqueue(inst.id, found)
-                    last_full = inst.auto_sync_last_full_at
-                    if now.hour == FULL_HOUR_UTC and (not last_full or last_full.date() < now.date()):
-                        run_full_in_background(inst.id)
                 process_queue(session, inst, client)   # file : webhook éventuel + changements détectés
+                last_full = inst.auto_sync_last_full_at
+                nightly = (inst.auto_sync_enabled and now.hour == FULL_HOUR_UTC
+                           and (not last_full or last_full.date() < now.date()))
+                if nightly or cache_get(_k(inst.id, 'full_request')):
+                    _run_full_guarded(session, inst)   # dans ce service, jamais dans l'API web
             except MoodleError as e:
                 session.rollback()
                 print(f"[moodle_auto] {inst.name} : {e}")
@@ -325,23 +335,15 @@ def _tick() -> None:
         cache_delete('cei:moodle:tick')
 
 
-def start_scheduler() -> None:
-    """Idempotent, un fil par processus."""
-    global _started
+def run_forever() -> None:
+    """Boucle du service cei-moodle-sync."""
     if not moodle_sync.is_enabled():
+        print("[moodle_auto] MOODLE_SYNC_ENABLED n'est pas à true : rien à faire, arrêt.")
         return
-    with _start_lock:
-        if _started:
-            return
-        _started = True
-
-    def loop():
-        time.sleep(10)
-        while True:
-            try:
-                _tick()
-            except Exception as e:
-                print(f"[moodle_auto] passage : {e}")
-            time.sleep(TICK_SECONDS)
-
-    threading.Thread(target=loop, daemon=True, name='moodle-auto').start()
+    print(f"[moodle_auto] démarré — passage toutes les {TICK_SECONDS} s, inscrits relus en {ENROL_CYCLE_SECONDS // 60} min")
+    while True:
+        try:
+            _tick()
+        except Exception as e:
+            print(f"[moodle_auto] passage : {e}")
+        time.sleep(TICK_SECONDS)

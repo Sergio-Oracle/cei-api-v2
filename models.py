@@ -284,6 +284,9 @@ class ECAssignment(Base):
     ec_id = Column(Integer, ForeignKey('ecs.id'), nullable=False)
     professor_id = Column(Integer, ForeignKey('users.id'), nullable=False)
     assigned_at = Column(DateTime, default=datetime.utcnow)
+    # 'moodle' = créée par la synchronisation Moodle, qui peut donc la retirer
+    # quand l'enseignant n'enseigne plus le cours ; NULL = saisie par l'admin, jamais retirée.
+    source = Column(String(20), nullable=True)
 
     __table_args__ = (UniqueConstraint('ec_id', 'professor_id', name='unique_ec_professor'),)
 
@@ -302,6 +305,10 @@ class StudentUEEnrollment(Base):
     # l'import en masse (table passée à ~54k lignes).
     ue_id = Column(Integer, ForeignKey('ues.id'), nullable=False, index=True)
     enrolled_at = Column(DateTime, default=datetime.utcnow)
+    # 'moodle' = créée par la synchronisation Moodle, qui peut donc la retirer
+    # quand l'étudiant n'est plus dans aucun cours Moodle de l'UE ; NULL =
+    # inscription manuelle ou import Excel, jamais retirée par Moodle.
+    source = Column(String(20), nullable=True)
 
     __table_args__ = (UniqueConstraint('student_id', 'ue_id', name='unique_student_ue'),)  # Unicité: Pas de double inscription
 
@@ -1349,8 +1356,6 @@ class MoodleInstance(Base):
     lti_client_id       = Column(String(255), nullable=True)
     lti_deployment_id   = Column(String(255), nullable=True)
     lti_type_id         = Column(Integer, nullable=True)   # id de l'outil dans Moodle (typeid=…)
-    # Cours modèle contenant UNIQUEMENT l'activité CEI, copiée dans chaque cours à la synchronisation.
-    lti_template_course = Column(String(100), nullable=True)
     # Webhook : Moodle prévient CEI de chaque changement (secret propre à la plateforme).
     webhook_secret      = Column(String(64), nullable=True)
     webhook_last_at     = Column(DateTime(timezone=True), nullable=True)
@@ -1379,7 +1384,6 @@ class MoodleInstance(Base):
             'lti_deployment_id': self.lti_deployment_id,
             'lti_type_id': self.lti_type_id,
             'lti_configured': bool(self.lti_client_id and self.lti_deployment_id),
-            'lti_template_course': self.lti_template_course,
             'webhook_configured': bool(self.webhook_secret),
             'webhook_last_at': self.webhook_last_at.isoformat() if self.webhook_last_at else None,
             'auto_sync_enabled': bool(self.auto_sync_enabled),
@@ -1577,8 +1581,6 @@ def init_db():
         ("SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='formation_id'",
          "ALTER TABLE users ADD COLUMN formation_id INTEGER REFERENCES formations(id) ON DELETE SET NULL"),
         # Phase 1 (25/09) — origine des comptes créés automatiquement depuis Moodle
-        ("SELECT 1 FROM information_schema.columns WHERE table_name='moodle_instances' AND column_name='lti_template_course'",
-         "ALTER TABLE moodle_instances ADD COLUMN lti_template_course VARCHAR(100)"),
         ("SELECT 1 FROM information_schema.columns WHERE table_name='moodle_instances' AND column_name='webhook_secret'",
          "ALTER TABLE moodle_instances ADD COLUMN webhook_secret VARCHAR(64)"),
         ("SELECT 1 FROM information_schema.columns WHERE table_name='moodle_instances' AND column_name='webhook_last_at'",
@@ -1591,6 +1593,19 @@ def init_db():
          "ALTER TABLE moodle_instances ADD COLUMN auto_sync_last_full_at TIMESTAMP WITH TIME ZONE"),
         ("SELECT 1 FROM information_schema.columns WHERE table_name='moodle_instances' AND column_name='auto_sync_last_report'",
          "ALTER TABLE moodle_instances ADD COLUMN auto_sync_last_report TEXT"),
+        ("SELECT 1 FROM information_schema.columns WHERE table_name='ec_assignments' AND column_name='source'",
+         "ALTER TABLE ec_assignments ADD COLUMN source VARCHAR(20)"),
+        ("SELECT 1 FROM information_schema.columns WHERE table_name='student_ue_enrollments' AND column_name='source'",
+         "ALTER TABLE student_ue_enrollments ADD COLUMN source VARCHAR(20)"),
+        # Marquage unique (une seule fois : dès qu'un lien porte une source, on
+        # n'y revient plus) des liens créés par les synchronisations Moodle
+        # antérieures à la colonne source : ceux des comptes créés depuis Moodle.
+        ("SELECT 1 FROM student_ue_enrollments WHERE source IS NOT NULL LIMIT 1",
+         "UPDATE student_ue_enrollments SET source='moodle' WHERE source IS NULL AND student_id IN "
+         "(SELECT id FROM users WHERE created_via IN ('moodle_sso','moodle_sync'))"),
+        ("SELECT 1 FROM ec_assignments WHERE source IS NOT NULL LIMIT 1",
+         "UPDATE ec_assignments SET source='moodle' WHERE source IS NULL AND professor_id IN "
+         "(SELECT id FROM users WHERE created_via IN ('moodle_sso','moodle_sync'))"),
         ("SELECT 1 FROM information_schema.columns WHERE table_name='moodle_instances' AND column_name='lti_client_id'",
          "ALTER TABLE moodle_instances ADD COLUMN lti_client_id VARCHAR(255)"),
         ("SELECT 1 FROM information_schema.columns WHERE table_name='moodle_instances' AND column_name='lti_deployment_id'",

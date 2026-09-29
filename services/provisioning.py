@@ -157,7 +157,7 @@ def upgrade_if_moodle_teacher(session, user):
         ecs = session.query(EC).filter(EC.code.in_(codes)).all()
         for ec in ecs:
             if ec.id not in already:
-                session.add(ECAssignment(ec_id=ec.id, professor_id=user.id))
+                session.add(ECAssignment(ec_id=ec.id, professor_id=user.id, source="moodle"))
         session.commit()
         print(f"[provisioning] {user.email} : étudiant → professeur (enseigne dans Moodle : "
               f"{', '.join(codes)} ; {len(ecs)} EC CEI affecté(s))")
@@ -168,13 +168,56 @@ def upgrade_if_moodle_teacher(session, user):
         return False
 
 
+MOODLE_ACCOUNTS = ('moodle_sso', 'moodle_sync')
+# Retraits suspendus si Moodle fait disparaître d'un coup plus d'un tiers des
+# inscrits d'une UE (au-delà de 20 personnes) : plus probablement une panne ou
+# un cours vidé par erreur qu'une vague de désinscriptions réelles.
+REMOVAL_MAX_SHARE = 1 / 3
+REMOVAL_MIN_ABSOLUTE = 20
+_SIBLING_TTL = 180
+
+
+def _sibling_students(client, course_id: int) -> set:
+    """Emails des étudiants d'un autre cours de la même UE (cache 3 min :
+    une synchronisation complète ne relit pas chaque cours voisin à chaque fois)."""
+    from cache import cache_get, cache_set
+    key = f"cei:moodle:students:{client.base_url}:{course_id}"
+    cached = cache_get(key)
+    if cached is None:
+        cached = [x['email'] for x in client.enrolled_students(course_id) if x['email']]
+        cache_set(key, cached, ttl=_SIBLING_TTL)
+    return set(cached)
+
+
+def _ue_moodle_emails(session, ec, client, students) -> set | None:
+    """Étudiants présents dans AU MOINS un cours Moodle de l'UE (ce cours et
+    ceux des autres EC de l'UE). None si un cours voisin est illisible : on
+    ne retire alors personne."""
+    emails = {x['email'] for x in students if x['email']}
+    for other in session.query(EC).filter(EC.ue_id == ec.ue_id, EC.id != ec.id).all():
+        try:
+            c = client.find_course_by_code(other.code)
+            if c:
+                emails |= _sibling_students(client, c['id'])
+        except moodle_sync.MoodleError:
+            return None
+    return emails
+
+
 def sync_course(session, ec, client, course, dry_run=True):
     """Synchronise UN cours Moodle (= un EC CEI) avec les mêmes règles que la
     connexion : comptes manquants créés, étudiant qui enseigne → professeur,
     affectations EC, inscriptions à l'UE, formation depuis le département
-    Moodle. Uniquement additif : aucun compte supprimé, aucune inscription
-    retirée, aucun rôle autre qu'étudiant modifié. dry_run → compte sans
-    rien écrire. Renvoie un bilan détaillé."""
+    Moodle — puis MISES À JOUR et RETRAITS :
+      - nom et formation (département) repris de Moodle pour les comptes
+        créés depuis Moodle ;
+      - inscription à l'UE retirée si l'étudiant n'est plus dans aucun cours
+        Moodle de l'UE, affectation EC retirée si l'enseignant n'enseigne plus
+        le cours — uniquement pour les liens créés par la synchronisation
+        (source='moodle'), jamais ceux saisis à la main ou importés d'Excel ;
+      - jamais de compte, copie, note ou tentative supprimés ;
+      - retraits suspendus si la liste Moodle chute brutalement.
+    dry_run → compte sans rien écrire. Renvoie un bilan détaillé."""
     students = client.enrolled_students(course['id'])
     teachers = client.course_teachers(course['id'])
     teacher_emails = {t['email'] for t in teachers}
@@ -205,10 +248,22 @@ def sync_course(session, ec, client, course, dry_run=True):
     # apparaît dans chacun de ses cours — l'interface dédoublonne le bilan
     # global à partir de ces listes.
     t_rep = {'moodle': len(teachers), 'created': 0, 'upgraded': 0, 'assignments_added': 0,
-             'other_role': [], 'created_emails': [], 'upgraded_emails': []}
+             'other_role': [], 'created_emails': [], 'upgraded_emails': [],
+             'assignments_removed': 0, 'removed_emails': []}
     s_rep = {'moodle': len(students), 'created': 0, 'enrollments_added': 0, 'already_enrolled': 0,
              'formation_filled': 0, 'other_role': 0, 'without_formation': {}, 'formations_created': [],
-             'created_emails': [], 'enrolled_emails': [], 'formation_filled_emails': []}
+             'created_emails': [], 'enrolled_emails': [], 'formation_filled_emails': [],
+             'names_updated': 0, 'formation_changed': 0, 'formation_changed_emails': [],
+             'enrollments_removed': 0, 'removed_emails': [], 'removal_suspended': None}
+
+    def refresh_name(u, fullname):
+        # Nom repris de Moodle seulement pour les comptes venus de Moodle
+        # (un compte créé à la main garde le nom saisi par l'admin).
+        fullname = (fullname or '').strip()[:100]
+        if u.created_via in MOODLE_ACCOUNTS and fullname and u.full_name != fullname:
+            s_rep['names_updated'] += 1
+            if not dry_run:
+                u.full_name = fullname
 
     # ── Enseignants ──
     assigned = {pid for (pid,) in session.query(ECAssignment.professor_id).filter_by(ec_id=ec.id)}
@@ -229,11 +284,25 @@ def sync_course(session, ec, client, course, dry_run=True):
         elif u.role != UserRole.PROFESSOR:
             t_rep['other_role'].append({'email': t['email'], 'role': u.role.value})
             continue
+        if u is not None:
+            refresh_name(u, t['fullname'])
         if u is None or u.id not in assigned:
             t_rep['assignments_added'] += 1
             if not dry_run:
-                session.add(ECAssignment(ec_id=ec.id, professor_id=u.id))
+                session.add(ECAssignment(ec_id=ec.id, professor_id=u.id, source='moodle'))
                 assigned.add(u.id)
+
+    # Enseignants qui n'enseignent plus ce cours dans Moodle : affectation
+    # retirée si elle venait de Moodle. Liste Moodle vide → rien retiré
+    # (cours en cours de réorganisation ou lecture incomplète).
+    if teachers:
+        for a, email in (session.query(ECAssignment, User.email).join(User, User.id == ECAssignment.professor_id)
+                         .filter(ECAssignment.ec_id == ec.id, ECAssignment.source == 'moodle').all()):
+            if (email or '').lower() not in teacher_emails:
+                t_rep['assignments_removed'] += 1
+                t_rep['removed_emails'].append(email)
+                if not dry_run:
+                    session.delete(a)
 
     # ── Étudiants ──
     enrolled = {sid for (sid,) in session.query(StudentUEEnrollment.student_id).filter_by(ue_id=ec.ue_id)}
@@ -272,6 +341,16 @@ def sync_course(session, ec, client, course, dry_run=True):
         if u.role != UserRole.STUDENT:
             s_rep['other_role'] += 1  # ex. professeur inscrit comme étudiant dans Moodle : jamais modifié
             continue
+        refresh_name(u, s['fullname'])
+        if (u.created_via in MOODLE_ACCOUNTS and u.formation_id is not None and formation
+                and u.formation_id != formation.id):
+            # Département changé dans Moodle → nouvelle formation.
+            s_rep['formation_changed'] += 1
+            s_rep['formation_changed_emails'].append(email)
+            if not dry_run:
+                u.formation_id = formation.id
+                if formation.niveau:
+                    u.niveau = formation.niveau.code[:5]
         if u.formation_id is None and (formation or new_code):
             s_rep['formation_filled'] += 1
             s_rep['formation_filled_emails'].append(email)
@@ -287,15 +366,106 @@ def sync_course(session, ec, client, course, dry_run=True):
             if not dry_run:
                 to_enroll.append(u)
 
+    # Étudiants qui ne sont plus dans AUCUN cours Moodle de l'UE : inscription
+    # retirée si elle venait de Moodle.
+    moodle_rows = (session.query(StudentUEEnrollment, User.email)
+                   .join(User, User.id == StudentUEEnrollment.student_id)
+                   .filter(StudentUEEnrollment.ue_id == ec.ue_id, StudentUEEnrollment.source == 'moodle').all())
+    if moodle_rows:
+        still_in_ue = _ue_moodle_emails(session, ec, client, students) if students else None
+        if still_in_ue is None:
+            s_rep['removal_suspended'] = ("liste Moodle vide" if not students
+                                          else "un autre cours Moodle de l'UE est illisible")
+        else:
+            gone = [(row, email) for row, email in moodle_rows if (email or '').lower() not in still_in_ue]
+            if len(gone) > REMOVAL_MIN_ABSOLUTE and len(gone) > REMOVAL_MAX_SHARE * len(moodle_rows):
+                s_rep['removal_suspended'] = (f"{len(gone)} étudiants sur {len(moodle_rows)} auraient été retirés "
+                                              "d'un coup : à vérifier dans Moodle avant tout retrait")
+            else:
+                for row, email in gone:
+                    s_rep['enrollments_removed'] += 1
+                    s_rep['removed_emails'].append(email)
+                    if not dry_run:
+                        session.delete(row)
+
     if not dry_run:
         session.flush()  # identifiants des comptes créés
         for u in to_enroll:
             if u.id not in enrolled:
-                session.add(StudentUEEnrollment(student_id=u.id, ue_id=ec.ue_id))
+                session.add(StudentUEEnrollment(student_id=u.id, ue_id=ec.ue_id, source='moodle'))
                 enrolled.add(u.id)
         session.commit()
 
     return {'teachers': t_rep, 'students': s_rep}
+
+
+def refresh_person(session, user) -> dict | None:
+    """Aligne UNE personne sur Moodle au moment où elle ouvre CEI (bouton CEI
+    de Moodle ou connexion UNCHK) : nom et formation (comptes venus de
+    Moodle), UE de ses cours pour un étudiant, EC de ses cours pour un
+    enseignant — ajouts, et retrait des liens venus de Moodle qui n'ont plus
+    de cours correspondant. Moodle injoignable ou personne introuvable → rien."""
+    person, reason = _find_in_moodle(session, user.email)
+    if reason:
+        return None
+    rep = {'enrollments_added': 0, 'enrollments_removed': 0, 'assignments_added': 0, 'assignments_removed': 0}
+    if user.created_via in MOODLE_ACCOUNTS:
+        name = (person['fullname'] or '').strip()[:100]
+        if name and user.full_name != name:
+            user.full_name = name
+    codes = person['course_codes'] - person['teaching_codes']
+    if user.role == UserRole.STUDENT:
+        ecs = session.query(EC).filter(EC.code.in_(codes)).all() if codes else []
+        expected = {ec.ue_id for ec in ecs}
+        if user.created_via in MOODLE_ACCOUNTS and person['department'] and ecs:
+            formation, _ = ensure_formation_for_department(session, person['department'], ecs[0], dry_run=False)
+            if formation and user.formation_id != formation.id:
+                user.formation_id = formation.id
+                if formation.niveau:
+                    user.niveau = formation.niveau.code[:5]
+        current = {row.ue_id: row for row in session.query(StudentUEEnrollment).filter_by(student_id=user.id)}
+        for ue_id in expected - set(current):
+            session.add(StudentUEEnrollment(student_id=user.id, ue_id=ue_id, source='moodle'))
+            rep['enrollments_added'] += 1
+        for ue_id, row in current.items():
+            if ue_id not in expected and row.source == 'moodle':
+                session.delete(row)
+                rep['enrollments_removed'] += 1
+    elif user.role == UserRole.PROFESSOR:
+        teaching = person['teaching_codes']
+        expected = {ec.id for ec in session.query(EC).filter(EC.code.in_(teaching)).all()} if teaching else set()
+        current = {row.ec_id: row for row in session.query(ECAssignment).filter_by(professor_id=user.id)}
+        for ec_id in expected - set(current):
+            session.add(ECAssignment(ec_id=ec_id, professor_id=user.id, source='moodle'))
+            rep['assignments_added'] += 1
+        for ec_id, row in current.items():
+            if ec_id not in expected and row.source == 'moodle':
+                session.delete(row)
+                rep['assignments_removed'] += 1
+    session.commit()
+    return rep
+
+
+def schedule_refresh_person(user_id: int) -> None:
+    """refresh_person en arrière-plan : l'ouverture de CEI n'attend jamais Moodle."""
+    if not moodle_sync.is_enabled():
+        return
+    import threading
+
+    def run():
+        from models import get_session
+        session = get_session()
+        try:
+            user = session.get(User, user_id)
+            if user and user.email:
+                refresh_person(session, user)
+        except Exception as e:
+            session.rollback()
+            print(f"[provisioning] mise à jour de {user_id} : {e}")
+        finally:
+            session.close()
+
+    threading.Thread(target=run, daemon=True, name='moodle-person').start()
 
 
 def provision_from_moodle(session, email):
@@ -338,13 +508,13 @@ def provision_from_moodle(session, email):
     if is_teacher:
         ecs = session.query(EC).filter(EC.code.in_(person['teaching_codes'])).all()
         for ec in ecs:
-            session.add(ECAssignment(ec_id=ec.id, professor_id=user.id))
+            session.add(ECAssignment(ec_id=ec.id, professor_id=user.id, source="moodle"))
         detail = f"{len(ecs)} EC affecté(s)"
     else:
         ecs = session.query(EC).filter(EC.code.in_(person['course_codes'])).all()
         ue_ids = sorted({ec.ue_id for ec in ecs})
         for ue_id in ue_ids:
-            session.add(StudentUEEnrollment(student_id=user.id, ue_id=ue_id))
+            session.add(StudentUEEnrollment(student_id=user.id, ue_id=ue_id, source="moodle"))
         formation = formation_for_student(session, person['department'], ue_ids)
         if not formation and person['department'] and ecs:
             # Département sans formation CEI : créée depuis le niveau/pôle du

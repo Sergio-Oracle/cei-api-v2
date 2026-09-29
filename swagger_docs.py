@@ -760,6 +760,12 @@ OPENAPI_SPEC = {
                 "type": "object", "properties": {"enabled": {"type": "boolean"}}
             }}}}}
         }},
+        "/api/auth/from-moodle": {"get": {
+            "tags": ["SSO / Fédération d'identité"], "summary": "Bouton « CEI » du menu de Moodle", "security": [],
+            "description": "Cible du bouton ajouté une fois dans le menu principal de Moodle (toutes les pages, tous les cours). Même fenêtre, tableau de bord du rôle, sans reconnexion : session CEI déjà ouverte dans ce navigateur (cookie cei_refresh valide et session active) → directement ; sinon connexion UNCHK silencieuse (Keycloak déjà ouvert par Moodle). Adresse de retour = page Moodle d'origine (paramètre back ou Referer, https sur *.unchk.sn ou plateforme déclarée), sinon accueil de la plateforme : la flèche Retour, « Retour à Moodle » et la déconnexion y ramènent. La personne est alignée sur Moodle en arrière-plan (rôle, UE, EC, nom, formation).",
+            "parameters": [{"name": "back", "in": "query", "schema": {"type": "string"}, "description": "Page Moodle où revenir (facultatif)"}],
+            "responses": {"200": {"description": "Page relais vers /lti/enter"}, "302": {"description": "Vers la connexion UNCHK"}}
+        }},
         "/api/auth/oidc/login": {"get": {
             "tags": ["SSO / Fédération d'identité"], "summary": "Démarre le login SSO via le Keycloak UNCHK",
             "description": "Redirige (302) vers le realm Keycloak UNCHK (senid.unchk.sn), même serveur que Moodle. Route destinée à être ouverte par navigation directe (lien/bouton), pas par fetch/XHR.",
@@ -3242,8 +3248,7 @@ OPENAPI_SPEC = {
                     "pole_id": {"type": "integer", "nullable": True}, "is_active": {"type": "boolean"},
                     "lti_client_id": {"type": "string", "description": "Normalement rempli par l'enregistrement dynamique"},
                     "lti_deployment_id": {"type": "string"}, "lti_type_id": {"type": "integer"},
-                    "lti_template_course": {"type": "string", "description": "Nom abrégé du cours modèle contenant uniquement l'activité CEI"},
-                    "auto_sync_enabled": {"type": "boolean", "description": "Passe horaire + passe complète de nuit"}}}}}},
+                    "auto_sync_enabled": {"type": "boolean", "description": "Surveillance des changements Moodle (cours/catégories chaque minute, enseignants toutes les 5 min, inscrits de chaque cours toutes les ~10 min) + synchronisation complète la nuit"}}}}}},
                 "responses": {"200": {"description": "Plateforme modifiée"}, "400": {"description": "Paramètres invalides ou connexion impossible"},
                               "403": {"$ref": "#/components/responses/Forbidden"}, "404": {"description": "Plateforme introuvable"}}
             },
@@ -3304,8 +3309,8 @@ OPENAPI_SPEC = {
             "responses": {"200": {"description": "Page HTML (postMessage org.imsglobal.lti.close)"}, "400": {"description": "Plateforme non déclarée ou refus Moodle (page HTML)"}}
         }},
         "/api/moodle/webhook/{instance_id}": {"post": {
-            "tags": ["Moodle"], "summary": "Webhook : Moodle prévient CEI d'un changement", "security": [],
-            "description": "Authentifié par le secret de la plateforme (paramètre token, en-tête X-CEI-Webhook-Token ou champ token). Corps JSON : un événement Moodle, une liste, ou {events:[...]} (champs standard eventname, courseid…). Événements de cours, d'inscription et de rôle → synchronisation du cours (maquette si nouveau cours, comptes, inscriptions, affectations, activité CEI) ; catégories → maquette. Regroupement : une seule synchronisation par cours, 60 s après son dernier événement. Répond 202 immédiatement.",
+            "tags": ["Moodle"], "summary": "Webhook facultatif : Moodle prévient CEI d'un changement", "security": [],
+            "description": "Facultatif : Moodle n'appelle aucune adresse extérieure sans extension ; CEI surveille donc lui-même Moodle (auto_sync_enabled). Si une extension de webhooks est installée un jour, ses événements alimentent la même file et la réaction devient quasi immédiate. Authentifié par le secret de la plateforme (paramètre token, en-tête X-CEI-Webhook-Token ou champ token). Corps JSON : un événement Moodle, une liste, ou {events:[...]} (champs standard eventname, courseid…). Événements de cours, d'inscription et de rôle → synchronisation du cours (maquette si nouveau cours, comptes, inscriptions, affectations, activité CEI) ; catégories → maquette. Regroupement : une seule synchronisation par cours, 60 s après son dernier événement. Répond 202 immédiatement.",
             "parameters": [{"name": "instance_id", "in": "path", "required": True, "schema": {"type": "integer"}},
                            {"name": "token", "in": "query", "schema": {"type": "string"}}],
             "requestBody": {"content": {"application/json": {"example": {"eventname": "\\core\\event\\user_enrolment_created", "courseid": 93, "relateduserid": 8976}}}},
@@ -3318,24 +3323,15 @@ OPENAPI_SPEC = {
             "responses": {"200": {"description": "Adresse", "content": {"application/json": {"example": {"url": "https://preprod-cei.unchk.sn/api/moodle/webhook/1?token=…", "events": ["\\core\\event\\course_created"], "last_received_at": None}}}}}
         }},
         "/api/admin/moodle/instances/{instance_id}/auto-sync/run": {"post": {
-            "tags": ["Moodle"], "summary": "Lancer tout de suite une passe de synchronisation automatique (admin)",
-            "description": "full=false : maquette, nouveaux cours, activité CEI, enseignants (ce que fait la passe horaire) ; full=true : toutes les inscriptions (passe de nuit, plusieurs minutes). Arrière-plan ; 409 si une passe tourne déjà. Activer/désactiver la passe programmée : PUT /api/admin/moodle/instances/{id} avec auto_sync_enabled.",
+            "tags": ["Moodle"], "summary": "Lancer tout de suite une synchronisation complète (admin)",
+            "description": "Maquette puis tous les cours de la plateforme, en arrière-plan (celle qui tourne aussi chaque nuit à 1 h UTC). 409 si elle tourne déjà. En temps normal, la surveillance des changements (auto_sync_enabled) synchronise seule chaque cours modifié.",
             "parameters": [{"name": "instance_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
-            "requestBody": {"content": {"application/json": {"schema": {"type": "object", "properties": {"full": {"type": "boolean", "default": False}}}}}},
             "responses": {"202": {"description": "Lancée"}, "409": {"description": "Déjà en cours"}}
-        }},
-        "/api/admin/moodle/instances/{instance_id}/lti/template": {"get": {
-            "tags": ["Moodle"], "summary": "Vérifier le cours modèle de l'activité CEI (admin)",
-            "description": "Le cours modèle (lti_template_course, nom abrégé) doit contenir exactement une activité : l'outil externe CEI (y compris sans forum Annonces, qui serait sinon dupliqué dans chaque cours). Elle est copiée dans chaque cours par core_course_import_course à chaque synchronisation.",
-            "parameters": [{"name": "instance_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
-            "responses": {"200": {"description": "Résultat", "content": {"application/json": {"examples": {
-                "ok": {"value": {"course": {"id": 95, "shortname": "MODELE-CEI"}, "module": {"name": "CEI"}}},
-                "probleme": {"value": {"problem": "Le cours modèle « TEST JOKKO » contient d'autres activités (Annonces)…"}}}}}}}
         }},
         "/api/admin/moodle/lti/tool-config": {"get": {
             "tags": ["Moodle"], "summary": "LTI 1.3 — valeurs à saisir dans Moodle pour enregistrer CEI (admin)",
             "responses": {"200": {"description": "URLs", "content": {"application/json": {"example": {
-                "registration_url": "https://preprod-cei.unchk.sn/api/lti/register", "tool_url": "https://preprod-cei.unchk.sn/api/lti/launch", "initiate_login_url": "https://preprod-cei.unchk.sn/api/lti/login",
+                "moodle_menu_url": "https://preprod-cei.unchk.sn/api/auth/from-moodle", "registration_url": "https://preprod-cei.unchk.sn/api/lti/register", "tool_url": "https://preprod-cei.unchk.sn/api/lti/launch", "initiate_login_url": "https://preprod-cei.unchk.sn/api/lti/login",
                 "redirection_uris": "https://preprod-cei.unchk.sn/api/lti/launch", "public_keyset_url": "https://preprod-cei.unchk.sn/api/lti/jwks",
                 "lti_version": "LTI 1.3", "public_key_type": "Keyset URL"}}}}, "403": {"$ref": "#/components/responses/Forbidden"}}
         }},
@@ -3388,7 +3384,13 @@ OPENAPI_SPEC = {
                 "connexion SSO : **enseignants** du cours → compte professeur créé s'il manque, compte étudiant qui enseigne → "
                 "professeur, affectation à l'EC ; **étudiants** → compte créé s'il manque (formation depuis le département Moodle), "
                 "formation complétée si vide, inscription à l'UE de l'EC. Comptes créés sans mot de passe CEI (connexion par SSO). Département Moodle sans formation CEI → formation créée automatiquement (`<niveau>-<département>`, niveau et pôle repris du cours ; liste dans `students.formations_created`). "
-                "**Uniquement additif** : aucun compte supprimé, aucune inscription retirée, aucun rôle autre qu'étudiant modifié. "
+                "**Mises à jour et retraits** : nom et formation repris de Moodle pour les comptes créés depuis Moodle "
+                "(`students.names_updated`, `students.formation_changed`) ; inscription à l'UE retirée quand l'étudiant n'est plus dans "
+                "aucun cours Moodle de l'UE (`students.enrollments_removed`), affectation EC retirée quand l'enseignant n'enseigne plus "
+                "le cours (`teachers.assignments_removed`) — uniquement pour les liens créés par la synchronisation (`source='moodle'`), "
+                "jamais ceux saisis à la main ou importés d'Excel. Aucun compte, copie, note ni tentative supprimés. Retraits suspendus "
+                "(`students.removal_suspended`) si plus d'un tiers des inscrits Moodle de l'UE (et plus de 20) disparaissent d'un coup, "
+                "ou si la liste Moodle est vide. Aucun rôle autre qu'étudiant → professeur modifié. "
                 "`dry_run` vaut `true` par défaut — rien n'est écrit tant qu'il n'est pas explicitement `false`. Les listes d'emails permettent de dédoublonner un bilan sur plusieurs cours : en simulation, un même étudiant absent de CEI apparaît dans chacun de ses cours."
             ),
             "requestBody": {"required": True, "content": {"application/json": {"schema": {

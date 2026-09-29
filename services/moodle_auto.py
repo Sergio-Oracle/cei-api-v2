@@ -1,41 +1,53 @@
 """
-Synchronisation automatique Moodle → CEI (phase 6).
+Synchronisation automatique Moodle → CEI, sans rien installer sur Moodle.
 
-Deux déclencheurs, mêmes traitements que le bouton « Appliquer » :
-  1. Webhook : Moodle poste chaque événement (cours créé ou modifié,
-     inscription, rôle, catégorie…) sur /api/moodle/webhook/<plateforme>.
-     L'événement est mis en file (Redis) et regroupé par cours : une
-     inscription en masse de 3 000 étudiants ne donne qu'UNE synchronisation
-     du cours, lancée 60 s après le dernier événement reçu pour lui.
-  2. Filet de sécurité programmé (si activé pour la plateforme) : chaque heure
-     maquette + activité CEI + nouveaux cours ; chaque nuit (01 h UTC, heure
-     de Dakar) synchronisation complète de tous les cours.
+Moodle ne sait pas prévenir un service extérieur sans extension : c'est donc
+CEI qui surveille Moodle, par des lectures légères (mesurées sur la préprod
+le 29/09) et synchronise tout de suite ce qui a changé :
+  - toutes les minutes : liste des cours (0,8 s) et des catégories (0,5 s) —
+    nouveau cours, cours modifié, nouvelle catégorie ;
+  - toutes les 5 minutes : enseignants de tous les cours (un appel, ~4 s) —
+    tuteur ajouté ou retiré ;
+  - en continu, par rotation : « empreinte » des inscrits de chaque cours
+    (identifiants seuls, 3,3 s pour 3 357 inscrits), quelques cours par
+    passage, chaque cours revu toutes les ~10 minutes — inscription ou
+    désinscription ;
+  - chaque nuit (1 h UTC, heure de Dakar) : synchronisation complète.
+Un changement détecté met le cours en file (Redis) ; une salve de changements
+sur un même cours ne donne qu'une synchronisation (regroupement de 60 s).
+La synchronisation elle-même (services/provisioning.sync_course) ajoute, met
+à jour et retire, avec ses garde-fous.
+
+Si l'UNCHK installe un jour une extension de webhooks sur Moodle, les
+événements reçus sur /api/moodle/webhook/<plateforme> alimentent la même
+file (enqueue_events) : la réaction devient quasi immédiate.
 
 Le planificateur tourne dans chaque processus gunicorn (démarré à la
 première requête, gunicorn chargeant l'application avant de dupliquer ses
-processus), mais un verrou Redis fait qu'un seul passe à la fois.
+processus) ; un verrou Redis fait qu'un seul agit à chaque passage.
 """
+import hashlib
 import json
 import threading
 import time
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 
-from cache import _get_client, cache_set_nx, cache_delete
+from cache import _get_client, cache_get, cache_set, cache_set_nx, cache_delete
 from services import moodle_sync
 from services.moodle_sync import MoodleError
 
 TICK_SECONDS = 30
 DEBOUNCE_SECONDS = 60
-MAX_PER_TICK = 5
-LIGHT_EVERY = timedelta(minutes=55)
+MAX_PER_TICK = 5              # cours synchronisés par passage (file)
+COURSES_EVERY = 60            # s — liste des cours et catégories
+TEACHERS_EVERY = 300          # s — enseignants
+ENROL_BUDGET_SECONDS = 15     # temps de lecture d'empreintes par passage
 FULL_HOUR_UTC = 1
 
-# Événements Moodle → travail à faire. Les autres sont ignorés (acceptés, sans effet).
 COURSE_EVENTS = {
     'course_created', 'course_updated', 'course_restored', 'course_content_deleted',
     'user_enrolment_created', 'user_enrolment_updated', 'user_enrolment_deleted',
     'role_assigned', 'role_unassigned', 'enrol_instance_created', 'enrol_instance_updated',
-    'group_member_added', 'course_module_created',
 }
 STRUCTURE_EVENTS = {'course_category_created', 'course_category_updated', 'course_category_deleted'}
 
@@ -43,41 +55,112 @@ _started = False
 _start_lock = threading.Lock()
 
 
-def _queue_key(instance_id: int) -> str:
-    return f"cei:moodle:queue:{instance_id}"
+def _k(inst_id: int, what: str) -> str:
+    return f"cei:moodle:{what}:{inst_id}"
 
 
-def _short(event_name: str) -> str:
-    return (event_name or '').rstrip('\\').split('\\')[-1]
+def _enqueue(inst_id: int, items) -> int:
+    items = set(items)
+    r = _get_client()
+    if items and r is not None:
+        due = time.time() + DEBOUNCE_SECONDS
+        r.zadd(_k(inst_id, 'queue'), {item: due for item in items})
+    return len(items)
 
 
 def enqueue_events(instance_id: int, events: list) -> dict:
-    """Met en file les événements reconnus. Chaque nouvel événement d'un cours
-    repousse son traitement de DEBOUNCE_SECONDS (regroupement)."""
-    r = _get_client()
-    queued, ignored = [], 0
+    """Événements poussés par un webhook Moodle (facultatif)."""
+    items, ignored = [], 0
     for ev in events:
-        name = _short(ev.get('eventname') or ev.get('event') or '')
+        name = (ev.get('eventname') or ev.get('event') or '').rstrip('\\').split('\\')[-1]
         course_id = ev.get('courseid')
         if name in STRUCTURE_EVENTS:
-            item = 'structure'
+            items.append('structure')
         elif name in COURSE_EVENTS and course_id and int(course_id) > 1:   # 1 = page d'accueil du site
-            item = f"course:{int(course_id)}"
+            items.append(f"course:{int(course_id)}")
         else:
             ignored += 1
-            continue
-        queued.append(item)
-    if queued and r is not None:
-        due = time.time() + DEBOUNCE_SECONDS
-        r.zadd(_queue_key(instance_id), {item: due for item in set(queued)})
-    return {'queued': len(set(queued)), 'ignored': ignored}
+    return {'queued': _enqueue(instance_id, items), 'ignored': ignored}
 
+
+# ── Détection des changements ──────────────────────────────────────────────
+
+def _digest(values) -> str:
+    return hashlib.sha1(json.dumps(values, sort_keys=True, default=str).encode()).hexdigest()
+
+
+def watch_courses(inst, client) -> list:
+    """Cours et catégories : ce qui est nouveau ou modifié depuis le dernier regard."""
+    courses = client.list_courses()
+    current = {str(c['id']): _digest([c['shortname'], c.get('fullname'), c.get('categoryid'), c.get('timemodified')])
+               for c in courses}
+    cats = client.call('core_course_get_categories')
+    cat_digest = _digest(sorted((c['id'], c['name'], c.get('parent'), c.get('timemodified')) for c in cats))
+    before = cache_get(_k(inst.id, 'watch:courses'))
+    before_cats = cache_get(_k(inst.id, 'watch:cats'))
+    cache_set(_k(inst.id, 'watch:courses'), current, ttl=7 * 86400)
+    cache_set(_k(inst.id, 'watch:cats'), cat_digest, ttl=7 * 86400)
+    if before is None:
+        return []          # premier regard : référence, pas de changement
+    items = [f"course:{cid}" for cid, d in current.items() if before.get(cid) != d]
+    if before_cats is not None and before_cats != cat_digest:
+        items.append('structure')
+    return items
+
+
+def watch_teachers(inst, session) -> list:
+    """Enseignants : cours dont la liste des enseignants a changé."""
+    moodle_sync.refresh_teacher_map(session)
+    by_course = {}
+    for email, codes in (moodle_sync.teacher_map() or {}).items():
+        for code in codes:
+            by_course.setdefault(code, []).append(email)
+    current = {code: _digest(sorted(emails)) for code, emails in by_course.items()}
+    before = cache_get(_k(inst.id, 'watch:teachers'))
+    cache_set(_k(inst.id, 'watch:teachers'), current, ttl=7 * 86400)
+    if before is None:
+        return []
+    changed = {code for code in set(current) | set(before) if current.get(code) != before.get(code)}
+    if not changed:
+        return []
+    ids = {c['shortname']: c['id'] for c in moodle_sync.client_for(inst).list_courses()}
+    return [f"course:{ids[code]}" for code in changed if code in ids]
+
+
+def watch_enrolments(inst, client, session) -> list:
+    """Empreinte des inscrits, cours par cours, à tour de rôle et dans un
+    budget de temps : chaque cours relié à un EC est revu toutes les ~10 min."""
+    from models import EC
+    codes = {c for (c,) in session.query(EC.code).all()}
+    courses = sorted((c for c in client.list_courses() if c['shortname'] in codes), key=lambda c: c['id'])
+    if not courses:
+        return []
+    r = _get_client()
+    pos = int(cache_get(_k(inst.id, 'watch:enrol_pos')) or 0) % len(courses)
+    prints = cache_get(_k(inst.id, 'watch:enrol')) or {}
+    items, start = [], time.monotonic()
+    checked = 0
+    while checked < len(courses) and time.monotonic() - start < ENROL_BUDGET_SECONDS:
+        course = courses[(pos + checked) % len(courses)]
+        checked += 1
+        users = client.call('core_enrol_get_enrolled_users', {'courseid': course['id'], 'options': [
+            {'name': 'userfields', 'value': 'id'}, {'name': 'onlyactive', 'value': 1}]}, timeout=60)
+        digest = _digest(sorted(u['id'] for u in users))
+        key = str(course['id'])
+        if key in prints and prints[key] != digest:
+            items.append(f"course:{course['id']}")
+        prints[key] = digest
+    cache_set(_k(inst.id, 'watch:enrol'), prints, ttl=7 * 86400)
+    cache_set(_k(inst.id, 'watch:enrol_pos'), (pos + checked) % len(courses), ttl=7 * 86400)
+    return items
+
+
+# ── Traitement ─────────────────────────────────────────────────────────────
 
 def _run_course(session, inst, client, course_id: int) -> dict:
     from models import EC
     from services.provisioning import sync_course
     from services.moodle_structure import build_structure
-    from services.moodle_activity import ensure_activity
     found = client.call('core_course_get_courses_by_field', {'field': 'id', 'value': course_id})
     courses = found.get('courses', []) if isinstance(found, dict) else []
     if not courses:
@@ -88,30 +171,26 @@ def _run_course(session, inst, client, course_id: int) -> dict:
         # Nouveau cours : sa place dans la maquette vient des catégories Moodle.
         build_structure(session, inst, client, dry_run=False)
         ec = session.query(EC).filter_by(code=course['shortname']).first()
-    out = {'course': course['shortname']}
-    if ec:
-        rep = sync_course(session, ec, client, course, dry_run=False)
-        out['students_created'] = rep['students']['created']
-        out['enrollments_added'] = rep['students']['enrollments_added']
-        out['teachers_assigned'] = rep['teachers']['assignments_added']
-    else:
-        out['skipped'] = 'hors maquette'
-    out['activity'] = ensure_activity(inst, client, course, dry_run=False)['status']
-    return out
+    if not ec:
+        return {'course': course['shortname'], 'skipped': 'hors maquette'}
+    rep = sync_course(session, ec, client, course, dry_run=False)
+    return {'course': course['shortname'],
+            'students_created': rep['students']['created'], 'enrollments_added': rep['students']['enrollments_added'],
+            'enrollments_removed': rep['students']['enrollments_removed'],
+            'teachers_assigned': rep['teachers']['assignments_added'],
+            'teachers_removed': rep['teachers']['assignments_removed'],
+            'names_updated': rep['students']['names_updated'], 'formation_changed': rep['students']['formation_changed'],
+            'removal_suspended': rep['students']['removal_suspended']}
 
 
-def process_queue(session, inst) -> list:
+def process_queue(session, inst, client) -> list:
     r = _get_client()
     if r is None:
         return []
-    due = r.zrangebyscore(_queue_key(inst.id), 0, time.time(), start=0, num=MAX_PER_TICK)
-    if not due:
-        return []
-    client = moodle_sync.client_for(inst)
+    due = r.zrangebyscore(_k(inst.id, 'queue'), 0, time.time(), start=0, num=MAX_PER_TICK)
     results = []
-    for raw in due:
-        item = raw.decode() if isinstance(raw, bytes) else raw
-        r.zrem(_queue_key(inst.id), item)
+    for item in due:
+        r.zrem(_k(inst.id, 'queue'), item)
         try:
             if item == 'structure':
                 from services.moodle_structure import build_structure
@@ -119,45 +198,64 @@ def process_queue(session, inst) -> list:
                 results.append({'structure': {k: len(v) for k, v in rep.items() if isinstance(v, list)}})
             else:
                 results.append(_run_course(session, inst, client, int(item.split(':', 1)[1])))
-        except Exception as e:  # une erreur n'arrête pas la file
+        except Exception as e:   # une erreur n'arrête pas la file
             session.rollback()
             results.append({'item': item, 'error': str(e)[:300]})
-    _record(session, inst, 'webhook', results)
+    if results:
+        _record(session, inst, 'changements', results)
     return results
 
 
-def run_pass(session, inst, full: bool) -> dict:
-    """Passe complète (nuit) ou légère (heure) pour une plateforme."""
+def sync_course_now(session, ec_code: str) -> dict | None:
+    """Synchronisation immédiate d'un cours (création ou activation d'un
+    examen : la liste des inscrits doit refléter Moodle à cet instant)."""
+    found = moodle_sync.find_course_for_ec(session, ec_code)
+    if not found:
+        return None
+    inst, client, course = found
+    return _run_course(session, inst, client, course['id'])
+
+
+def schedule_course_sync(ec_code: str | None) -> None:
+    """Version arrière-plan de sync_course_now — jamais bloquante."""
+    if not ec_code or not moodle_sync.is_enabled():
+        return
+
+    def run():
+        from models import get_session
+        session = get_session()
+        try:
+            sync_course_now(session, ec_code)
+        except Exception as e:
+            print(f"[moodle_auto] synchro immédiate {ec_code} : {e}")
+        finally:
+            session.close()
+
+    threading.Thread(target=run, daemon=True, name='moodle-course-now').start()
+
+
+def run_full(session, inst) -> dict:
+    """Passe complète (nuit, ou bouton) : maquette puis tous les cours."""
     from models import EC
     from services.moodle_structure import build_structure
-    from services.moodle_activity import ensure_activity
-    from services.provisioning import sync_course
     client = moodle_sync.client_for(inst)
-    report = {'kind': 'full' if full else 'light', 'errors': []}
+    report = {'errors': []}
     structure = build_structure(session, inst, client, dry_run=False)
     report['structure'] = {k: len(v) for k, v in structure.items() if isinstance(v, list)}
-    ecs = {e.code: e for e in session.query(EC).all()}
-    courses = [c for c in client.list_courses() if c['shortname'] in ecs]
-    installed = synced = 0
-    for course in courses:
+    codes = {c for (c,) in session.query(EC.code).all()}
+    synced = 0
+    for course in client.list_courses():
+        if course['shortname'] not in codes:
+            continue
         try:
-            if ensure_activity(inst, client, course, dry_run=False)['status'] == 'installed':
-                installed += 1
-            if full:
-                sync_course(session, ecs[course['shortname']], client, course, dry_run=False)
-                synced += 1
+            _run_course(session, inst, client, course['id'])
+            synced += 1
         except Exception as e:
             session.rollback()
             report['errors'].append(f"{course['shortname']} : {str(e)[:200]}")
-    if not full:
-        # Enseignants : la carte (cache 7 j) est rafraîchie à chaque passe légère.
-        moodle_sync.refresh_teacher_map(session)
-    report.update({'courses': len(courses), 'activities_installed': installed, 'courses_synced': synced})
-    _record(session, inst, report['kind'], report)
-    now = datetime.now(timezone.utc)
-    inst.auto_sync_last_at = now
-    if full:
-        inst.auto_sync_last_full_at = now
+    report['courses_synced'] = synced
+    _record(session, inst, 'complète', report)
+    inst.auto_sync_last_full_at = datetime.now(timezone.utc)
     session.commit()
     return report
 
@@ -165,58 +263,66 @@ def run_pass(session, inst, full: bool) -> dict:
 def _record(session, inst, kind: str, detail) -> None:
     inst.auto_sync_last_report = json.dumps({'at': datetime.now(timezone.utc).isoformat(), 'kind': kind,
                                              'detail': detail}, ensure_ascii=False, default=str)[:20000]
+    inst.auto_sync_last_at = datetime.now(timezone.utc)
     session.commit()
 
 
-def _due_pass(inst, now: datetime):
-    if not inst.auto_sync_enabled:
-        return None
-    last_full = inst.auto_sync_last_full_at
-    if now.hour == FULL_HOUR_UTC and (not last_full or last_full.date() < now.date()):
-        return 'full'
-    if not inst.auto_sync_last_at or now - inst.auto_sync_last_at >= LIGHT_EVERY:
-        return 'light'
-    return None
-
-
-def run_in_background(instance_id: int, full: bool) -> bool:
-    """Lance une passe tout de suite (bouton de la page Moodle). False si une
-    passe tourne déjà pour cette plateforme."""
-    if not cache_set_nx(f"cei:moodle:job:{instance_id}", 3600):
+def run_full_in_background(instance_id: int) -> bool:
+    """False si une passe complète tourne déjà pour cette plateforme."""
+    if not cache_set_nx(_k(instance_id, 'job'), 3600):
         return False
 
     def job():
         from models import get_session, MoodleInstance
         session = get_session()
         try:
-            run_pass(session, session.get(MoodleInstance, instance_id), full)
+            run_full(session, session.get(MoodleInstance, instance_id))
         except Exception as e:
-            print(f"[moodle_auto] passe {instance_id} : {e}")
+            print(f"[moodle_auto] passe complète {instance_id} : {e}")
         finally:
             session.close()
-            cache_delete(f"cei:moodle:job:{instance_id}")
+            cache_delete(_k(instance_id, 'job'))
 
-    threading.Thread(target=job, daemon=True, name='moodle-auto-pass').start()
+    threading.Thread(target=job, daemon=True, name='moodle-full').start()
     return True
+
+
+def _every(inst_id: int, what: str, seconds: int) -> bool:
+    """Vrai au plus une fois toutes les `seconds` (tous processus confondus)."""
+    return cache_set_nx(_k(inst_id, f'every:{what}'), seconds - 5)
 
 
 def _tick() -> None:
     from models import get_session, MoodleInstance
-    if not cache_set_nx('cei:moodle:tick', TICK_SECONDS - 2):
-        return  # un autre processus s'en charge
+    # Verrou tenu pendant tout le passage (qui peut durer plus de 30 s quand
+    # la file contient plusieurs cours), libéré à la fin ; 15 min au plus si
+    # le processus meurt en route.
+    if not cache_set_nx('cei:moodle:tick', 900):
+        return   # un autre processus s'en charge
     session = get_session()
     try:
         now = datetime.now(timezone.utc)
         for inst in session.query(MoodleInstance).filter_by(is_active=True).all():
             try:
-                process_queue(session, inst)
+                client = moodle_sync.client_for(inst)
+                if inst.auto_sync_enabled:
+                    found = []
+                    if _every(inst.id, 'courses', COURSES_EVERY):
+                        found += watch_courses(inst, client)
+                    if _every(inst.id, 'teachers', TEACHERS_EVERY):
+                        found += watch_teachers(inst, session)
+                    found += watch_enrolments(inst, client, session)
+                    _enqueue(inst.id, found)
+                    last_full = inst.auto_sync_last_full_at
+                    if now.hour == FULL_HOUR_UTC and (not last_full or last_full.date() < now.date()):
+                        run_full_in_background(inst.id)
+                process_queue(session, inst, client)   # file : webhook éventuel + changements détectés
             except MoodleError as e:
-                print(f"[moodle_auto] file {inst.name} : {e}")
-            kind = _due_pass(inst, now)
-            if kind:
-                run_in_background(inst.id, full=(kind == 'full'))
+                session.rollback()
+                print(f"[moodle_auto] {inst.name} : {e}")
     finally:
         session.close()
+        cache_delete('cei:moodle:tick')
 
 
 def start_scheduler() -> None:
@@ -235,7 +341,7 @@ def start_scheduler() -> None:
             try:
                 _tick()
             except Exception as e:
-                print(f"[moodle_auto] tick : {e}")
+                print(f"[moodle_auto] passage : {e}")
             time.sleep(TICK_SECONDS)
 
     threading.Thread(target=loop, daemon=True, name='moodle-auto').start()

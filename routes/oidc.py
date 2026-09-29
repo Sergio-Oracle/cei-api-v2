@@ -26,11 +26,11 @@ from extensions import limiter
 from helpers import utcnow
 from auth_paseto import (
     create_access_token, create_refresh_token, set_refresh_cookie,
-    hash_token, session_key, REFRESH_TTL,
+    hash_token, session_key, REFRESH_TTL, decode_token, COOKIE_NAME,
 )
 from api_key_auth import api_key_required, api_client_allows_role
 from models import get_session, User, UserRole, TokenBlocklist
-from services.provisioning import provision_from_moodle
+from services.provisioning import provision_from_moodle, schedule_refresh_person
 
 # Messages de l'échange ENT (JSON) ; la connexion navigateur renvoie le même
 # code dans ?sso_error= et la page de connexion affiche son propre texte.
@@ -92,6 +92,106 @@ def _issue_session_and_redirect(user: User, target: str):
     return resp
 
 
+_DASHBOARDS = {UserRole.ADMIN: 'admin', UserRole.PROFESSOR: 'professor', UserRole.STUDENT: 'student',
+               UserRole.SURVEILLANT: 'surveillant', UserRole.SUPERVISEUR: 'superviseur'}
+
+
+def moodle_back(url) -> str | None:
+    """Adresse de retour acceptée : https sur une plateforme Moodle UNCHK
+    (*.unchk.sn ou plateforme déclarée dans CEI) — jamais une adresse
+    quelconque (redirection ouverte)."""
+    from urllib.parse import urlsplit
+    from models import MoodleInstance
+    try:
+        parts = urlsplit(url or '')
+    except ValueError:
+        return None
+    host = (parts.hostname or '').lower()
+    if parts.scheme != 'https' or not host:
+        return None
+    if host == 'unchk.sn' or host.endswith('.unchk.sn'):
+        return url
+    session = get_session()
+    try:
+        known = {urlsplit(i.base_url).hostname for i in session.query(MoodleInstance).all()}
+    finally:
+        session.close()
+    return url if host in known else None
+
+
+def open_session_page(user: User, back: str | None):
+    """Ouvre la session CEI puis mène au tableau de bord du rôle en passant
+    par /lti/enter, qui retient l'adresse de retour vers Moodle. Page HTML
+    plutôt que redirection HTTP : la navigation suivante part alors de CEI,
+    et le cookie cei_logged_in (SameSite=Strict) l'accompagne — après une
+    redirection venue de Keycloak ou de Moodle, il ne serait pas envoyé."""
+    target = f"{_app_url()}/lti/enter?" + urlencode({
+        'to': f"/dashboard/{_DASHBOARDS.get(user.role, 'student')}", 'back': back or '', 'k': secrets.token_urlsafe(8)})
+    issued = _issue_session_and_redirect(user, target)
+    resp = _relay_page(target)
+    for header in issued.headers.getlist('Set-Cookie'):
+        resp.headers.add('Set-Cookie', header)
+    return resp
+
+
+def _relay_page(target: str):
+    """Page qui mène à `target` par JavaScript : navigation partie de CEI,
+    donc cookies SameSite=Strict envoyés (voir open_session_page)."""
+    import html
+    resp = make_response(f"""<!doctype html><html lang="fr"><head><meta charset="utf-8"><title>CEI</title></head>
+<body style="font-family:system-ui,sans-serif;display:flex;min-height:100vh;align-items:center;justify-content:center;color:#475569">
+<p>Ouverture de CEI…</p><script>window.location.replace({target!r});</script>
+<noscript><a href="{html.escape(target, quote=True)}">Continuer</a></noscript></body></html>""")
+    resp.headers['Content-Type'] = 'text/html; charset=utf-8'
+    resp.headers['Cache-Control'] = 'no-store'
+    return resp
+
+
+@oidc_bp.route('/api/auth/from-moodle', methods=['GET'])
+@limiter.limit("60 per minute")
+def from_moodle():
+    """Bouton « CEI » du menu de Moodle (une ligne ajoutée une fois par l'admin
+    Moodle, visible sur toutes les pages et dans tous les cours). Même fenêtre,
+    tableau de bord du rôle, sans reconnexion :
+      - session CEI déjà ouverte dans ce navigateur (cookie cei_refresh, envoyé
+        car la route est sous /api/auth) → on y va directement ;
+      - sinon connexion UNCHK (Keycloak, déjà ouverte par Moodle : aucun écran).
+    Retour : page Moodle d'où l'on vient (Referer), sinon l'adresse passée
+    en paramètre back, sinon l'accueil de la plateforme."""
+    from models import MoodleInstance
+    back = moodle_back(request.args.get('back')) or moodle_back(request.referrer)
+    if not back:
+        session = get_session()
+        try:
+            inst = session.query(MoodleInstance).filter_by(is_active=True).order_by(MoodleInstance.id).first()
+            back = f"{inst.base_url}/my/" if inst else None
+        finally:
+            session.close()
+
+    token = request.cookies.get(COOKIE_NAME)
+    if token:
+        session = get_session()
+        try:
+            payload = decode_token(token)
+            user = session.get(User, int(payload.get('sub')))
+            revoked = session.query(TokenBlocklist).filter_by(token_hash=hash_token(token)).first()
+            active = cache_get(session_key(user.id)) if user and user.role == UserRole.STUDENT else None
+            same_session = user and user.role != UserRole.STUDENT or (active or {}).get('token_hash') == hash_token(token)
+            if payload.get('type') == 'refresh' and user and user.is_active and not revoked and same_session:
+                schedule_refresh_person(user.id)
+                target = f"{_app_url()}/lti/enter?" + urlencode({
+                    'to': f"/dashboard/{_DASHBOARDS.get(user.role, 'student')}", 'back': back or '',
+                    'k': secrets.token_urlsafe(8)})
+                return _relay_page(target)
+        except Exception:
+            pass   # jeton illisible ou expiré : connexion UNCHK ci-dessous
+        finally:
+            session.close()
+    if not _configured():
+        return redirect(f"{_app_url()}/login?sso_error=not_configured")
+    return redirect(f"{_app_url()}/api/auth/oidc/login?" + urlencode({'back': back or ''}))
+
+
 _REQUIRED_ENVS = ('OIDC_ISSUER', 'OIDC_CLIENT_ID', 'OIDC_CLIENT_SECRET', 'OIDC_REDIRECT_URI')
 
 
@@ -114,7 +214,9 @@ def oidc_login():
         return redirect(f"{_app_url()}/login?sso_error=not_configured")
     state = secrets.token_urlsafe(32)
     nonce = secrets.token_urlsafe(32)
-    cache_set(f"cei:oidc:state:{state}", {'nonce': nonce}, ttl=_STATE_TTL)
+    # back : adresse Moodle où revenir (arrivée par le bouton « CEI » de Moodle).
+    cache_set(f"cei:oidc:state:{state}", {'nonce': nonce, 'back': moodle_back(request.args.get('back'))},
+              ttl=_STATE_TTL)
     return redirect(oidc_keycloak.build_authorization_url(state, nonce))
 
 
@@ -164,15 +266,20 @@ def oidc_callback():
             if existing:
                 retry_token = secrets.token_urlsafe(24)
                 cache_set(f"cei:oidc:retry:{retry_token}", {'user_id': user.id}, ttl=_RETRY_TTL)
-                params = urlencode({
+                params = {
                     'sso_conflict': '1',
                     'retry_token': retry_token,
                     'device_label': existing.get('device_label', 'un autre appareil'),
-                })
-                return redirect(f"{_app_url()}/login?{params}")
+                }
+                if entry.get('back'):
+                    params['lti_back'] = entry['back']
+                return redirect(f"{_app_url()}/login?{urlencode(params)}")
 
         user.last_login = utcnow()
         session.commit()
+        schedule_refresh_person(user.id)   # rôle, UE, EC, formation alignés sur Moodle
+        if entry.get('back'):
+            return open_session_page(user, entry['back'])
         return _issue_session_and_redirect(user, f"{_app_url()}/dashboard")
     finally:
         session.close()

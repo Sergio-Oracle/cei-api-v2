@@ -266,6 +266,7 @@ def create_online_exam():
         # vérité désormais (Groupes Surveillants), plus de gestion manuelle par
         # examen (Notes point 6/9 — "prévoir les groupes des surveillants par ECs")
         to_notify = []
+        moodle_ec_code = subject.ec.code if subject.ec_id and subject.ec else None
         if subject.ec_id:
             from services.proctor_service import sync_ec_proctors
             try:
@@ -288,6 +289,8 @@ def create_online_exam():
                 pass
 
         from services.moodle_calendar import schedule_sync; schedule_sync(exam_dict['id'])  # date publiée dans le calendrier Moodle (arrière-plan)
+        # Liste des inscrits relue dans Moodle maintenant, sans attendre la surveillance automatique.
+        from services.moodle_auto import schedule_course_sync; schedule_course_sync(moodle_ec_code)
         return jsonify({'success': True, 'exam': exam_dict}), 201
     except Exception as e:
         print(f"Erreur create_online_exam: {e}")
@@ -323,6 +326,9 @@ def activate_online_exam(exam_id):
         session.commit()
         
         exam_dict = exam.to_dict()
+        # Inscrits relus dans Moodle à l'ouverture de l'examen (arrière-plan, jamais bloquant).
+        from services.moodle_auto import schedule_course_sync
+        schedule_course_sync(exam.subject.ec.code if exam.subject and exam.subject.ec else None)
 
         # Rassembler les contacts étudiants, fermer la session, puis envoyer
         student_contacts = []

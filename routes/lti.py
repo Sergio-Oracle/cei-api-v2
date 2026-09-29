@@ -33,7 +33,7 @@ from models import get_session, User, UserRole, OnlineExam, LtiLineItem
 from routes.oidc import _app_url, _issue_session_and_redirect
 from services import lti
 from services.lti import LtiError
-from services.provisioning import provision_from_moodle
+from services.provisioning import provision_from_moodle, schedule_refresh_person
 
 lti_bp = Blueprint('lti', __name__)
 
@@ -115,6 +115,7 @@ def lti_launch():
                 'sso_conflict': '1', 'retry_token': retry_token, 'lti_back': back,
                 'device_label': existing.get('device_label', 'un autre appareil')})
         else:
+            schedule_refresh_person(user.id)   # rôle, UE, EC, formation alignés sur Moodle
             code_value = secrets.token_urlsafe(32)
             cache_set(f"cei:lti:code:{code_value}", {'user_id': user.id, 'back': back}, ttl=_CODE_TTL)
             target = f"{_app_url()}/api/lti/session?code={code_value}"
@@ -210,6 +211,7 @@ def lti_tool_config():
         base = _app_url()
         return jsonify({
             'registration_url': f"{base}/api/lti/register",
+            'moodle_menu_url': f"{base}/api/auth/from-moodle",
             'tool_url': f"{base}/api/lti/launch",
             'initiate_login_url': f"{base}/api/lti/login",
             'redirection_uris': f"{base}/api/lti/launch",

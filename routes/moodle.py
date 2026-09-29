@@ -37,7 +37,6 @@ from services import moodle_sync
 from services.moodle_sync import MoodleClient, MoodleError
 from services.provisioning import sync_course
 from services.moodle_structure import build_structure
-from services.moodle_activity import ensure_activity
 from services import moodle_auto
 from extensions import limiter
 from routes.formations import _invalidate_academic_cache
@@ -167,8 +166,6 @@ def moodle_instances_update(instance_id):
             inst.pole_id = data['pole_id'] or None
         if 'is_active' in data:
             inst.is_active = bool(data['is_active'])
-        if 'lti_template_course' in data:
-            inst.lti_template_course = (str(data['lti_template_course'] or '').strip() or None)
         if 'auto_sync_enabled' in data:
             inst.auto_sync_enabled = bool(data['auto_sync_enabled'])
         for field in ('lti_client_id', 'lti_deployment_id'):
@@ -347,8 +344,6 @@ def moodle_sync_course():
             if not course:
                 return jsonify({'error': f'Aucun cours Moodle avec le code {ec_code}'}), 404
             report = sync_course(session, ec, client, course, dry_run=dry_run)
-            # Activité « CEI » : copiée depuis le cours modèle si le cours ne l'a pas encore.
-            report['activity'] = ensure_activity(inst, client, course, dry_run=dry_run)
         except LookupError as e:
             return jsonify({'error': str(e)}), 404
         except MoodleError as e:
@@ -435,42 +430,20 @@ def moodle_webhook_config(instance_id):
         session.close()
 
 
-@moodle_bp.route('/api/admin/moodle/instances/<int:instance_id>/lti/template', methods=['GET'])
-@paseto_required
-def moodle_lti_template(instance_id):
-    """Vérifie le cours modèle de l'activité CEI (exactement une activité,
-    l'outil externe CEI) avant toute copie dans les cours."""
-    from services.moodle_activity import template_for
-    from cache import cache_delete
-    session = get_session()
-    if not require_admin(session):
-        return jsonify({'error': 'Accès réservé aux administrateurs'}), 403
-    try:
-        inst = _instance_or_404(session, instance_id)
-        cache_delete(f"cei:moodle:template:{inst.id}:{inst.lti_template_course}")
-        return jsonify(template_for(inst, moodle_sync.client_for(inst)))
-    except LookupError as e:
-        return jsonify({'error': str(e)}), 404
-    except MoodleError as e:
-        return _moodle_error(e)
-    finally:
-        session.close()
-
-
 @moodle_bp.route('/api/admin/moodle/instances/<int:instance_id>/auto-sync/run', methods=['POST'])
 @paseto_required
 def moodle_auto_sync_run(instance_id):
-    """Lance tout de suite une passe de synchronisation automatique
-    (full=true : toutes les inscriptions, sinon maquette + activité CEI + enseignants)."""
+    """Lance tout de suite une synchronisation complète de la plateforme
+    (maquette puis tous les cours) en arrière-plan — celle qui tourne aussi
+    chaque nuit. 409 si elle tourne déjà."""
     session = get_session()
     if not require_admin(session):
         return jsonify({'error': 'Accès réservé aux administrateurs'}), 403
     try:
         inst = _instance_or_404(session, instance_id)
-        full = bool((request.get_json(silent=True) or {}).get('full'))
-        if not moodle_auto.run_in_background(inst.id, full):
-            return jsonify({'error': 'Une synchronisation est déjà en cours pour cette plateforme'}), 409
-        return jsonify({'started': True, 'full': full}), 202
+        if not moodle_auto.run_full_in_background(inst.id):
+            return jsonify({'error': 'Une synchronisation complète est déjà en cours pour cette plateforme'}), 409
+        return jsonify({'started': True}), 202
     except LookupError as e:
         return jsonify({'error': str(e)}), 404
     finally:

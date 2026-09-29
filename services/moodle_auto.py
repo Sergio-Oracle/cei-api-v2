@@ -340,6 +340,17 @@ def run_forever() -> None:
     if not moodle_sync.is_enabled():
         print("[moodle_auto] MOODLE_SYNC_ENABLED n'est pas à true : rien à faire, arrêt.")
         return
+    # Seul processus à surveiller Moodle : un verrou laissé par un arrêt en
+    # plein passage (redémarrage, déploiement) est forcément orphelin.
+    cache_delete('cei:moodle:tick')
+
+    import signal
+
+    def stop(signum, frame):
+        cache_delete('cei:moodle:tick')
+        raise SystemExit(0)
+
+    signal.signal(signal.SIGTERM, stop)
     print(f"[moodle_auto] démarré — passage toutes les {TICK_SECONDS} s, inscrits relus en {ENROL_CYCLE_SECONDS // 60} min")
     while True:
         try:

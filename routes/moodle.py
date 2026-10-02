@@ -364,12 +364,15 @@ def moodle_sync_course():
 
 # ── Webhook : Moodle prévient CEI de chaque changement ─────────────────────
 
-WEBHOOK_EVENTS = [
-    '\\core\\event\\course_created', '\\core\\event\\course_updated', '\\core\\event\\course_restored',
-    '\\core\\event\\course_category_created', '\\core\\event\\course_category_updated',
-    '\\core\\event\\user_enrolment_created', '\\core\\event\\user_enrolment_updated',
-    '\\core\\event\\user_enrolment_deleted', '\\core\\event\\role_assigned', '\\core\\event\\role_unassigned',
-]
+# Exactement les événements que la file sait traiter (services/moodle_auto.py) :
+# une seule source, pour que la liste affichée ne diverge plus de celle traitée.
+WEBHOOK_EVENTS = [f"\\core\\event\\{name}" for name in (
+    'course_created', 'course_updated', 'course_restored', 'course_content_deleted',
+    'course_category_created', 'course_category_updated', 'course_category_deleted',
+    'user_enrolment_created', 'user_enrolment_updated', 'user_enrolment_deleted',
+    'enrol_instance_created', 'enrol_instance_updated', 'role_assigned', 'role_unassigned',
+)]
+assert {e.rsplit('\\', 1)[1] for e in WEBHOOK_EVENTS} == moodle_auto.COURSE_EVENTS | moodle_auto.STRUCTURE_EVENTS
 
 
 def _webhook_url(inst) -> str:

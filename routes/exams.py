@@ -23,7 +23,7 @@ from models      import (
     CameraLog, ExamStatus, AttemptStatus, ExamProctor, ProctorAssignment,
     QuestionBank, EC, ECAssignment, StudentUEEnrollment,
     SubjectMedia, IncidentDismissal, ExamAccessCode,
-    ProctorGroup, ProctorGroupEC, BiometricEnrollment,
+    ProctorGroup, ProctorGroupEC, ProctorGroupExam, BiometricEnrollment,
 )
 from werkzeug.utils import secure_filename
 from werkzeug.exceptions import RequestEntityTooLarge
@@ -273,6 +273,11 @@ def create_online_exam():
                 to_notify = sync_ec_proctors(session, subject.ec_id) or []
             except Exception:
                 to_notify = []
+        try:
+            from services.proctor_service import exam_proctor_conflicts
+            proctor_conflicts = exam_proctor_conflicts(session, exam)
+        except Exception:
+            proctor_conflicts = []
 
         session.close()
 
@@ -291,7 +296,7 @@ def create_online_exam():
         from services.moodle_calendar import schedule_sync; schedule_sync(exam_dict['id'])  # date publiée dans le calendrier Moodle (arrière-plan)
         # Liste des inscrits relue dans Moodle maintenant, sans attendre la surveillance automatique.
         from services.moodle_auto import schedule_course_sync; schedule_course_sync(moodle_ec_code)
-        return jsonify({'success': True, 'exam': exam_dict}), 201
+        return jsonify({'success': True, 'exam': exam_dict, 'proctor_conflicts': proctor_conflicts}), 201
     except Exception as e:
         print(f"Erreur create_online_exam: {e}")
         try: session.rollback(); session.close()
@@ -557,6 +562,11 @@ def edit_online_exam(exam_id):
                     return jsonify({'error': 'Format de date de correction planifiée invalide'}), 400
         session.commit()
         result = exam.to_dict()
+        try:
+            from services.proctor_service import exam_proctor_conflicts
+            result['proctor_conflicts'] = exam_proctor_conflicts(session, exam)
+        except Exception:
+            result['proctor_conflicts'] = []
         session.close()
         from services.moodle_calendar import schedule_sync; schedule_sync(exam_id)  # date publiée dans le calendrier Moodle (arrière-plan)
         return jsonify({'success': True, 'exam': result})
@@ -619,6 +629,7 @@ def delete_online_exam(exam_id):
             ).delete(synchronize_session=False)
 
         session.query(ExamProctor).filter_by(exam_id=exam_id).delete(synchronize_session=False)
+        session.query(ProctorGroupExam).filter_by(exam_id=exam_id).delete(synchronize_session=False)
         session.delete(exam)
         session.commit()
         session.close()
@@ -723,14 +734,9 @@ def _notify_resume(attempt, exam, session):
         ).all()
         recipient_ids = {pa.proctor_id for pa in assignments if pa.proctor_id}
 
-        if not recipient_ids and exam.subject and exam.subject.ec_id:
-            groups = (
-                session.query(ProctorGroup)
-                .join(ProctorGroupEC, ProctorGroupEC.group_id == ProctorGroup.id)
-                .filter(ProctorGroupEC.ec_id == exam.subject.ec_id)
-                .all()
-            )
-            recipient_ids = {s.supervisor_id for g in groups for s in g.supervisors}
+        if not recipient_ids:
+            from services.proctor_service import exam_groups
+            recipient_ids = {s.supervisor_id for g in exam_groups(session, exam) for s in g.supervisors}
 
         if not recipient_ids and exam.created_by_id:
             recipient_ids.add(exam.created_by_id)

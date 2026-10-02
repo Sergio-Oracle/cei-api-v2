@@ -139,18 +139,11 @@ def _exam_staff_ids(exam_id: int) -> set:
                 if ep.proctor_id:
                     ids.add(ep.proctor_id)
 
-            ec_id = exam.subject.ec_id if exam.subject else None
-            if ec_id:
-                groups = (
-                    session.query(ProctorGroup)
-                    .join(ProctorGroupEC, ProctorGroupEC.group_id == ProctorGroup.id)
-                    .filter(ProctorGroupEC.ec_id == ec_id)
-                    .all()
-                )
-                for g in groups:
-                    for s in g.supervisors:
-                        if s.supervisor_id:
-                            ids.add(s.supervisor_id)
+            from services.proctor_service import exam_groups
+            for g in exam_groups(session, exam):
+                for s in g.supervisors:
+                    if s.supervisor_id:
+                        ids.add(s.supervisor_id)
 
             if exam.created_by_id:
                 ids.add(exam.created_by_id)

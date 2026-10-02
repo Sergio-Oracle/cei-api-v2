@@ -1083,15 +1083,14 @@ def get_active_proctoring(exam_id):
             # Groupes Surveillants rattachés à l'EC du sujet — un surveillant peut
             # venir de plusieurs groupes couvrant le même EC, d'où une liste.
             group_names_by_proctor = {}
-            subject = session.query(Subject).filter_by(id=exam.subject_id).first()
-            if subject and subject.ec_id:
-                group_ids = [ge.group_id for ge in session.query(ProctorGroupEC).filter_by(ec_id=subject.ec_id).all()]
-                if group_ids:
-                    group_name_by_id = {
-                        g.id: g.name for g in session.query(ProctorGroup).filter(ProctorGroup.id.in_(group_ids)).all()
-                    }
-                    for m in session.query(ProctorGroupMember).filter(ProctorGroupMember.group_id.in_(group_ids)).all():
-                        group_names_by_proctor.setdefault(m.proctor_id, []).append(group_name_by_id.get(m.group_id, '?'))
+            from services.proctor_service import exam_group_ids
+            group_ids = exam_group_ids(session, exam)
+            if group_ids:
+                group_name_by_id = {
+                    g.id: g.name for g in session.query(ProctorGroup).filter(ProctorGroup.id.in_(group_ids)).all()
+                }
+                for m in session.query(ProctorGroupMember).filter(ProctorGroupMember.group_id.in_(group_ids)).all():
+                    group_names_by_proctor.setdefault(m.proctor_id, []).append(group_name_by_id.get(m.group_id, '?'))
 
             # Recalculer les counts depuis result (qui a les nouvelles assignations)
             for ep in all_exam_proctors:
@@ -1294,15 +1293,8 @@ def _get_covering_supervisor_ids(exam, session):
     à l'EC de cet examen (même logique que get_vigilance_level). Utilisé comme
     palier intermédiaire — le superviseur supervise déjà les surveillants,
     c'est donc lui le relais naturel en leur absence, pas le professeur."""
-    if not exam.subject or not exam.subject.ec_id:
-        return set()
-    groups = (
-        session.query(ProctorGroup)
-        .join(ProctorGroupEC, ProctorGroupEC.group_id == ProctorGroup.id)
-        .filter(ProctorGroupEC.ec_id == exam.subject.ec_id)
-        .all()
-    )
-    return {s.supervisor_id for g in groups for s in g.supervisors}
+    from services.proctor_service import exam_groups
+    return {s.supervisor_id for g in exam_groups(session, exam) for s in g.supervisors}
 
 
 @proctoring_bp.route('/api/exam_attempts/<int:attempt_id>/call_request', methods=['POST'])
@@ -1642,15 +1634,16 @@ def get_vigilance_level(exam_id, proctor_id, session):
     sont rattachés à l'EC de cet examen. 'A' par défaut si aucun groupe ne
     correspond (surveillant ajouté manuellement, sans groupe)."""
     exam = session.query(OnlineExam).filter_by(id=exam_id).first()
-    if not exam or not exam.subject or not exam.subject.ec_id:
+    if not exam:
         return 'A'
+    from services.proctor_service import exam_group_ids
+    gids = exam_group_ids(session, exam)
     groups = (
         session.query(ProctorGroup)
-        .join(ProctorGroupEC, ProctorGroupEC.group_id == ProctorGroup.id)
         .join(ProctorGroupMember, ProctorGroupMember.group_id == ProctorGroup.id)
-        .filter(ProctorGroupEC.ec_id == exam.subject.ec_id, ProctorGroupMember.proctor_id == proctor_id)
+        .filter(ProctorGroup.id.in_(gids), ProctorGroupMember.proctor_id == proctor_id)
         .all()
-    )
+    ) if gids else []
     if not groups:
         return 'A'
     return max((g.vigilance_level or 'A' for g in groups), key=lambda l: _VIGILANCE_ORDER.get(l, 0))

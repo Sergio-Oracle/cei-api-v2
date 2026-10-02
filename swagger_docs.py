@@ -1304,13 +1304,42 @@ OPENAPI_SPEC = {
         }},
         "/api/admin/proctor_groups/{gid}/ecs": {"post": {
             "tags": ["Groupes Surveillants"], "summary": "Rattacher un EC à un groupe (admin)",
-            "description": "Tout examen créé pour cet EC affectera automatiquement tous les membres du groupe, avec pré-répartition des étudiants inscrits. Se propage aussi immédiatement aux examens DRAFT/SCHEDULED déjà existants pour cet EC. Un professeur ne peut rattacher que ses propres EC (403 sinon).",
+            "description": "Tout examen créé pour cet EC affectera automatiquement tous les membres du groupe, avec pré-répartition des étudiants inscrits. Se propage aussi immédiatement aux examens DRAFT/SCHEDULED déjà existants pour cet EC. Un professeur ne peut rattacher que ses propres EC (403 sinon). Refusé (409, liste `conflicts`) si le groupe se retrouverait sur deux examens à venir qui se chevauchent ou sont séparés de moins de 15 minutes. `member_warnings` : membres déjà pris au même moment par un autre groupe (avertissement).",
             "parameters": [{"name": "gid", "in": "path", "required": True, "schema": {"type": "integer"}}],
             "requestBody": {"required": True, "content": {"application/json": {"schema": {
                 "type": "object", "required": ["ec_id"],
                 "properties": {"ec_id": {"type": "integer"}}
             }}}},
-            "responses": {"200": {"description": "EC rattaché", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ProctorGroup"}}}}}
+            "responses": {"201": {"description": "EC rattaché", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ProctorGroup"}}}},
+                          "409": {"description": "Chevauchement d'examens (conflicts)"}}
+        }},
+        "/api/admin/proctor_groups/{gid}/exams": {"post": {
+            "tags": ["Groupes Surveillants"], "summary": "Rattacher un examen précis à un groupe",
+            "description": "En plus des examens de ses EC, un groupe peut surveiller des examens précis, même sur d'autres EC : il enchaîne ainsi plusieurs examens d'une journée (7h–9h, 11h–13h, 14h–16h). Les membres sont affectés à l'examen et ses étudiants répartis entre eux. Refusé (409, `conflicts`) si l'examen chevauche un examen déjà couvert par le groupe, marge de 15 minutes comprise (fin = fin de l'examen + temps supplémentaire le plus long accordé). `member_warnings` : membres pris au même moment par un autre groupe. Professeur : seulement ses examens ou ceux de ses EC.",
+            "parameters": [{"name": "gid", "in": "path", "required": True, "schema": {"type": "integer"}}],
+            "requestBody": {"required": True, "content": {"application/json": {"schema": {
+                "type": "object", "required": ["exam_id"], "properties": {"exam_id": {"type": "integer"}}}}}},
+            "responses": {"201": {"description": "Examen rattaché (groupe à jour, exam_ids)"}, "400": {"description": "Déjà rattaché ou déjà couvert par son EC"},
+                          "409": {"description": "Chevauchement", "content": {"application/json": {"example": {"error": "Ce groupe serait sur deux examens en même temps (15 min minimum entre deux examens).", "conflicts": [{"exam_id": 12, "exam": "« Droit civil » (05/10 08:30–10:30 UTC)", "with_exam_id": 11, "with_exam": "« Économie » (05/10 07:00–09:00 UTC)"}]}}}}}
+        }},
+        "/api/admin/proctor_groups/{gid}/exams/{exam_id}": {"delete": {
+            "tags": ["Groupes Surveillants"], "summary": "Retirer un examen précis d'un groupe",
+            "description": "Les surveillants qui ne viennent plus d'aucun groupe de cet examen en sont retirés (examens DRAFT/SCHEDULED).",
+            "parameters": [{"name": "gid", "in": "path", "required": True, "schema": {"type": "integer"}},
+                           {"name": "exam_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+            "responses": {"200": {"description": "Retiré"}, "404": {"description": "Rattachement non trouvé"}}
+        }},
+        "/api/admin/proctor_groups/{gid}/schedule": {"get": {
+            "tags": ["Groupes Surveillants"], "summary": "Planning d'un groupe",
+            "description": "Examens à venir couverts par le groupe, triés par début : `source` = `ec` (par un EC rattaché) ou `exam` (rattachement direct), `effective_end_time` (fin + temps supplémentaire), `conflicts_with` (examens du planning qui le chevauchent, marge 15 min).",
+            "parameters": [{"name": "gid", "in": "path", "required": True, "schema": {"type": "integer"}}],
+            "responses": {"200": {"description": "Planning", "content": {"application/json": {"example": {"group_id": 3, "margin_minutes": 15, "exams": [{"id": 11, "title": "Économie", "start_time": "2026-10-05T07:00:00Z", "end_time": "2026-10-05T09:00:00Z", "effective_end_time": "2026-10-05T09:00:00Z", "ec_code": "AES1111", "source": "exam", "conflicts_with": []}]}}}}}
+        }},
+        "/api/admin/proctor_groups/{gid}/exam_candidates": {"get": {
+            "tags": ["Groupes Surveillants"], "summary": "Examens à venir rattachables à un groupe",
+            "description": "Examens à venir non encore couverts par le groupe, chacun avec `available` et, sinon, `conflict` (examen du groupe qu'il chevaucherait). Professeur : ses examens et ceux de ses EC.",
+            "parameters": [{"name": "gid", "in": "path", "required": True, "schema": {"type": "integer"}}],
+            "responses": {"200": {"description": "Examens"}}
         }},
         "/api/admin/proctor_groups/{gid}/ecs/{ec_id}": {"delete": {
             "tags": ["Groupes Surveillants"], "summary": "Détacher un EC d'un groupe (admin)",
@@ -1711,6 +1740,7 @@ OPENAPI_SPEC = {
             },
             "post": {
                 "tags": ["Examens en ligne"], "summary": "Créer un examen en ligne",
+                "description": "Les groupes de surveillance de l'EC sont affectés automatiquement. `proctor_conflicts` (liste, peut être vide) : groupes de cet examen déjà pris sur ce créneau par un autre examen (marge 15 min) — l'examen est créé quand même, il faut rattacher un autre groupe. Même champ dans `exam` après une modification (PUT).",
                 "requestBody": {"required": True, "content": {"application/json": {"schema": {
                     "type": "object", "required": ["title","subject_id"],
                     "properties": {

@@ -54,14 +54,9 @@ def _resolve_recipients(exam, session):
         ep.proctor_id for ep in
         session.query(ExamProctor).filter_by(exam_id=exam.id).all()
     }
-    if not recipient_ids and exam.subject and exam.subject.ec_id:
-        groups = (
-            session.query(ProctorGroup)
-            .join(ProctorGroupEC, ProctorGroupEC.group_id == ProctorGroup.id)
-            .filter(ProctorGroupEC.ec_id == exam.subject.ec_id)
-            .all()
-        )
-        recipient_ids = {s.supervisor_id for g in groups for s in g.supervisors}
+    if not recipient_ids:
+        from services.proctor_service import exam_groups
+        recipient_ids = {s.supervisor_id for g in exam_groups(session, exam) for s in g.supervisors}
     if not recipient_ids and exam.created_by_id:
         recipient_ids.add(exam.created_by_id)
     return recipient_ids

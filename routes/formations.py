@@ -9,6 +9,7 @@ Couvre :
 
 Migré depuis app.py — zéro régression.
 """
+from datetime import datetime
 from threading import Thread
 
 from flask import Blueprint, request, jsonify
@@ -20,8 +21,8 @@ from models import (
     get_session,
     User, UserRole,
     Pole, Niveau, Formation, Semester, UE, EC, ECAssignment, StudentUEEnrollment,
-    ProctorGroup, ProctorGroupMember, ProctorGroupEC, ProctorGroupSupervisor,
-    Subject, QuestionBank, GradeTranscript,
+    ProctorGroup, ProctorGroupMember, ProctorGroupEC, ProctorGroupSupervisor, ProctorGroupExam,
+    Subject, QuestionBank, GradeTranscript, OnlineExam,
 )
 
 _CACHE_TTL = 300  # 5 minutes — structure académique change rarement
@@ -1500,14 +1501,13 @@ def delete_proctor_group(gid):
         if not group: session.close(); return jsonify({'error': 'Groupe non trouvé'}), 404
         if not _can_manage_proctor_group(user, group):
             session.close(); return jsonify({'error': "Vous ne gérez pas ce groupe"}), 403
-        ec_ids = [ge.ec_id for ge in group.ecs]
+        from services.proctor_service import group_exams, sync_exam_proctors, _SYNCABLE_STATUSES
+        exams = [e for e, _ in group_exams(session, gid, statuses=_SYNCABLE_STATUSES)]
         session.delete(group); session.commit()
-        from services.proctor_service import sync_ec_proctors
         to_notify = []
-        for ec_id in ec_ids:
+        for exam in exams:
             try:
-                res = sync_ec_proctors(session, ec_id) or []
-                to_notify.extend(res)
+                to_notify.extend(sync_exam_proctors(session, exam) or [])
             except Exception:
                 pass
         session.close()
@@ -1571,17 +1571,15 @@ def add_proctor_group_member(gid):
             except Exception:
                 pass
         session.commit()
-        # Un renfort ajouté au groupe se propage à tous les examens à venir
-        # des EC couverts par ce groupe (plus de gestion manuelle par examen).
+        # Un renfort ajouté au groupe se propage à tous ses examens à venir
+        # (ceux de ses EC et ceux rattachés directement).
         to_notify = []
         if added:
-            from services.proctor_service import sync_ec_proctors
-            for ec_id in [ge.ec_id for ge in group.ecs]:
-                try:
-                    res = sync_ec_proctors(session, ec_id) or []
-                    to_notify.extend(res)
-                except Exception:
-                    pass
+            from services.proctor_service import sync_group
+            try:
+                to_notify = sync_group(session, gid) or []
+            except Exception:
+                pass
         result = group.to_dict()
         session.close()
 
@@ -1634,9 +1632,8 @@ def remove_proctor_group_member(gid, mid):
         m = session.query(ProctorGroupMember).filter_by(id=mid, group_id=gid).first()
         if not m: session.close(); return jsonify({'error': 'Membre non trouvé'}), 404
         session.delete(m); session.commit()
-        from services.proctor_service import sync_ec_proctors
-        for ec_id in [ge.ec_id for ge in group.ecs]:
-            sync_ec_proctors(session, ec_id)
+        from services.proctor_service import sync_group
+        sync_group(session, gid)
         session.close()
         return jsonify({'success': True, 'message': 'Membre retiré'})
     except Exception as e:
@@ -1726,6 +1723,19 @@ def link_proctor_group_ec(gid):
             session.close(); return jsonify({'error': "Vous n'êtes pas responsable de cet EC"}), 403
         if session.query(ProctorGroupEC).filter_by(group_id=gid, ec_id=ec_id).first():
             session.close(); return jsonify({'error': 'Ce groupe est déjà rattaché à cet EC'}), 400
+        # Le groupe hérite de tous les examens à venir de l'EC : refus s'il
+        # serait sur deux examens à la fois (marge comprise).
+        from services.proctor_service import group_conflicts, member_conflicts, group_exams, _PLANNED_STATUSES
+        covered = {e.id for e, _ in group_exams(session, gid)}
+        new_exams = [e for e in session.query(OnlineExam).join(Subject, OnlineExam.subject_id == Subject.id).filter(
+            Subject.ec_id == ec_id, OnlineExam.status.in_(_PLANNED_STATUSES),
+            OnlineExam.end_time >= datetime.utcnow()).all() if e.id not in covered]
+        conflicts = group_conflicts(session, gid, new_exams)
+        if conflicts:
+            session.close()
+            return jsonify({'error': "Ce groupe serait sur deux examens en même temps (15 min minimum entre deux examens).",
+                            'conflicts': conflicts}), 409
+        member_warnings = member_conflicts(session, gid, new_exams)
         session.add(ProctorGroupEC(group_id=gid, ec_id=ec_id))
         session.commit()
         # Récupérer membres et préparer notifications, puis fermer session
@@ -1747,6 +1757,7 @@ def link_proctor_group_ec(gid):
         to_notify = sync_ec_proctors(session, ec_id)
         session.commit()
         result = group.to_dict()  # capturé avant la fermeture de session
+        result['member_warnings'] = member_warnings
         session.close()
 
         # Envoyer notifications hors transaction
@@ -1828,3 +1839,156 @@ def unlink_proctor_group_ec(gid, ec_id):
         try: session.rollback(); session.close()
         except Exception: pass
         return jsonify({'error': str(e)}), 500
+
+
+# ── Examens précis d'un groupe (en plus de ceux de ses EC) ─────────────────
+# Un même groupe peut enchaîner plusieurs examens (7h, 11h, 14h…), même sur
+# des EC différents ; deux examens qui se chevauchent (marge 15 min) sont
+# refusés.
+
+def _exam_row(session, exam, source=None):
+    from services.proctor_service import exam_window
+    ec = exam.subject.ec if exam.subject and exam.subject.ec_id else None
+    start, end = exam_window(session, exam)
+    return {
+        'id': exam.id, 'title': exam.title, 'status': exam.status.value if exam.status else None,
+        'start_time': exam.start_time.isoformat() + 'Z', 'end_time': exam.end_time.isoformat() + 'Z',
+        'effective_end_time': end.isoformat() + 'Z',
+        'ec_code': ec.code if ec else None, 'ec_name': ec.name if ec else None,
+        **({'source': source} if source else {}),
+    }
+
+
+def _load_managed_group(session, gid):
+    ok, user = _is_admin_or_professor(session)
+    if not ok:
+        return None, None, (jsonify({'error': 'Accès non autorisé'}), 403)
+    group = session.query(ProctorGroup).filter_by(id=gid).first()
+    if not group:
+        session.close(); return None, None, (jsonify({'error': 'Groupe non trouvé'}), 404)
+    if not _can_manage_proctor_group(user, group):
+        session.close(); return None, None, (jsonify({'error': "Vous ne gérez pas ce groupe"}), 403)
+    return user, group, None
+
+
+@formations_bp.route('/api/admin/proctor_groups/<int:gid>/schedule', methods=['GET'])
+@paseto_required
+def proctor_group_schedule(gid):
+    """Planning du groupe : examens à venir couverts (par un EC ou
+    directement), avec les chevauchements déjà présents signalés."""
+    session = get_session()
+    try:
+        user, group, err = _load_managed_group(session, gid)
+        if err: return err
+        from services.proctor_service import group_exams, _overlap
+        items = group_exams(session, gid)
+        rows = [_exam_row(session, e, src) for e, src in items]
+        for i, (a, _) in enumerate(items):
+            rows[i]['conflicts_with'] = [b.id for b, _ in items if b.id != a.id and _overlap(session, a, b)]
+        return jsonify({'group_id': gid, 'margin_minutes': 15, 'exams': rows})
+    finally:
+        session.close()
+
+
+@formations_bp.route('/api/admin/proctor_groups/<int:gid>/exam_candidates', methods=['GET'])
+@paseto_required
+def proctor_group_exam_candidates(gid):
+    """Examens à venir que l'on peut rattacher à ce groupe, chacun avec la
+    raison s'il est indisponible (chevauchement)."""
+    session = get_session()
+    try:
+        user, group, err = _load_managed_group(session, gid)
+        if err: return err
+        from services.proctor_service import group_exams, group_conflicts, _PLANNED_STATUSES
+        covered = {e.id for e, _ in group_exams(session, gid)}
+        q = session.query(OnlineExam).filter(OnlineExam.status.in_(_PLANNED_STATUSES),
+                                             OnlineExam.end_time >= datetime.utcnow())
+        if user.role == UserRole.PROFESSOR:
+            ec_ids = [e for (e,) in session.query(ECAssignment.ec_id).filter_by(professor_id=user.id)]
+            q = q.join(Subject, OnlineExam.subject_id == Subject.id).filter(
+                (Subject.ec_id.in_(ec_ids)) | (OnlineExam.created_by_id == user.id))
+        rows = []
+        for exam in q.order_by(OnlineExam.start_time).limit(300).all():
+            if exam.id in covered:
+                continue
+            row = _exam_row(session, exam)
+            c = group_conflicts(session, gid, [exam])
+            row['available'] = not c
+            row['conflict'] = c[0]['with_exam'] if c else None
+            rows.append(row)
+        return jsonify({'exams': rows})
+    finally:
+        session.close()
+
+
+@formations_bp.route('/api/admin/proctor_groups/<int:gid>/exams', methods=['POST'])
+@paseto_required
+def link_proctor_group_exam(gid):
+    session = get_session()
+    try:
+        user, group, err = _load_managed_group(session, gid)
+        if err: return err
+        exam_id = (request.json or {}).get('exam_id')
+        exam = session.get(OnlineExam, int(exam_id)) if exam_id else None
+        if not exam:
+            return jsonify({'error': 'Examen non trouvé'}), 404
+        ec_id = exam.subject.ec_id if exam.subject else None
+        if user.role == UserRole.PROFESSOR and exam.created_by_id != user.id and not (
+                ec_id and session.query(ECAssignment).filter_by(ec_id=ec_id, professor_id=user.id).first()):
+            return jsonify({'error': "Vous n'êtes pas responsable de cet examen"}), 403
+        if session.query(ProctorGroupExam).filter_by(group_id=gid, exam_id=exam.id).first():
+            return jsonify({'error': 'Cet examen est déjà rattaché à ce groupe'}), 400
+        from services.proctor_service import (group_conflicts, member_conflicts, group_exams,
+                                              sync_exam_proctors, _SYNCABLE_STATUSES)
+        if exam.id in {e.id for e, _ in group_exams(session, gid)}:
+            return jsonify({'error': "Ce groupe surveille déjà cet examen (par son EC)"}), 400
+        conflicts = group_conflicts(session, gid, [exam])
+        if conflicts:
+            return jsonify({'error': "Ce groupe serait sur deux examens en même temps (15 min minimum entre deux examens).",
+                            'conflicts': conflicts}), 409
+        warnings = member_conflicts(session, gid, [exam])
+        session.add(ProctorGroupExam(group_id=gid, exam_id=exam.id))
+        session.commit()
+        to_notify = sync_exam_proctors(session, exam) if exam.status in _SYNCABLE_STATUSES else []
+        session.commit()
+        result = group.to_dict()
+        result['member_warnings'] = warnings
+    except Exception as e:
+        session.rollback()
+        return jsonify({'error': str(e)}), 500
+    finally:
+        session.close()
+    try:
+        from notif_bus import notify_user
+        for n in to_notify or []:
+            try:
+                notify_user(n.get('user_id'), n.get('event'), n.get('title'), n.get('message'),
+                            priority=n.get('priority'), tags=n.get('tags'))
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return jsonify(result), 201
+
+
+@formations_bp.route('/api/admin/proctor_groups/<int:gid>/exams/<int:exam_id>', methods=['DELETE'])
+@paseto_required
+def unlink_proctor_group_exam(gid, exam_id):
+    session = get_session()
+    try:
+        user, group, err = _load_managed_group(session, gid)
+        if err: return err
+        link = session.query(ProctorGroupExam).filter_by(group_id=gid, exam_id=exam_id).first()
+        if not link:
+            return jsonify({'error': 'Rattachement non trouvé'}), 404
+        session.delete(link); session.commit()
+        from services.proctor_service import sync_exam_proctors, _SYNCABLE_STATUSES
+        exam = session.get(OnlineExam, exam_id)
+        if exam and exam.status in _SYNCABLE_STATUSES:
+            sync_exam_proctors(session, exam)
+        return jsonify({'success': True, 'message': 'Examen retiré du groupe'})
+    except Exception as e:
+        session.rollback()
+        return jsonify({'error': str(e)}), 500
+    finally:
+        session.close()

@@ -113,14 +113,12 @@ def superviseur_call_requests():
             .all()
         )
         ec_ids = {ge.ec_id for g in groups for ge in g.ecs}
-        if not ec_ids:
-            session.close(); return jsonify({'requests': []})
-
         exam_ids = [
             row.id for row in session.query(OnlineExam.id)
             .join(Subject, OnlineExam.subject_id == Subject.id)
             .filter(Subject.ec_id.in_(ec_ids)).all()
-        ]
+        ] if ec_ids else []
+        exam_ids += [ge.exam_id for g in groups for ge in g.exams]   # examens rattachés directement
         if not exam_ids:
             session.close(); return jsonify({'requests': []})
 

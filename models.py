@@ -1131,6 +1131,7 @@ class ProctorGroup(Base):
     members = relationship('ProctorGroupMember', back_populates='group', cascade='all, delete-orphan')
     ecs = relationship('ProctorGroupEC', back_populates='group', cascade='all, delete-orphan')
     supervisors = relationship('ProctorGroupSupervisor', back_populates='group', cascade='all, delete-orphan')
+    exams = relationship('ProctorGroupExam', back_populates='group', cascade='all, delete-orphan')
 
     def to_dict(self):
         return {
@@ -1140,6 +1141,7 @@ class ProctorGroup(Base):
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'members': [m.to_dict() for m in self.members],
             'ec_ids': [ge.ec_id for ge in self.ecs],
+            'exam_ids': [ge.exam_id for ge in self.exams],
             'supervisors': [s.to_dict() for s in self.supervisors],
             'vigilance_level': self.vigilance_level or 'A',
         }
@@ -1204,6 +1206,24 @@ class ProctorGroupEC(Base):
 
     group = relationship('ProctorGroup', back_populates='ecs')
     ec = relationship('EC')
+
+
+class ProctorGroupExam(Base):
+    """Rattachement d'un groupe à un examen précis, en plus des examens de ses
+    EC : un même groupe enchaîne ainsi plusieurs examens d'une journée
+    (7h, 11h, 14h…), même sur des EC différents. Les chevauchements sont
+    refusés (services/proctor_service.py, group_conflicts)."""
+    __tablename__ = 'proctor_group_exams'
+
+    id = Column(Integer, primary_key=True)
+    group_id = Column(Integer, ForeignKey('proctor_groups.id', ondelete='CASCADE'), nullable=False, index=True)
+    exam_id = Column(Integer, ForeignKey('online_exams.id', ondelete='CASCADE'), nullable=False, index=True)
+    added_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (UniqueConstraint('group_id', 'exam_id', name='unique_group_exam'),)
+
+    group = relationship('ProctorGroup', back_populates='exams')
+    exam = relationship('OnlineExam')
 
 
 class ProctorAssignment(Base):

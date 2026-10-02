@@ -1839,6 +1839,22 @@ OPENAPI_SPEC = {
                            {"name": "exam_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
             "responses": {"200": {"description": "Retiré"}, "404": {"description": "Rattachement non trouvé"}}
         }},
+        "/api/online_exams/{exam_id}/preview": {"get": {
+            "tags": ["Examens en ligne"], "summary": "Prévisualiser un examen comme un étudiant (enseignant, admin)",
+            "description": "Comme « Prévisualiser » dans Moodle : l'examen tel que l'étudiant le reçoit (sujet sans barème) et ses pages (`preview.pages`, même format que /api/exam_attempts/{id}/paginated), mélangées selon `seed` (tiré au hasard si absent : chaque prévisualisation montre un autre ordre). Aucune tentative créée. Réservé à l'admin, au créateur de l'examen et aux enseignants de son EC (403 sinon). La page /exam/{id}?preview=1 l'utilise.",
+            "parameters": [{"name": "exam_id", "in": "path", "required": True, "schema": {"type": "integer"}},
+                           {"name": "seed", "in": "query", "schema": {"type": "integer"}}],
+            "responses": {"200": {"description": "Examen + subject_content + preview {seed, pages}"}, "403": {"description": "Non autorisé"}}
+        }},
+        "/api/online_exams/{exam_id}/preview/grade": {"post": {
+            "tags": ["Examens en ligne"], "summary": "Corriger une prévisualisation (rien n'est enregistré)",
+            "description": "Note les réponses d'une prévisualisation avec les mêmes règles qu'une copie : questions à choix (QCM, Vrai/Faux, appariement) automatiquement ; questions ouvertes par l'IA seulement si `with_ai` (jusqu'à une minute). `score` sur 20 ; sans `with_ai`, il ne compte que les questions à choix (`remaining_max` = points restant à corriger). Aucune donnée enregistrée.",
+            "parameters": [{"name": "exam_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+            "requestBody": {"required": True, "content": {"application/json": {"schema": {"type": "object", "properties": {
+                "answers": {"type": "object", "description": "Réponses au format de la page d'examen (pq_N, pq_N_x…)"},
+                "with_ai": {"type": "boolean", "default": False}}}}}},
+            "responses": {"200": {"description": "Correction", "content": {"application/json": {"example": {"score": 12.5, "det_score": 8, "det_max": 10, "total_max": 20, "remaining_max": 10, "breakdown": ["Question 1 : correcte — 1.00/1.00 pt"], "ai_feedback": None, "ai_done": False}}}}}
+        }},
         "/api/admin/proctor_groups/{gid}/schedule": {"get": {
             "tags": ["Groupes Surveillants"], "summary": "Planning d'un groupe",
             "description": "Examens à venir couverts par le groupe, triés par début : `source` = `ec` (par un EC rattaché) ou `exam` (rattachement direct), `effective_end_time` (fin + temps supplémentaire), `conflicts_with` (examens du planning trop proches, selon le repos minimum du groupe), `margin_minutes` (ce repos).",

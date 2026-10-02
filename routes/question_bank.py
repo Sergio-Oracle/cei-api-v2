@@ -20,8 +20,20 @@ from models import (
 DUPLICATE_THRESHOLD = 0.95
 
 
-def _similarity(a: str, b: str) -> float:
-    return SequenceMatcher(None, a.lower().strip(), b.lower().strip()).ratio()
+def _similarity(a: str, b: str, floor: float = DUPLICATE_THRESHOLD) -> float:
+    """Ressemblance 0..1 entre deux textes. Calcul exact seulement quand il
+    peut atteindre `floor` : sinon renvoie une borne supérieure (< floor),
+    obtenue par les longueurs puis les caractères communs. Tous les appelants
+    ne regardent que `>= DUPLICATE_THRESHOLD` : résultat identique, mais la
+    comparaison d'un sujet de 30 questions à la banque passe de ~10 s à
+    une fraction de seconde (la plupart des paires sont écartées sans le
+    calcul complet, quadratique)."""
+    m = SequenceMatcher(None, a.lower().strip(), b.lower().strip())
+    for bound in (m.real_quick_ratio, m.quick_ratio):
+        r = bound()
+        if r < floor:
+            return r
+    return m.ratio()
 
 question_bank_bp = Blueprint('question_bank', __name__)
 

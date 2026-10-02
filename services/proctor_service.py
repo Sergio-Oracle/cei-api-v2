@@ -98,10 +98,15 @@ def sync_group(session, group_id) -> list:
 
 # ── Planning d'un groupe et chevauchements ──────────────────────────────────
 # Un groupe (ou un surveillant) ne peut pas être sur deux examens à la fois :
-# deux examens doivent être séparés d'au moins CONFLICT_MARGIN (passage d'un
-# examen à l'autre, retardataires du premier).
+# deux examens doivent être séparés d'au moins le repos minimum du groupe
+# (ProctorGroup.min_gap_minutes, 30 min par défaut, réglable par groupe).
 
-CONFLICT_MARGIN = timedelta(minutes=15)
+DEFAULT_GAP_MINUTES = 30
+
+
+def group_gap_minutes(session, group_id) -> int:
+    v = session.query(ProctorGroup.min_gap_minutes).filter_by(id=group_id).scalar()
+    return DEFAULT_GAP_MINUTES if v is None else int(v)
 _PLANNED_STATUSES = [ExamStatus.DRAFT, ExamStatus.SCHEDULED, ExamStatus.ACTIVE]
 
 
@@ -130,10 +135,11 @@ def exam_window(session, exam):
     return exam.start_time, exam.end_time + timedelta(minutes=extra)
 
 
-def _overlap(session, a, b) -> bool:
+def _overlap(session, a, b, gap_minutes=DEFAULT_GAP_MINUTES) -> bool:
     a0, a1 = exam_window(session, a)
     b0, b1 = exam_window(session, b)
-    return a0 < b1 + CONFLICT_MARGIN and b0 < a1 + CONFLICT_MARGIN
+    gap = timedelta(minutes=gap_minutes)
+    return a0 < b1 + gap and b0 < a1 + gap
 
 
 def _exam_label(exam) -> str:
@@ -145,10 +151,11 @@ def group_conflicts(session, group_id, new_exams) -> list:
     groupe : entre eux, et avec les examens qu'il couvre déjà."""
     new_ids = {e.id for e in new_exams}
     existing = [e for e, _ in group_exams(session, group_id) if e.id not in new_ids]
+    gap = group_gap_minutes(session, group_id)
     conflicts, pool = [], list(existing)
     for exam in sorted(new_exams, key=lambda e: e.start_time):
         for other in pool:
-            if _overlap(session, exam, other):
+            if _overlap(session, exam, other, gap):
                 conflicts.append({'exam_id': exam.id, 'exam': _exam_label(exam),
                                   'with_exam_id': other.id, 'with_exam': _exam_label(other)})
         pool.append(exam)
@@ -166,11 +173,13 @@ def member_conflicts(session, group_id, new_exams) -> list:
             ProctorGroupMember.proctor_id.in_(members), ProctorGroupMember.group_id != group_id):
         others.setdefault(m.group_id, []).append(m.proctor_id)
     warnings = []
+    gap_here = group_gap_minutes(session, group_id)
     for gid, pids in others.items():
         group = session.get(ProctorGroup, gid)
+        gap = max(gap_here, group_gap_minutes(session, gid))
         for other, _ in group_exams(session, gid):
             for exam in new_exams:
-                if other.id != exam.id and _overlap(session, exam, other):
+                if other.id != exam.id and _overlap(session, exam, other, gap):
                     for pid in pids:
                         warnings.append({'proctor_id': pid,
                                          'proctor': members[pid].proctor.full_name if members[pid].proctor else '?',

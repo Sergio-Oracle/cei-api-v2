@@ -1516,6 +1516,17 @@ def update_proctor_group(gid):
             if level not in ('A', 'B', 'C'):
                 session.close(); return jsonify({'error': "Niveau de vigilance invalide (A, B ou C attendu)"}), 400
             group.vigilance_level = level
+        if 'min_gap_minutes' in data:
+            # Repos minimum entre deux examens du groupe. Un examen déjà au
+            # planning n'est pas retiré si le nouvel écart le rend trop proche :
+            # le planning le signale en rouge.
+            try:
+                gap = int(data['min_gap_minutes'])
+            except (TypeError, ValueError):
+                session.close(); return jsonify({'error': 'Écart minimum invalide'}), 400
+            if not 0 <= gap <= 480:
+                session.close(); return jsonify({'error': "L'écart minimum doit être compris entre 0 et 8 heures"}), 400
+            group.min_gap_minutes = gap
         session.commit()
         result = group.to_dict()
         session.close()
@@ -1769,7 +1780,7 @@ def link_proctor_group_ec(gid):
         conflicts = group_conflicts(session, gid, new_exams)
         if conflicts:
             session.close()
-            return jsonify({'error': "Ce groupe serait sur deux examens en même temps (15 min minimum entre deux examens).",
+            return jsonify({'error': f"Ce groupe serait sur deux examens trop rapprochés (repos minimum : {group_gap_label(session, gid)}).",
                             'conflicts': conflicts}), 409
         member_warnings = member_conflicts(session, gid, new_exams)
         session.add(ProctorGroupEC(group_id=gid, ec_id=ec_id))
@@ -1879,8 +1890,14 @@ def unlink_proctor_group_ec(gid, ec_id):
 
 # ── Examens précis d'un groupe (en plus de ceux de ses EC) ─────────────────
 # Un même groupe peut enchaîner plusieurs examens (7h, 11h, 14h…), même sur
-# des EC différents ; deux examens qui se chevauchent (marge 15 min) sont
+# des EC différents ; deux examens qui se chevauchent (repos minimum du groupe, 30 min par défaut) sont
 # refusés.
+
+def group_gap_label(session, gid) -> str:
+    from services.proctor_service import group_gap_minutes
+    m = group_gap_minutes(session, gid)
+    return f"{m // 60} h {m % 60:02d}" if m >= 60 and m % 60 else (f"{m // 60} h" if m >= 60 else f"{m} min")
+
 
 def _exam_row(session, exam, source=None):
     from services.proctor_service import exam_window
@@ -1916,12 +1933,13 @@ def proctor_group_schedule(gid):
     try:
         user, group, err = _load_managed_group(session, gid)
         if err: return err
-        from services.proctor_service import group_exams, _overlap
+        from services.proctor_service import group_exams, _overlap, group_gap_minutes
         items = group_exams(session, gid)
+        gap = group_gap_minutes(session, gid)
         rows = [_exam_row(session, e, src) for e, src in items]
         for i, (a, _) in enumerate(items):
-            rows[i]['conflicts_with'] = [b.id for b, _ in items if b.id != a.id and _overlap(session, a, b)]
-        return jsonify({'group_id': gid, 'margin_minutes': 15, 'exams': rows})
+            rows[i]['conflicts_with'] = [b.id for b, _ in items if b.id != a.id and _overlap(session, a, b, gap)]
+        return jsonify({'group_id': gid, 'margin_minutes': gap, 'exams': rows})
     finally:
         session.close()
 
@@ -1980,7 +1998,7 @@ def link_proctor_group_exam(gid):
             return jsonify({'error': "Ce groupe surveille déjà cet examen (par son EC)"}), 400
         conflicts = group_conflicts(session, gid, [exam])
         if conflicts:
-            return jsonify({'error': "Ce groupe serait sur deux examens en même temps (15 min minimum entre deux examens).",
+            return jsonify({'error': f"Ce groupe serait sur deux examens trop rapprochés (repos minimum : {group_gap_label(session, gid)}).",
                             'conflicts': conflicts}), 409
         warnings = member_conflicts(session, gid, [exam])
         session.add(ProctorGroupExam(group_id=gid, exam_id=exam.id))

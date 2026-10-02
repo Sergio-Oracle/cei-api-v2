@@ -2,7 +2,7 @@
 Service IA — couche Modèle du MVC.
 
 Encapsule toute la logique d'appel aux fournisseurs IA (Anthropic → Gemini →
-Groq → Cerebras → OpenRouter → DeepSeek → Ollama) avec fallback automatique.
+Groq → Cerebras → OpenRouter → DeepSeek → Xelia → Ollama) avec fallback automatique.
 Groq/Cerebras/OpenRouter supportent chacun plusieurs clés en rotation (même
 principe que Gemini) — utile quand une clé atteint son quota journalier
 avant les autres. Les routes (Contrôleurs) ne connaissent pas les
@@ -52,6 +52,15 @@ _ollama_url     = os.getenv("OLLAMA_API_URL", "").rstrip("/")
 _ollama_key     = os.getenv("OLLAMA_API_KEY")
 OLLAMA_MODEL      = os.getenv("OLLAMA_MODEL",      "qwen3.6:latest")
 OLLAMA_MODEL_FAST = os.getenv("OLLAMA_MODEL_FAST", "gemma3:12b")
+
+# Xelia : passerelle IA de l'UNCHK (compatible OpenAI), dernier recours de la
+# chaîne à la place d'Ollama. Modèles exposés : cei-principal (qwen, raisonne
+# — désactivé ici, sinon le raisonnement consomme le budget de tokens) et
+# cei-rapide (gemma3, sait aussi lire les images).
+_xelia_url        = os.getenv("XELIA_BASE_URL", "").rstrip("/")
+_xelia_key        = os.getenv("XELIA_API_KEY")
+XELIA_MODEL       = os.getenv("XELIA_MODEL",      "cei-principal")
+XELIA_MODEL_FAST  = os.getenv("XELIA_MODEL_FAST", "cei-rapide")
 
 # Limitation concurrency IA par worker/processus (configurable) — évite que
 # des dizaines de requêtes concurrentes (suggestions, correction auto...)
@@ -113,7 +122,8 @@ def init_ai_clients() -> None:
             pass
 
     if not _anthropic_client and not _gemini_clients and not _deepseek_key \
-            and not _groq_keys and not _cerebras_keys and not _openrouter_keys and not _ollama_key:
+            and not _groq_keys and not _cerebras_keys and not _openrouter_keys and not _ollama_key \
+            and not _xelia_key:
         print("WARNING: Aucune clé IA configurée")
 
 
@@ -345,6 +355,53 @@ def _call_ollama(system_prompt: str, user_message: str, temperature: float,
         return _ollama_chat(secondary, system_prompt, user_message, temperature, max_tokens)
 
 
+def _xelia_chat(model: str, messages: list, temperature: float, max_tokens: int, timeout: int) -> str:
+    import requests as _req
+    body = {"model": model, "messages": messages, "temperature": temperature, "max_tokens": max_tokens}
+    if model == XELIA_MODEL:
+        body["reasoning_effort"] = "none"
+    resp = _req.post(f"{_xelia_url}/chat/completions",
+                     headers={"Authorization": f"Bearer {_xelia_key}", "Content-Type": "application/json"},
+                     json=body, timeout=timeout)
+    resp.raise_for_status()
+    content = resp.json()["choices"][0]["message"].get("content") or ""
+    content = re.sub(r'<think>.*?</think>', '', content, flags=re.DOTALL).strip()
+    if not content:
+        raise Exception(f"Xelia ({model}) : réponse vide")
+    return content
+
+
+def _call_xelia(system_prompt: str, user_message: str, temperature: float,
+                max_tokens: int = 8192, fast: bool = False) -> str:
+    """Même résilience que l'ancien recours Ollama : en cas d'échec, on
+    retente avec l'autre modèle (rapide↔principal) avant d'abandonner."""
+    if not _xelia_key or not _xelia_url:
+        raise Exception("Xelia non configuré")
+    messages = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+    messages.append({"role": "user", "content": user_message})
+    timeout = max(180, max_tokens // 30)   # gros sujets : génération longue
+    primary   = XELIA_MODEL_FAST if fast else XELIA_MODEL
+    secondary = XELIA_MODEL if fast else XELIA_MODEL_FAST
+    try:
+        return _xelia_chat(primary, messages, temperature, max_tokens, timeout)
+    except Exception as e:
+        print(f"WARNING Xelia ({primary}) → retry ({secondary}): {_describe_error(e)}")
+        return _xelia_chat(secondary, messages, temperature, max_tokens, timeout)
+
+
+def _call_xelia_vision(raw: bytes, instructions: str) -> str:
+    if not _xelia_key or not _xelia_url:
+        raise Exception("Xelia non configuré")
+    import base64
+    b64 = base64.b64encode(raw).decode()
+    messages = [{"role": "user", "content": [
+        {"type": "text", "text": _media_analysis_prompt(instructions)},
+        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}}]}]
+    return _xelia_chat(XELIA_MODEL_FAST, messages, 0.2, 500, 90)
+
+
 def _call_ollama_vision(raw: bytes, instructions: str) -> str:
     """Analyse d'image via le modèle Ollama rapide (gemma3, multimodal) — seul
     fournisseur d'analyse média réellement configuré en l'absence de clé
@@ -388,7 +445,7 @@ def _describe_error(e: Exception) -> str:
 def call_ai(system_prompt: str, user_message: str,
             temperature: float = 0.2, max_tokens: int = 8192, fast: bool = False,
             label: str = '') -> str:
-    """Appel IA avec fallback automatique Anthropic → Gemini → Groq → OpenRouter → DeepSeek → Ollama.
+    """Appel IA avec fallback automatique Anthropic → Gemini → Groq → Cerebras → OpenRouter → DeepSeek → Xelia → Ollama.
     Lève une Exception si tous les fournisseurs sont indisponibles.
     `fast=True` utilise le modèle Ollama rapide (OLLAMA_MODEL_FAST) plutôt que
     le modèle lourd — pour les tâches courtes où le modèle par défaut est trop
@@ -467,7 +524,16 @@ def call_ai(system_prompt: str, user_message: str,
                 return result
             except Exception as e:
                 deepseek_err = str(e)
-                print(f"WARNING {_tag}DeepSeek échec ({time.monotonic()-_t0:.1f}s) → Ollama : {_describe_error(e)}")
+                print(f"WARNING {_tag}DeepSeek échec ({time.monotonic()-_t0:.1f}s) → Xelia : {_describe_error(e)}")
+
+        if _xelia_key and _xelia_url:
+            _t0 = time.monotonic()
+            try:
+                result = _call_xelia(system_prompt, user_message, temperature, max_tokens, fast=fast)
+                print(f"INFO {_tag}Xelia OK — {time.monotonic()-_t0:.1f}s")
+                return result
+            except Exception as e:
+                print(f"WARNING {_tag}Xelia échec ({time.monotonic()-_t0:.1f}s) → Ollama : {_describe_error(e)}")
 
         if _ollama_key and _ollama_url:
             _t0 = time.monotonic()
@@ -653,6 +719,8 @@ def analyze_media(media_type: str, raw: bytes, filename: str, content_type: str,
                 return _call_anthropic_image_analysis(raw, mime, instructions)
             if _gemini_clients:
                 return _call_gemini_media_analysis(raw, mime, instructions)
+            if _xelia_key and _xelia_url:
+                return _call_xelia_vision(raw, instructions)
             if _ollama_key and _ollama_url:
                 return _call_ollama_vision(raw, instructions)
 
@@ -667,6 +735,9 @@ def analyze_media(media_type: str, raw: bytes, filename: str, content_type: str,
                 return "Analyse automatique indisponible (extraction d'image depuis la vidéo impossible) — le média sera tout de même inséré dans le sujet."
             if _anthropic_client:
                 return _call_anthropic_image_analysis(frame, 'image/jpeg', instructions) + \
+                    "\n\n(Analyse basée sur une image extraite de la vidéo, pas sur le mouvement ni le son.)"
+            if _xelia_key and _xelia_url:
+                return _call_xelia_vision(frame, instructions) + \
                     "\n\n(Analyse basée sur une image extraite de la vidéo, pas sur le mouvement ni le son.)"
             if _ollama_key and _ollama_url:
                 return _call_ollama_vision(frame, instructions) + \

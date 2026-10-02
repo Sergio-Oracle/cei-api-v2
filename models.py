@@ -1126,6 +1126,9 @@ class ProctorGroup(Base):
     #   C = B + vérification périodique de présence par la caméra du surveillant
     #       (juste un booléen visage détecté oui/non, aucune image transmise/stockée)
     vigilance_level = Column(String(1), default='A')
+    # Repos minimum (minutes) entre deux examens surveillés par ce groupe —
+    # en dessous, le rattachement est refusé (services/proctor_service.py).
+    min_gap_minutes = Column(Integer, default=30, nullable=False, server_default='30')
 
     created_by = relationship('User', foreign_keys=[created_by_id])
     members = relationship('ProctorGroupMember', back_populates='group', cascade='all, delete-orphan')
@@ -1144,6 +1147,7 @@ class ProctorGroup(Base):
             'exam_ids': [ge.exam_id for ge in self.exams],
             'supervisors': [s.to_dict() for s in self.supervisors],
             'vigilance_level': self.vigilance_level or 'A',
+            'min_gap_minutes': self.min_gap_minutes if self.min_gap_minutes is not None else 30,
         }
 
 
@@ -1439,6 +1443,9 @@ def init_db():
     # statement_timeout=2s évite les blocages si la table est verrouillée par l'app active
     from sqlalchemy import text as _text
     _migrations = [
+        # Groupes de surveillance : repos minimum entre deux examens
+        ("SELECT 1 FROM information_schema.columns WHERE table_name='proctor_groups' AND column_name='min_gap_minutes'",
+         "ALTER TABLE proctor_groups ADD COLUMN min_gap_minutes INTEGER NOT NULL DEFAULT 30"),
         ("SELECT 1 FROM information_schema.columns WHERE table_name='proctor_assignments' AND column_name='student_id'",
          "ALTER TABLE proctor_assignments ADD COLUMN student_id INTEGER REFERENCES users(id)"),
         # #29 — publication des relevés de notes

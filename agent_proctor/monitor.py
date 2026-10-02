@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from agent_proctor.config import (
     CEI_BASE_URL, AGENT_SECRET,
-    OLLAMA_URL, OLLAMA_KEY, OLLAMA_MODEL,
+    OLLAMA_URL, OLLAMA_KEY, OLLAMA_MODEL, XELIA_URL, XELIA_KEY, XELIA_MODEL,
     RISK_ALERT, RISK_URGENT,
     CHECK_INTERVAL, ALERT_COOLDOWN, SUMMARY_INTERVAL,
 )
@@ -135,9 +135,9 @@ def _claim_lock(key: str, ttl_seconds: int) -> bool:
 
 def _ai_analyze(student_name: str, risk_score: int, no_face: int,
                 multi_face: int, tab_switches: int, warnings: int) -> str:
-    """Analyse comportementale par Ollama. Retourne une évaluation courte."""
-    if not OLLAMA_URL or not OLLAMA_KEY:
-        # Analyse règle-basée si Ollama indisponible
+    """Analyse comportementale par Xelia, sinon Ollama. Retourne une évaluation courte."""
+    if not (XELIA_URL and XELIA_KEY) and not (OLLAMA_URL and OLLAMA_KEY):
+        # Analyse règle-basée si aucune IA configurée
         if risk_score >= RISK_URGENT:
             return "Comportement hautement suspect — intervention immédiate recommandée."
         return "Anomalies répétées détectées — surveillance renforcée conseillée."
@@ -152,8 +152,31 @@ def _ai_analyze(student_name: str, risk_score: int, no_face: int,
         f"- Avertissements reçus : {warnings}\n"
         f"Sois concis, factuel, sans drama. Indique si une intervention humaine est nécessaire."
     )
+    import re as _re
+    if XELIA_URL and XELIA_KEY:
+        try:
+            resp = requests.post(
+                f"{XELIA_URL}/chat/completions",
+                headers={"Authorization": f"Bearer {XELIA_KEY}", "Content-Type": "application/json"},
+                json={
+                    "model": XELIA_MODEL, "reasoning_effort": "none",
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": 0.1, "max_tokens": 150,
+                },
+                timeout=30
+            )
+            if resp.ok:
+                content = resp.json()["choices"][0]["message"].get("content") or ""
+                content = _re.sub(r'<think>.*?</think>', '', content, flags=_re.DOTALL).strip()
+                if content:
+                    return content[:300]
+            print(f"Xelia analyse : HTTP {resp.status_code}")
+        except Exception as e:
+            print(f"Xelia analyse : {e}")
+
     try:
-        import re as _re
+        if not OLLAMA_URL or not OLLAMA_KEY:
+            raise Exception("Ollama non configuré")
         resp = requests.post(
             f"{OLLAMA_URL}/api/chat",
             headers={"Authorization": f"Bearer {OLLAMA_KEY}", "Content-Type": "application/json"},
@@ -173,7 +196,7 @@ def _ai_analyze(student_name: str, risk_score: int, no_face: int,
     except Exception as e:
         print(f"Ollama analyse : {e}")
 
-    # Fallback règle-basée si Ollama échoue
+    # Fallback règle-basée si l'IA échoue
     if risk_score >= RISK_URGENT:
         return "Comportement hautement suspect — intervention immédiate recommandée."
     return "Anomalies répétées détectées — surveillance renforcée conseillée."

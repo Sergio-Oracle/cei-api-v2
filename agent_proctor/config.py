@@ -27,6 +27,12 @@ OLLAMA_URL     = os.getenv("OLLAMA_API_URL", "").rstrip("/")
 OLLAMA_KEY     = os.getenv("OLLAMA_API_KEY", "")
 OLLAMA_MODEL   = os.getenv("OLLAMA_MODEL", "qwen3.6:latest")
 
+# IA — Xelia (passerelle UNCHK compatible OpenAI), essayée avant Ollama,
+# comme dans services/ai_service.py
+XELIA_URL      = os.getenv("XELIA_BASE_URL", "").rstrip("/")
+XELIA_KEY      = os.getenv("XELIA_API_KEY", "")
+XELIA_MODEL    = os.getenv("XELIA_MODEL", "cei-principal")
+
 # Seuils d'alerte — volontairement distincts des seuils d'affichage du badge
 # UI surveillant (40/70, riskCls dans proctor/monitor/[id]/page.tsx) :
 # l'email part un peu avant que le badge ne passe au rouge (70), pour donner

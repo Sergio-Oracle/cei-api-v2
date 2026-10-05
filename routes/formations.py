@@ -843,7 +843,7 @@ def _hours_or_none(v):
     """Heures saisies : vide → non renseigné (None), sinon entier ≥ 0."""
     if v is None or v == '':
         return None
-    return max(0, int(float(v)))
+    return max(0.0, float(v))   # demi-heures acceptées (17,5 h)
 
 
 def _sync_tpe_total(ec):

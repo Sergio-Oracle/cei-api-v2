@@ -3222,10 +3222,21 @@ OPENAPI_SPEC = {
             }}}}}
         }},
         "/api/professor/my_students": {"get": {
-            "tags": ["Tableaux de bord"], "summary": "Étudiants inscrits aux EC du professeur connecté",
-            "responses": {"200": {"description": "Étudiants", "content": {"application/json": {"schema": {
-                "type": "array", "items": {"$ref": "#/components/schemas/User"}
-            }}}}}
+            "tags": ["Tableaux de bord"], "summary": "Étudiants inscrits aux EC du professeur connecté, par page",
+            "description": "Comme la liste des participants de Moodle : filtrée, triée par nom et paginée en base (seule la page demandée est renvoyée). `ecs` : cartes EC avec leur nombre d'inscrits ; `poles` : pôles des étudiants avec leur nombre ; `total` : tous les étudiants du professeur ; `filtered_total` : après filtres.",
+            "parameters": [
+                {"name": "page", "in": "query", "schema": {"type": "integer", "default": 1}},
+                {"name": "per_page", "in": "query", "schema": {"type": "integer", "default": 50, "maximum": 200}},
+                {"name": "q", "in": "query", "schema": {"type": "string"}, "description": "Recherche dans le nom ou l'email"},
+                {"name": "ec", "in": "query", "schema": {"type": "string"}, "description": "Code EC"},
+                {"name": "pole", "in": "query", "schema": {"type": "string"}, "description": "Code pôle"},
+                {"name": "first", "in": "query", "schema": {"type": "string"}, "description": "Initiale du prénom (A-Z)"},
+                {"name": "last", "in": "query", "schema": {"type": "string"}, "description": "Initiale du nom (dernier mot du nom complet)"}],
+            "responses": {"200": {"description": "Page d'étudiants", "content": {"application/json": {"example": {
+                "ecs": [{"ec_code": "DIL1111", "ec_name": "Algorithmique", "ue_code": "DIL111", "student_count": 1230, "pole_code": "STN"}],
+                "poles": [{"code": "STN", "name": "Sciences et Technologies du Numérique", "count": 1230}],
+                "students": [{"id": 12, "full_name": "Awa DIOP", "email": "awa.diop@unchk.edu.sn", "formation_code": "L1-DIL", "pole_code": "STN", "niveau": "L1", "ecs": [{"ec_code": "DIL1111", "ec_name": "Algorithmique", "ue_code": "DIL111"}]}],
+                "total": 1230, "filtered_total": 1230, "page": 1, "pages": 25, "per_page": 50}}}}}
         }},
         "/api/professor/analytics": {"get": {
             "tags": ["Tableaux de bord"], "summary": "Analytique du professeur — notes, taux de réussite, évolution",

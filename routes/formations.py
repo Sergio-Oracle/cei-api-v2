@@ -1242,99 +1242,116 @@ def enroll_student_by_id(student_id):
 @formations_bp.route('/api/professor/my_students', methods=['GET'])
 @paseto_required
 def get_professor_students():
+    """Étudiants inscrits aux UE des EC du professeur, PAR PAGE (comme Moodle).
+
+    Paramètres : page (1…), per_page (≤ 200, 50 par défaut), q (nom/email),
+    ec (code EC), pole (code pôle), first / last (initiale du prénom / du nom).
+    Avant, tous les étudiants étaient renvoyés d'un coup avec plusieurs
+    requêtes par étudiant (22 s et 3,8 Mo pour 7 700 étudiants) ; tout est
+    maintenant filtré, compté et paginé en base."""
+    from sqlalchemy import func, distinct
+    session = get_session()
     try:
         user_id = get_current_user_id()
-        session = get_session()
-        user = session.query(User).filter_by(id=user_id).first()
+        user = session.get(User, user_id)
         if not user or user.role not in [UserRole.PROFESSOR, UserRole.ADMIN]:
-            session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
+            return jsonify({'error': 'Accès non autorisé'}), 403
+        try:
+            page = max(1, int(request.args.get('page', 1)))
+            per_page = min(200, max(1, int(request.args.get('per_page', 50))))
+        except ValueError:
+            page, per_page = 1, 50
+        q = (request.args.get('q') or '').strip()
+        ec_code = (request.args.get('ec') or '').strip()
+        pole_code = (request.args.get('pole') or '').strip()
+        first = (request.args.get('first') or '').strip()[:1].upper()
+        last = (request.args.get('last') or '').strip()[:1].upper()
 
-        assignments = session.query(ECAssignment).filter_by(professor_id=user_id).all()
-        ec_ids = [a.ec_id for a in assignments]
-        ecs = session.query(EC).filter(EC.id.in_(ec_ids)).all() if ec_ids else []
-        ue_ids = list({ec.ue_id for ec in ecs if ec.ue_id})
-
+        # EC du professeur, avec UE, semestre, formation et pôle en une requête
+        rows = (session.query(EC, UE, Formation, Pole)
+                .join(ECAssignment, ECAssignment.ec_id == EC.id)
+                .join(UE, UE.id == EC.ue_id)
+                .join(Semester, Semester.id == UE.semester_id)
+                .join(Formation, Formation.id == Semester.formation_id)
+                .outerjoin(Pole, Pole.id == Formation.pole_id)
+                .filter(ECAssignment.professor_id == user_id).all())
+        ecs = {ec.id: (ec, ue, pole) for ec, ue, _f, pole in rows}
+        ue_ids = sorted({ue.id for _ec, ue, _p in ecs.values()})
+        empty = {'ecs': [], 'poles': [], 'students': [], 'total': 0, 'filtered_total': 0,
+                 'page': 1, 'pages': 1, 'per_page': per_page}
         if not ue_ids:
-            session.close()
-            return jsonify({'ecs': [], 'students': [], 'total': 0})
+            return jsonify(empty)
 
-        enrollments = (
-            session.query(StudentUEEnrollment)
-            .join(User, StudentUEEnrollment.student_id == User.id)
-            .filter(StudentUEEnrollment.ue_id.in_(ue_ids), User.role == UserRole.STUDENT)
-            .all()
-        )
-        student_ues = {}
-        for e in enrollments:
-            student_ues.setdefault(e.student_id, set()).add(e.ue_id)
+        def enrolled(ues):
+            return (session.query(StudentUEEnrollment.student_id)
+                    .join(User, User.id == StudentUEEnrollment.student_id)
+                    .filter(StudentUEEnrollment.ue_id.in_(ues), User.role == UserRole.STUDENT))
 
-        # Retour : "je veux que tu les affiches par Pôles" — le Pôle d'un
-        # étudiant se dérive directement de sa Formation (Formation.pole_id,
-        # dénormalisé), et celui d'un EC via EC → UE → Semestre → Formation →
-        # Pôle (même chemin que EC.to_dict()). Exposé ici pour permettre le
-        # regroupement/filtre par Pôle côté frontend, SANS toucher au calcul
-        # d'éligibilité ci-dessus (ECAssignment → EC → UE → StudentUEEnrollment,
-        # déjà correctement scopé au professeur) — le Pôle n'est qu'un
-        # habillage d'affichage sur un ensemble d'étudiants déjà bien filtré.
-        ec_pole = {}
-        for ec in ecs:
-            ue = session.query(UE).filter_by(id=ec.ue_id).first()
-            semester = session.query(Semester).filter_by(id=ue.semester_id).first() if ue else None
-            formation_of_ec = session.query(Formation).filter_by(id=semester.formation_id).first() if semester else None
-            pole_of_ec = formation_of_ec.pole if formation_of_ec else None
-            ec_pole[ec.id] = {
-                'pole_id':   pole_of_ec.id if pole_of_ec else None,
-                'pole_code': pole_of_ec.code if pole_of_ec else None,
-                'pole_name': pole_of_ec.name if pole_of_ec else None,
-            }
+        # Cartes EC et total : comptés en base
+        per_ue = dict(session.query(StudentUEEnrollment.ue_id, func.count(distinct(StudentUEEnrollment.student_id)))
+                      .join(User, User.id == StudentUEEnrollment.student_id)
+                      .filter(StudentUEEnrollment.ue_id.in_(ue_ids), User.role == UserRole.STUDENT)
+                      .group_by(StudentUEEnrollment.ue_id).all())
+        ecs_out = [{'ec_code': ec.code, 'ec_name': ec.name, 'ue_code': ue.code, 'student_count': per_ue.get(ue.id, 0),
+                    'pole_id': pole.id if pole else None, 'pole_code': pole.code if pole else None,
+                    'pole_name': pole.name if pole else None}
+                   for ec, ue, pole in sorted(ecs.values(), key=lambda t: t[0].code)]
+        all_ids = enrolled(ue_ids).distinct().subquery()
+        total = session.query(func.count()).select_from(all_ids).scalar()
+        poles = (session.query(Pole.code, Pole.name, func.count(User.id))
+                 .select_from(User).join(all_ids, all_ids.c.student_id == User.id)
+                 .join(Formation, Formation.id == User.formation_id).join(Pole, Pole.id == Formation.pole_id)
+                 .group_by(Pole.code, Pole.name).order_by(Pole.code).all())
 
-        students_out = []
-        for sid, enrolled_ue_ids in student_ues.items():
-            student = session.query(User).filter_by(id=sid, role=UserRole.STUDENT).first()
-            if not student: continue
-            formation = (session.query(Formation).filter_by(id=student.formation_id).first()
-                         if getattr(student, 'formation_id', None) else None)
-            pole = formation.pole if formation else None
-            # Même repli que User.to_dict() : le niveau "réel" est celui du
-            # Niveau rattaché à la Formation de l'étudiant ; le champ texte
-            # libre student.niveau ne sert que si aucune Formation n'est
-            # encore choisie (jamais rempli pour un compte créé avec juste
-            # formation_id, ce qui laissait la colonne "Niveau" vide ici).
-            niveau_label = (formation.niveau.code if formation and formation.niveau else None) or student.niveau
-            student_ecs = []
-            for ec in ecs:
-                if ec.ue_id in enrolled_ue_ids:
-                    ue = session.query(UE).filter_by(id=ec.ue_id).first()
-                    student_ecs.append({'ec_code': ec.code, 'ec_name': ec.name,
-                                        'ue_code': ue.code if ue else '—'})
-            students_out.append({
-                'id':             student.id,
-                'full_name':      student.full_name,
-                'email':          student.email,
-                'niveau':         niveau_label,
-                'formation_code': formation.code if formation else None,
-                'formation_name': formation.name if formation else None,
-                'pole_id':        pole.id if pole else None,
-                'pole_code':      pole.code if pole else None,
-                'pole_name':      pole.name if pole else None,
-                'ecs':            student_ecs,
+        # Liste filtrée et paginée
+        scope = ue_ids
+        if ec_code:
+            scope = [ue.id for ec, ue, _p in ecs.values() if ec.code == ec_code] or [-1]
+        ids = enrolled(scope).distinct().subquery()
+        base = session.query(User).join(ids, ids.c.student_id == User.id)
+        if pole_code:
+            base = base.join(Formation, Formation.id == User.formation_id).join(Pole, Pole.id == Formation.pole_id).filter(Pole.code == pole_code)
+        if q:
+            like = f"%{q}%"
+            base = base.filter((User.full_name.ilike(like)) | (User.email.ilike(like)))
+        if first:
+            base = base.filter(func.upper(func.left(func.trim(User.full_name), 1)) == first)
+        if last:
+            # nom = dernier mot du nom complet (« Serge Elvis BOUNGUELE » → B)
+            base = base.filter(func.upper(func.left(func.substring(User.full_name, r'(\S+)\s*$'), 1)) == last)
+        filtered_total = base.count()
+        pages = max(1, -(-filtered_total // per_page))
+        page = min(page, pages)
+        students = base.order_by(func.lower(User.full_name), User.id).offset((page - 1) * per_page).limit(per_page).all()
+
+        # Détails de la page seulement : formation/pôle/niveau et EC suivis
+        sids = [st.id for st in students]
+        forms = {f.id: f for f in session.query(Formation).filter(Formation.id.in_({st.formation_id for st in students if st.formation_id})).all()}
+        ue_of = {}
+        for sid, uid in (session.query(StudentUEEnrollment.student_id, StudentUEEnrollment.ue_id)
+                         .filter(StudentUEEnrollment.student_id.in_(sids), StudentUEEnrollment.ue_id.in_(ue_ids)).all() if sids else []):
+            ue_of.setdefault(sid, set()).add(uid)
+        out = []
+        for st in students:
+            f = forms.get(st.formation_id)
+            pole = f.pole if f else None
+            out.append({
+                'id': st.id, 'full_name': st.full_name, 'email': st.email, 'is_active': st.is_active,
+                'niveau': (f.niveau.code if f and f.niveau else None) or st.niveau,
+                'formation_code': f.code if f else None, 'formation_name': f.name if f else None,
+                'pole_id': pole.id if pole else None, 'pole_code': pole.code if pole else None,
+                'pole_name': pole.name if pole else None,
+                'ecs': [{'ec_code': ec.code, 'ec_name': ec.name, 'ue_code': ue.code}
+                        for ec, ue, _p in sorted(ecs.values(), key=lambda t: t[0].code) if ue.id in ue_of.get(st.id, ())],
             })
-        students_out.sort(key=lambda x: x['full_name'])
-
-        ecs_out = []
-        for ec in ecs:
-            ue = session.query(UE).filter_by(id=ec.ue_id).first()
-            count = session.query(StudentUEEnrollment).filter_by(ue_id=ec.ue_id).count()
-            ecs_out.append({'ec_code': ec.code, 'ec_name': ec.name,
-                            'ue_code': ue.code if ue else '—', 'student_count': count,
-                            **ec_pole.get(ec.id, {'pole_id': None, 'pole_code': None, 'pole_name': None})})
-
-        session.close()
-        return jsonify({'ecs': ecs_out, 'students': students_out, 'total': len(students_out)})
+        return jsonify({'ecs': ecs_out, 'poles': [{'code': c, 'name': n, 'count': k} for c, n, k in poles],
+                        'students': out, 'total': total, 'filtered_total': filtered_total,
+                        'page': page, 'pages': pages, 'per_page': per_page})
     except Exception as e:
-        try: session.rollback(); session.close()
-        except Exception: pass
+        session.rollback()
         return jsonify({'error': str(e)}), 500
+    finally:
+        session.close()
 
 
 @formations_bp.route('/api/admin/students/enrollments/bulk', methods=['GET'])

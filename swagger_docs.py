@@ -414,6 +414,8 @@ _SCHEMAS = {
             "tp":          {"type": "integer", "description": "Heures Travaux Pratiques"},
             "tpe":         {"type": "integer", "description": "Travail Personnel Étudiant"},
             "projets":     {"type": "integer", "description": "Heures de projets (activités de terrain, services à la communauté), comptées dans le VHT"},
+            "tpe_semi_dirige": {"type": "integer", "nullable": True, "description": "TPE semi-dirigé (notes de lecture, travaux à rendre…)"},
+            "tpe_non_dirige":  {"type": "integer", "nullable": True, "description": "TPE non dirigé"},
             "vht":         {"type": "integer", "description": "Volume Horaire Total"},
             "is_active":   {"type": "boolean"}
         }
@@ -1602,6 +1604,8 @@ OPENAPI_SPEC = {
                     "tp":          {"type": "integer", "default": 0, "description": "Heures Travaux Pratiques"},
                     "tpe":         {"type": "integer", "default": 0, "description": "Travail Personnel Étudiant"},
                     "projets":     {"type": "integer", "default": 0, "description": "Heures de projets, comptées dans le VHT"},
+                    "tpe_semi_dirige": {"type": "integer", "description": "TPE semi-dirigé ; si l'un des deux détails est fourni, tpe = semi-dirigé + non dirigé"},
+                    "tpe_non_dirige":  {"type": "integer", "description": "TPE non dirigé"},
                     "vht":         {"type": "integer", "default": 0, "description": "Volume Horaire Total"}
                 }
             }}}},
@@ -1622,6 +1626,8 @@ OPENAPI_SPEC = {
                         "tp":          {"type": "integer"},
                         "tpe":         {"type": "integer"},
                         "projets":     {"type": "integer"},
+                        "tpe_semi_dirige": {"type": "integer"},
+                        "tpe_non_dirige":  {"type": "integer"},
                         "vht":         {"type": "integer"},
                         "is_active":   {"type": "boolean"}
                     }

@@ -223,6 +223,9 @@ class EC(Base):
     td = Column(Integer, default=0)
     tp = Column(Integer, default=0)
     tpe = Column(Integer, default=0)
+    # Détail du TPE des maquettes officielles (tpe = leur somme quand il est renseigné).
+    tpe_semi_dirige = Column(Integer, nullable=True)   # notes de lecture, travaux à rendre…
+    tpe_non_dirige = Column(Integer, nullable=True)
     # Projets (activités de terrain, services à la communauté) : colonne à part
     # dans les maquettes officielles, comptée dans le VHT (CM+TD+TP+Projets+TPE).
     projets = Column(Integer, default=0)
@@ -257,6 +260,8 @@ class EC(Base):
             'tp': self.tp,
             'tpe': self.tpe,
             'projets': self.projets or 0,
+            'tpe_semi_dirige': self.tpe_semi_dirige,
+            'tpe_non_dirige': self.tpe_non_dirige,
             'vht': self.vht,
             'coefficient': self.coefficient,
             'cc_percentage': self.cc_percentage if self.cc_percentage is not None else 40,
@@ -1597,6 +1602,11 @@ def init_db():
     # statement_timeout=2s évite les blocages si la table est verrouillée par l'app active
     from sqlalchemy import text as _text
     _migrations = [
+        # EC : détail du TPE (semi-dirigé / non dirigé)
+        ("SELECT 1 FROM information_schema.columns WHERE table_name='ecs' AND column_name='tpe_semi_dirige'",
+         "ALTER TABLE ecs ADD COLUMN tpe_semi_dirige INTEGER"),
+        ("SELECT 1 FROM information_schema.columns WHERE table_name='ecs' AND column_name='tpe_non_dirige'",
+         "ALTER TABLE ecs ADD COLUMN tpe_non_dirige INTEGER"),
         # EC : heures de projets (maquettes officielles)
         ("SELECT 1 FROM information_schema.columns WHERE table_name='ecs' AND column_name='projets'",
          "ALTER TABLE ecs ADD COLUMN projets INTEGER DEFAULT 0"),

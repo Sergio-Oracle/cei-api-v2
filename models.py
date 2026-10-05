@@ -223,6 +223,9 @@ class EC(Base):
     td = Column(Integer, default=0)
     tp = Column(Integer, default=0)
     tpe = Column(Integer, default=0)
+    # Projets (activités de terrain, services à la communauté) : colonne à part
+    # dans les maquettes officielles, comptée dans le VHT (CM+TD+TP+Projets+TPE).
+    projets = Column(Integer, default=0)
     vht = Column(Integer, default=0)
     coefficient = Column(Integer, default=1)
     cc_percentage = Column(Integer, default=40)
@@ -253,6 +256,7 @@ class EC(Base):
             'td': self.td,
             'tp': self.tp,
             'tpe': self.tpe,
+            'projets': self.projets or 0,
             'vht': self.vht,
             'coefficient': self.coefficient,
             'cc_percentage': self.cc_percentage if self.cc_percentage is not None else 40,
@@ -1593,6 +1597,9 @@ def init_db():
     # statement_timeout=2s évite les blocages si la table est verrouillée par l'app active
     from sqlalchemy import text as _text
     _migrations = [
+        # EC : heures de projets (maquettes officielles)
+        ("SELECT 1 FROM information_schema.columns WHERE table_name='ecs' AND column_name='projets'",
+         "ALTER TABLE ecs ADD COLUMN projets INTEGER DEFAULT 0"),
         # Groupes de surveillance : repos minimum entre deux examens
         ("SELECT 1 FROM information_schema.columns WHERE table_name='proctor_groups' AND column_name='min_gap_minutes'",
          "ALTER TABLE proctor_groups ADD COLUMN min_gap_minutes INTEGER NOT NULL DEFAULT 30"),

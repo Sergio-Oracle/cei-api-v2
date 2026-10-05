@@ -413,6 +413,7 @@ _SCHEMAS = {
             "td":          {"type": "integer", "description": "Heures Travaux Dirigés"},
             "tp":          {"type": "integer", "description": "Heures Travaux Pratiques"},
             "tpe":         {"type": "integer", "description": "Travail Personnel Étudiant"},
+            "projets":     {"type": "integer", "description": "Heures de projets (activités de terrain, services à la communauté), comptées dans le VHT"},
             "vht":         {"type": "integer", "description": "Volume Horaire Total"},
             "is_active":   {"type": "boolean"}
         }
@@ -1600,6 +1601,7 @@ OPENAPI_SPEC = {
                     "td":          {"type": "integer", "default": 0, "description": "Heures Travaux Dirigés"},
                     "tp":          {"type": "integer", "default": 0, "description": "Heures Travaux Pratiques"},
                     "tpe":         {"type": "integer", "default": 0, "description": "Travail Personnel Étudiant"},
+                    "projets":     {"type": "integer", "default": 0, "description": "Heures de projets, comptées dans le VHT"},
                     "vht":         {"type": "integer", "default": 0, "description": "Volume Horaire Total"}
                 }
             }}}},
@@ -1619,6 +1621,7 @@ OPENAPI_SPEC = {
                         "td":          {"type": "integer"},
                         "tp":          {"type": "integer"},
                         "tpe":         {"type": "integer"},
+                        "projets":     {"type": "integer"},
                         "vht":         {"type": "integer"},
                         "is_active":   {"type": "boolean"}
                     }
@@ -4828,7 +4831,7 @@ _SCHEMA_EXAMPLES = {
     },
     "EC": {
         "id": 8, "name": "Protocoles TCP/IP", "code": "RT301-01", "ue_id": 4,
-        "coefficient": 1, "cm": 24, "td": 12, "tp": 12, "tpe": 0, "vht": 48, "is_active": True
+        "coefficient": 1, "cm": 24, "td": 12, "tp": 12, "tpe": 0, "projets": 0, "vht": 48, "is_active": True
     },
     "Reclamation": {
         "id": 3, "paper_id": 34,

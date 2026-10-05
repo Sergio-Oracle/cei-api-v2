@@ -212,17 +212,19 @@ class EC(Base):
     ue_id = Column(Integer, ForeignKey('ues.id'), nullable=False)
     code = Column(String(50), nullable=False, unique=True)
     name = Column(String(200), nullable=False)
-    cm = Column(Integer, default=0)
-    td = Column(Integer, default=0)
-    tp = Column(Integer, default=0)
-    tpe = Column(Integer, default=0)
+    # Heures en nombres décimaux : les maquettes officielles ont des demi-heures
+    # (ex. 17,5 h de CM au semestre 3 du Master SRIV).
+    cm = Column(Float, default=0)
+    td = Column(Float, default=0)
+    tp = Column(Float, default=0)
+    tpe = Column(Float, default=0)
     # Détail du TPE des maquettes officielles (tpe = leur somme quand il est renseigné).
-    tpe_semi_dirige = Column(Integer, nullable=True)   # notes de lecture, travaux à rendre…
-    tpe_non_dirige = Column(Integer, nullable=True)
+    tpe_semi_dirige = Column(Float, nullable=True)   # notes de lecture, travaux à rendre…
+    tpe_non_dirige = Column(Float, nullable=True)
     # Projets (activités de terrain, services à la communauté) : colonne à part
     # dans les maquettes officielles, comptée dans le VHT (CM+TD+TP+Projets+TPE).
-    projets = Column(Integer, default=0)
-    vht = Column(Integer, default=0)
+    projets = Column(Float, default=0)
+    vht = Column(Float, default=0)
     coefficient = Column(Integer, default=1)
     cc_percentage = Column(Integer, default=40)
     ex_percentage = Column(Integer, default=60)
@@ -1474,6 +1476,23 @@ def init_db():
         # formation principale de l'étudiant
         ("SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='formation_id'",
          "ALTER TABLE users ADD COLUMN formation_id INTEGER REFERENCES formations(id) ON DELETE SET NULL"),
+        # EC : heures décimales (demi-heures des maquettes officielles)
+        ("SELECT 1 FROM information_schema.columns WHERE table_name='ecs' AND column_name='cm' AND data_type='double precision'",
+         "ALTER TABLE ecs ALTER COLUMN cm TYPE DOUBLE PRECISION USING cm::double precision"),
+        ("SELECT 1 FROM information_schema.columns WHERE table_name='ecs' AND column_name='td' AND data_type='double precision'",
+         "ALTER TABLE ecs ALTER COLUMN td TYPE DOUBLE PRECISION USING td::double precision"),
+        ("SELECT 1 FROM information_schema.columns WHERE table_name='ecs' AND column_name='tp' AND data_type='double precision'",
+         "ALTER TABLE ecs ALTER COLUMN tp TYPE DOUBLE PRECISION USING tp::double precision"),
+        ("SELECT 1 FROM information_schema.columns WHERE table_name='ecs' AND column_name='tpe' AND data_type='double precision'",
+         "ALTER TABLE ecs ALTER COLUMN tpe TYPE DOUBLE PRECISION USING tpe::double precision"),
+        ("SELECT 1 FROM information_schema.columns WHERE table_name='ecs' AND column_name='tpe_semi_dirige' AND data_type='double precision'",
+         "ALTER TABLE ecs ALTER COLUMN tpe_semi_dirige TYPE DOUBLE PRECISION USING tpe_semi_dirige::double precision"),
+        ("SELECT 1 FROM information_schema.columns WHERE table_name='ecs' AND column_name='tpe_non_dirige' AND data_type='double precision'",
+         "ALTER TABLE ecs ALTER COLUMN tpe_non_dirige TYPE DOUBLE PRECISION USING tpe_non_dirige::double precision"),
+        ("SELECT 1 FROM information_schema.columns WHERE table_name='ecs' AND column_name='projets' AND data_type='double precision'",
+         "ALTER TABLE ecs ALTER COLUMN projets TYPE DOUBLE PRECISION USING projets::double precision"),
+        ("SELECT 1 FROM information_schema.columns WHERE table_name='ecs' AND column_name='vht' AND data_type='double precision'",
+         "ALTER TABLE ecs ALTER COLUMN vht TYPE DOUBLE PRECISION USING vht::double precision"),
     ]
     with engine.connect() as _conn:
         # Timeout court pour éviter le blocage au démarrage si l'app tourne déjà

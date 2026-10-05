@@ -741,17 +741,17 @@ def register_csv_routes(app):
                         ec_code = str(row['ec_code']).strip()
                         ec_name = str(row['ec_name']).strip()
 
-                        cm_hours = int(row['ec_cm']) if pd.notna(row['ec_cm']) else 0
-                        td_hours = int(row['ec_td']) if pd.notna(row['ec_td']) else 0
-                        tp_hours = int(row['ec_tp']) if pd.notna(row['ec_tp']) else 0
-                        tpe_hours = int(row['ec_tpe']) if pd.notna(row['ec_tpe']) else 0
+                        cm_hours = float(row['ec_cm']) if pd.notna(row['ec_cm']) else 0
+                        td_hours = float(row['ec_td']) if pd.notna(row['ec_td']) else 0
+                        tp_hours = float(row['ec_tp']) if pd.notna(row['ec_tp']) else 0
+                        tpe_hours = float(row['ec_tpe']) if pd.notna(row['ec_tpe']) else 0
                         # Colonne facultative (anciens fichiers sans « ec_projets » toujours acceptés).
-                        projets_hours = int(row['ec_projets']) if 'ec_projets' in row and pd.notna(row['ec_projets']) else 0
-                        tpe_semi = int(row['ec_tpe_semi_dirige']) if 'ec_tpe_semi_dirige' in row and pd.notna(row['ec_tpe_semi_dirige']) else None
-                        tpe_non = int(row['ec_tpe_non_dirige']) if 'ec_tpe_non_dirige' in row and pd.notna(row['ec_tpe_non_dirige']) else None
+                        projets_hours = float(row['ec_projets']) if 'ec_projets' in row and pd.notna(row['ec_projets']) else 0
+                        tpe_semi = float(row['ec_tpe_semi_dirige']) if 'ec_tpe_semi_dirige' in row and pd.notna(row['ec_tpe_semi_dirige']) else None
+                        tpe_non = float(row['ec_tpe_non_dirige']) if 'ec_tpe_non_dirige' in row and pd.notna(row['ec_tpe_non_dirige']) else None
                         if tpe_semi is not None or tpe_non is not None:
                             tpe_hours = (tpe_semi or 0) + (tpe_non or 0)
-                        total_hours = int(row['ec_vht']) if pd.notna(row['ec_vht']) else (cm_hours + td_hours + tp_hours + projets_hours + tpe_hours)
+                        total_hours = float(row['ec_vht']) if pd.notna(row['ec_vht']) else (cm_hours + td_hours + tp_hours + projets_hours + tpe_hours)
                         coefficient = int(row['ec_coefficient']) if pd.notna(row['ec_coefficient']) else 1
 
                         print(f"   EC: {ec_name} ({ec_code})")

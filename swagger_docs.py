@@ -1339,6 +1339,12 @@ OPENAPI_SPEC = {
                            {"name": "exam_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
             "responses": {"200": {"description": "Retiré"}, "404": {"description": "Rattachement non trouvé"}}
         }},
+        "/api/admin/formations/{formation_id}/tree": {"get": {
+            "tags": ["Formations"], "summary": "Maquette complète d'une formation (admin)",
+            "description": "Semestres → UE → EC d'une formation en une seule requête (page Maquette : seule la formation sélectionnée est chargée). Chaque UE porte `ecs` (même format que /api/ues/{id}/ecs) et `students_count`, compté en base sans charger les inscriptions.",
+            "parameters": [{"name": "formation_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+            "responses": {"200": {"description": "{formation_id, semesters: [{…, ues: [{…, ecs: […]}]}]}"}, "403": {"description": "Réservé à l'admin"}, "404": {"description": "Formation non trouvée"}}
+        }},
         "/api/online_exams/{exam_id}/preview": {"get": {
             "tags": ["Examens en ligne"], "summary": "Prévisualiser un examen comme un étudiant (enseignant, admin)",
             "description": "Comme « Prévisualiser » dans Moodle : l'examen tel que l'étudiant le reçoit (sujet sans barème) et ses pages (`preview.pages`, même format que /api/exam_attempts/{id}/paginated), mélangées selon `seed` (tiré au hasard si absent : chaque prévisualisation montre un autre ordre). Aucune tentative créée. Réservé à l'admin, au créateur de l'examen et aux enseignants de son EC (403 sinon). La page /exam/{id}?preview=1 l'utilise.",

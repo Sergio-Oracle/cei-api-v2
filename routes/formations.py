@@ -425,6 +425,51 @@ def get_formation_semesters(formation_id):
         return jsonify({'error': str(e)}), 500
 
 
+@formations_bp.route('/api/admin/formations/<int:formation_id>/tree', methods=['GET'])
+@paseto_required
+def get_formation_tree(formation_id):
+    """Maquette complète d'UNE formation (semestres → UE → EC) en une requête,
+    pour la page Maquette : elle ne charge plus que la formation choisie, au
+    lieu de toute la maquette en cascade (une requête par semestre et par UE).
+    Le nombre d'inscrits par UE est compté en base, sans charger les
+    inscriptions elles-mêmes (des milliers par UE)."""
+    from sqlalchemy.orm import selectinload
+    from sqlalchemy import func
+    session = get_session()
+    try:
+        ok, _ = _is_admin(session)
+        if not ok:
+            return jsonify({'error': 'Accès non autorisé'}), 403
+        formation = session.get(Formation, formation_id)
+        if not formation:
+            return jsonify({'error': 'Formation non trouvée'}), 404
+        semesters = (session.query(Semester)
+                     .options(selectinload(Semester.ues).selectinload(UE.ecs).selectinload(EC.assignments))
+                     .filter_by(formation_id=formation_id, is_active=True).order_by(Semester.number).all())
+        ue_ids = [u.id for se in semesters for u in se.ues]
+        counts = dict(session.query(StudentUEEnrollment.ue_id, func.count())
+                      .filter(StudentUEEnrollment.ue_id.in_(ue_ids)).group_by(StudentUEEnrollment.ue_id).all()) if ue_ids else {}
+        out = []
+        for se in semesters:
+            ues = []
+            for u in sorted((u for u in se.ues if u.is_active), key=lambda x: x.code):
+                ues.append({
+                    'id': u.id, 'semester_id': u.semester_id, 'semester_name': se.name, 'code': u.code, 'name': u.name,
+                    'credits': u.credits, 'ue_type': u.ue_type or 'obligatoire', 'ecs_count': len(u.ecs),
+                    'students_count': counts.get(u.id, 0), 'is_active': u.is_active,
+                    'values_confirmed': getattr(u, 'values_confirmed', True) is not False,
+                    'created_at': u.created_at.isoformat() if u.created_at else None,
+                    'ecs': [ec.to_dict() for ec in sorted((e for e in u.ecs if e.is_active), key=lambda x: x.code)],
+                })
+            out.append({**se.to_dict(), 'ues': ues})
+        return jsonify({'formation_id': formation_id, 'semesters': out})
+    except Exception as e:
+        session.rollback()
+        return jsonify({'error': str(e)}), 500
+    finally:
+        session.close()
+
+
 @formations_bp.route('/api/semesters/<int:semester_id>/ues', methods=['GET'])
 @paseto_required
 def get_semester_ues(semester_id):

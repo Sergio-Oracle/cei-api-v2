@@ -789,7 +789,7 @@ def create_ec():
             session.close(); return jsonify({'error': 'UE non trouvée'}), 404
         ec = EC(ue_id=data['ue_id'], code=data['code'], name=data['name'],
                 cm=data.get('cm', 0), td=data.get('td', 0), tp=data.get('tp', 0),
-                tpe=data.get('tpe', 0), vht=data.get('vht', 0),
+                tpe=data.get('tpe', 0), projets=data.get('projets', 0), vht=data.get('vht', 0),
                 coefficient=data.get('coefficient', 1),
                 cc_percentage=data.get('cc_percentage', 40),
                 ex_percentage=data.get('ex_percentage', 60))
@@ -816,7 +816,7 @@ def update_ec(eid):
             if session.query(EC).filter_by(code=data['code']).first():
                 session.close(); return jsonify({'error': 'Code déjà utilisé'}), 400
             ec.code = data['code']
-        for field in ('name', 'cm', 'td', 'tp', 'tpe', 'vht', 'coefficient', 'cc_percentage', 'ex_percentage', 'is_active'):
+        for field in ('name', 'cm', 'td', 'tp', 'tpe', 'projets', 'vht', 'coefficient', 'cc_percentage', 'ex_percentage', 'is_active'):
             if field in data: setattr(ec, field, data[field])
         session.commit(); result = ec.to_dict(); session.close()
         _invalidate_academic_cache()

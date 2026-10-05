@@ -169,6 +169,7 @@ def generate_maquette_csv_template():
         'ec_td': ['', '', '', '20'],
         'ec_tp': ['', '', '', '10'],
         'ec_tpe': ['', '', '', '10'],
+        'ec_projets': ['', '', '', '0'],
         'ec_vht': ['', '', '', '60'],
         'ec_coefficient': ['', '', '', '2']
     }
@@ -742,7 +743,9 @@ def register_csv_routes(app):
                         td_hours = int(row['ec_td']) if pd.notna(row['ec_td']) else 0
                         tp_hours = int(row['ec_tp']) if pd.notna(row['ec_tp']) else 0
                         tpe_hours = int(row['ec_tpe']) if pd.notna(row['ec_tpe']) else 0
-                        total_hours = int(row['ec_vht']) if pd.notna(row['ec_vht']) else (cm_hours + td_hours + tp_hours + tpe_hours)
+                        # Colonne facultative (anciens fichiers sans « ec_projets » toujours acceptés).
+                        projets_hours = int(row['ec_projets']) if 'ec_projets' in row and pd.notna(row['ec_projets']) else 0
+                        total_hours = int(row['ec_vht']) if pd.notna(row['ec_vht']) else (cm_hours + td_hours + tp_hours + projets_hours + tpe_hours)
                         coefficient = int(row['ec_coefficient']) if pd.notna(row['ec_coefficient']) else 1
 
                         print(f"   EC: {ec_name} ({ec_code})")
@@ -779,6 +782,7 @@ def register_csv_routes(app):
                             td=td_hours,
                             tp=tp_hours,
                             tpe=tpe_hours,
+                            projets=projets_hours,
                             vht=total_hours,
                             coefficient=coefficient
                         )

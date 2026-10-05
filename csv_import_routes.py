@@ -169,6 +169,8 @@ def generate_maquette_csv_template():
         'ec_td': ['', '', '', '20'],
         'ec_tp': ['', '', '', '10'],
         'ec_tpe': ['', '', '', '10'],
+        'ec_tpe_semi_dirige': ['', '', '', '5'],
+        'ec_tpe_non_dirige': ['', '', '', '5'],
         'ec_projets': ['', '', '', '0'],
         'ec_vht': ['', '', '', '60'],
         'ec_coefficient': ['', '', '', '2']
@@ -745,6 +747,10 @@ def register_csv_routes(app):
                         tpe_hours = int(row['ec_tpe']) if pd.notna(row['ec_tpe']) else 0
                         # Colonne facultative (anciens fichiers sans « ec_projets » toujours acceptés).
                         projets_hours = int(row['ec_projets']) if 'ec_projets' in row and pd.notna(row['ec_projets']) else 0
+                        tpe_semi = int(row['ec_tpe_semi_dirige']) if 'ec_tpe_semi_dirige' in row and pd.notna(row['ec_tpe_semi_dirige']) else None
+                        tpe_non = int(row['ec_tpe_non_dirige']) if 'ec_tpe_non_dirige' in row and pd.notna(row['ec_tpe_non_dirige']) else None
+                        if tpe_semi is not None or tpe_non is not None:
+                            tpe_hours = (tpe_semi or 0) + (tpe_non or 0)
                         total_hours = int(row['ec_vht']) if pd.notna(row['ec_vht']) else (cm_hours + td_hours + tp_hours + projets_hours + tpe_hours)
                         coefficient = int(row['ec_coefficient']) if pd.notna(row['ec_coefficient']) else 1
 
@@ -783,6 +789,8 @@ def register_csv_routes(app):
                             tp=tp_hours,
                             tpe=tpe_hours,
                             projets=projets_hours,
+                            tpe_semi_dirige=tpe_semi,
+                            tpe_non_dirige=tpe_non,
                             vht=total_hours,
                             coefficient=coefficient
                         )

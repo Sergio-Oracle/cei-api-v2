@@ -330,6 +330,13 @@ def _tick() -> None:
             except MoodleError as e:
                 session.rollback()
                 print(f"[moodle_auto] {inst.name} : {e}")
+        # Documents de cours → moteur RAG (si en service et automatique activé)
+        try:
+            from services import rag_ingest
+            rag_ingest.tick(session)
+        except Exception as e:
+            session.rollback()
+            print(f"[moodle_auto] indexation RAG : {e}")
     finally:
         session.close()
         cache_delete('cei:moodle:tick')

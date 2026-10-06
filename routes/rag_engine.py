@@ -274,3 +274,138 @@ def rag_engines_reindex(engine_id):
         return jsonify({'error': str(e)}), 404
     finally:
         session.close()
+
+
+# ── Documents des cours Moodle ───────────────────────────────────────────────
+
+def _active_or_error(session):
+    engine = ragflow_client.active_engine(session)
+    if not engine:
+        raise LookupError('Aucun moteur RAG en service')
+    return engine
+
+
+@rag_engine_bp.route('/api/admin/rag/ecs', methods=['GET'])
+@paseto_required
+def rag_ecs():
+    """EC reliés à un cours Moodle, avec l'état de leurs documents indexés."""
+    from sqlalchemy import func
+    from models import EC, RagDocument
+    from services import rag_ingest
+    session = get_session()
+    if not require_admin(session):
+        return jsonify(_FORBIDDEN[0]), _FORBIDDEN[1]
+    try:
+        try:
+            engine = _active_or_error(session)
+        except LookupError as e:
+            return jsonify({'error': str(e)}), 409
+        ec_ids = rag_ingest._ec_rotation(session)
+        counts = {}
+        for ec_id, status, n in (session.query(RagDocument.ec_id, RagDocument.status, func.count())
+                                 .filter_by(engine_id=engine.id).group_by(RagDocument.ec_id, RagDocument.status)):
+            counts.setdefault(ec_id, {})[status] = n
+        ecs = session.query(EC).filter(EC.id.in_(ec_ids)).order_by(EC.code).all() if ec_ids else []
+        return jsonify({'ecs': [{'ec_id': ec.id, 'ec_code': ec.code, 'ec_name': ec.name,
+                                 'ready': counts.get(ec.id, {}).get('ready', 0),
+                                 'indexing': counts.get(ec.id, {}).get('indexing', 0),
+                                 'failed': counts.get(ec.id, {}).get('failed', 0)} for ec in ecs]})
+    finally:
+        session.close()
+
+
+@rag_engine_bp.route('/api/admin/rag/sync/ec', methods=['POST'])
+@paseto_required
+def rag_sync_ec():
+    """Indexation des documents Moodle d'UN EC par appel (l'interface boucle
+    sur les cours, avec progression). Simulation par défaut."""
+    from models import EC
+    from services import rag_ingest
+    from services.moodle_sync import MoodleError
+    session = get_session()
+    if not require_admin(session):
+        return jsonify(_FORBIDDEN[0]), _FORBIDDEN[1]
+    try:
+        data = request.get_json(silent=True) or {}
+        dry_run = data.get('dry_run', True) is not False
+        try:
+            engine = _active_or_error(session)
+        except LookupError as e:
+            return jsonify({'error': str(e)}), 409
+        ec = session.query(EC).filter_by(code=(data.get('ec_code') or '').strip()).first()
+        if not ec:
+            return jsonify({'error': 'EC introuvable'}), 404
+        try:
+            report = rag_ingest.sync_ec(session, engine, ec, dry_run=dry_run)
+            if not dry_run:
+                from datetime import datetime, timezone
+                report['status'] = rag_ingest.refresh_status(session, engine, ec.id)
+                if not engine.first_index_at:
+                    engine.first_index_at = datetime.now(timezone.utc)
+                    session.commit()
+        except MoodleError as e:
+            return jsonify({'ec_code': ec.code, 'error': f'Moodle : {e}'}), 502
+        except RagflowError as e:
+            return jsonify({'ec_code': ec.code, 'error': f'Moteur RAG : {e}'}), 502
+        report['dry_run'] = dry_run
+        return jsonify(report)
+    except Exception as e:
+        session.rollback()
+        return jsonify({'error': str(e)}), 500
+    finally:
+        session.close()
+
+
+@rag_engine_bp.route('/api/admin/rag/engines/<int:engine_id>/auto-index', methods=['POST'])
+@paseto_required
+def rag_auto_index(engine_id):
+    session = get_session()
+    if not require_admin(session):
+        return jsonify(_FORBIDDEN[0]), _FORBIDDEN[1]
+    try:
+        engine = _engine_or_404(session, engine_id)
+        enabled = bool((request.get_json(silent=True) or {}).get('enabled'))
+        if enabled and not engine.first_index_at:
+            return jsonify({'error': "Faites d'abord une simulation puis une indexation réelle : "
+                                     "l'indexation automatique ne s'active qu'après."}), 409
+        engine.auto_index = enabled
+        session.commit()
+        return jsonify({'engine': engine.to_dict()})
+    except LookupError as e:
+        return jsonify({'error': str(e)}), 404
+    finally:
+        session.close()
+
+
+@rag_engine_bp.route('/api/rag/ecs/<int:ec_id>/documents', methods=['GET'])
+@paseto_required
+def rag_ec_documents(ec_id):
+    """Professeur (ses EC) ou admin : documents indexés de l'EC, pour les
+    signaler dans « Depuis Moodle ». active=False si aucun moteur en service."""
+    from auth_paseto import get_current_user_id
+    from models import User
+    from routes.moodle import resolve_ec_for_user
+    from services import rag_ingest
+    session = get_session()
+    try:
+        user = session.query(User).filter_by(id=get_current_user_id()).first()
+        if not user:
+            return jsonify({'error': 'Accès non autorisé'}), 403
+        try:
+            resolve_ec_for_user(session, ec_id, user)
+        except PermissionError as e:
+            return jsonify({'error': str(e)}), 403
+        except LookupError as e:
+            return jsonify({'error': str(e)}), 404
+        engine = ragflow_client.active_engine(session)
+        if not engine:
+            return jsonify({'active': False, 'documents': []})
+        try:
+            rag_ingest.refresh_status(session, engine, ec_id)
+        except RagflowError:
+            pass   # état affiché tel que connu
+        from models import RagDocument
+        docs = session.query(RagDocument).filter_by(engine_id=engine.id, ec_id=ec_id).all()
+        return jsonify({'active': True, 'documents': [d.to_dict() for d in docs]})
+    finally:
+        session.close()

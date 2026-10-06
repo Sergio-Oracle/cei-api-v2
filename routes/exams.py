@@ -4585,6 +4585,7 @@ def generate_exam_suggestions():
             raise
 
         moodle_skipped = []
+        rag_sources = []   # passages [S1]…[Sn] des documents indexés (moteur RAG)
         if moodle_ec_id and moodle_files:
             from services import moodle_sync
             from routes.moodle import resolve_ec_for_user
@@ -4593,23 +4594,50 @@ def generate_exam_suggestions():
                 return jsonify({'success': False, 'error': 'Synchronisation Moodle désactivée'}), 503
             try:
                 ec = resolve_ec_for_user(session, moodle_ec_id, user)
-                found = moodle_sync.find_course_for_ec(session, ec.code)
-                if not found:
-                    raise LookupError(f'Aucun cours Moodle avec le code {ec.code}')
-                _inst, client, course = found
-                extracted = client.extract_materials(course['id'], moodle_files)
             except PermissionError as e:
                 session.close()
                 return jsonify({'success': False, 'error': str(e)}), 403
             except LookupError as e:
                 session.close()
                 return jsonify({'success': False, 'error': str(e)}), 404
-            except moodle_sync.MoodleError as e:
-                session.close()
-                return jsonify({'success': False, 'error': f'Moodle : {e}'}), 502
+
+            # Documents déjà indexés dans le moteur RAG : passages couvrant tout
+            # le cours (ou le thème demandé) au lieu du texte brut tronqué. Les
+            # autres documents cochés passent par l'extraction classique. Moteur
+            # injoignable : tout repasse par l'extraction, sans erreur.
+            indexed_urls = set()
+            from services import ragflow_client, rag_ingest
+            from services.ragflow_client import RagflowError
+            rag_engine = ragflow_client.active_engine(session)
+            if rag_engine:
+                try:
+                    rag_sources = rag_ingest.passages_for(session, rag_engine, ec.id, moodle_files,
+                                                          (request.form.get('rag_focus') or '').strip())
+                    if rag_sources:
+                        indexed_urls = {d.fileurl for d in rag_ingest.indexed_documents(session, rag_engine, ec.id, moodle_files)}
+                except RagflowError as e:
+                    print(f"[rag] passages indisponibles, extraction classique : {e}")
+                    rag_sources = []
+            remaining = [u for u in moodle_files if u not in indexed_urls]
+
+            if remaining:
+                try:
+                    found = moodle_sync.find_course_for_ec(session, ec.code)
+                    if not found:
+                        raise LookupError(f'Aucun cours Moodle avec le code {ec.code}')
+                    _inst, client, course = found
+                    extracted = client.extract_materials(course['id'], remaining)
+                except LookupError as e:
+                    session.close()
+                    return jsonify({'success': False, 'error': str(e)}), 404
+                except moodle_sync.MoodleError as e:
+                    session.close()
+                    return jsonify({'success': False, 'error': f'Moodle : {e}'}), 502
+            else:
+                extracted = []
             moodle_skipped = [{'filename': i['filename'], 'error': i['error']} for i in extracted if not i['text']]
             usable = [i for i in extracted if i['text']]
-            if not usable and not content_parts:
+            if not usable and not content_parts and not rag_sources:
                 session.close()
                 return jsonify({'success': False, 'error': "Aucun fichier Moodle n'a pu être exploité",
                                 'moodle_skipped': moodle_skipped}), 502
@@ -4618,6 +4646,9 @@ def generate_exam_suggestions():
             filename = filename or f"moodle_{ec.code}"
 
         course_content = '\n\n'.join(content_parts)
+        passages_text = '\n\n'.join(f"[{p['id']}] ({p['filename']})\n{p['content']}" for p in rag_sources)
+        if passages_text:
+            course_content = passages_text + ('\n\n' + course_content if course_content else '')
 
         if not course_content or len(course_content.strip()) < 100:
             for p in temp_filepaths:
@@ -4644,6 +4675,26 @@ def generate_exam_suggestions():
             duration = 90
         duration = max(15, min(duration, 480))
 
+        if rag_sources:
+            # Passages numérotés : plafond relevé (ils couvrent déjà tout le
+            # cours), règles d'ancrage contre les inventions, sources exigées.
+            _limit = 20000
+            _course_block = f"""PASSAGES DU COURS (extraits des documents Moodle choisis par l'enseignant, numérotés [S1], [S2]…) :
+{course_content[:_limit]}
+{"[... contenu tronqué ...]" if len(course_content) > _limit else ""}
+
+RÈGLES D'ANCRAGE (OBLIGATOIRES) :
+- Appuie-toi UNIQUEMENT sur ces passages : n'ajoute aucune notion, définition, date, chiffre ou auteur qui n'y figure pas.
+- Chaque point clé et chaque exemple de question doit pouvoir être justifié par au moins un passage.
+- Pour chaque suggestion, indique dans "sources" les identifiants des passages utilisés (ex: ["S2", "S5"]).
+- Si les passages ne suffisent pas pour une suggestion, réduis-la à ce qu'ils couvrent plutôt que d'inventer."""
+        else:
+            _course_block = f"""CONTENU DU COURS UPLOADÉ :
+{course_content[:8000]}
+{"[... contenu tronqué ...]" if len(course_content) > 8000 else ""}"""
+
+        _sources_field = ',\n            "sources": ["S1", "S3"]' if rag_sources else ''
+
         # Construire la contrainte de type selon les choix de l'utilisateur
         if question_types:
             types_list = [t.strip() for t in question_types.split(',') if t.strip()]
@@ -4663,9 +4714,7 @@ def generate_exam_suggestions():
 
         prompt = f"""Tu es un expert en pédagogie universitaire francophone, spécialiste dans TOUS les domaines académiques (sciences exactes, droit, médecine, lettres, sciences humaines, ingénierie, arts, langues, économie, agronomie, architecture, etc.).
 
-CONTENU DU COURS UPLOADÉ :
-{course_content[:8000]}
-{"[... contenu tronqué ...]" if len(course_content) > 8000 else ""}
+{_course_block}
 
 PARAMÈTRES :
 - Niveau de difficulté imposé par l'enseignant : {difficulty} (NE PAS changer ce niveau — n'en propose pas un autre, même si le contenu du cours te semble suggérer une difficulté différente)
@@ -4703,7 +4752,7 @@ Réponds UNIQUEMENT avec un JSON valide dans ce format exact (OBLIGATOIREMENT 3 
             "difficulty": "{difficulty}",
             "key_points": ["Point clé 1", "Point clé 2", "Point clé 3"],
             "questions_examples": ["Exemple question 1", "Exemple question 2"],
-            "grading_criteria": "Ex: Valoriser la rigueur du raisonnement et la justesse terminologique ; pénaliser les réponses hors-sujet ; accorder un crédit partiel pour une méthode correcte avec un résultat erroné. JAMAIS de chiffres de points ici."
+            "grading_criteria": "Ex: Valoriser la rigueur du raisonnement et la justesse terminologique ; pénaliser les réponses hors-sujet ; accorder un crédit partiel pour une méthode correcte avec un résultat erroné. JAMAIS de chiffres de points ici."{_sources_field}
         }},
         {{
             "title": "Titre de la suggestion 2",
@@ -4713,7 +4762,7 @@ Réponds UNIQUEMENT avec un JSON valide dans ce format exact (OBLIGATOIREMENT 3 
             "difficulty": "{difficulty}",
             "key_points": ["Point clé 1", "Point clé 2", "Point clé 3"],
             "questions_examples": ["Exemple question 1", "Exemple question 2"],
-            "grading_criteria": "Ex: Valoriser la rigueur du raisonnement et la justesse terminologique ; pénaliser les réponses hors-sujet ; accorder un crédit partiel pour une méthode correcte avec un résultat erroné. JAMAIS de chiffres de points ici."
+            "grading_criteria": "Ex: Valoriser la rigueur du raisonnement et la justesse terminologique ; pénaliser les réponses hors-sujet ; accorder un crédit partiel pour une méthode correcte avec un résultat erroné. JAMAIS de chiffres de points ici."{_sources_field}
         }},
         {{
             "title": "Titre de la suggestion 3",
@@ -4723,7 +4772,7 @@ Réponds UNIQUEMENT avec un JSON valide dans ce format exact (OBLIGATOIREMENT 3 
             "difficulty": "{difficulty}",
             "key_points": ["Point clé 1", "Point clé 2", "Point clé 3"],
             "questions_examples": ["Exemple question 1", "Exemple question 2"],
-            "grading_criteria": "Ex: Valoriser la rigueur du raisonnement et la justesse terminologique ; pénaliser les réponses hors-sujet ; accorder un crédit partiel pour une méthode correcte avec un résultat erroné. JAMAIS de chiffres de points ici."
+            "grading_criteria": "Ex: Valoriser la rigueur du raisonnement et la justesse terminologique ; pénaliser les réponses hors-sujet ; accorder un crédit partiel pour une méthode correcte avec un résultat erroné. JAMAIS de chiffres de points ici."{_sources_field}
         }}
     ]
 }}
@@ -4799,6 +4848,13 @@ Réponds UNIQUEMENT avec un JSON valide dans ce format exact (OBLIGATOIREMENT 3 
                 # modèle a ignoré la consigne du prompt (défense en profondeur).
                 s['difficulty'] = difficulty
                 s['duration'] = duration
+                if rag_sources:
+                    valid = {p['id']: p for p in rag_sources}
+                    cited = [str(x).strip('[] ') for x in (s.get('sources') or []) if str(x).strip('[] ') in valid]
+                    s['sources'] = list(dict.fromkeys(cited))
+                    # Passages cités transmis tels quels à la génération du sujet
+                    # complet, pour qu'elle reste ancrée dans le cours.
+                    s['rag_passages'] = [valid[c] for c in s['sources']] or rag_sources[:8]
                 enriched_suggestions.append(s)
 
             payload = {
@@ -4808,6 +4864,8 @@ Réponds UNIQUEMENT avec un JSON valide dans ce format exact (OBLIGATOIREMENT 3 
                 'main_topics': suggestions_data.get('main_topics', []),
                 'suggestions': enriched_suggestions,
                 'course_filename': filename,
+                'rag_sources': [{'id': p['id'], 'filename': p['filename'], 'module': p['module'],
+                                 'excerpt': p['content'][:400]} for p in rag_sources],
             }
             cache_set(cache_key, payload, ttl=7200)   # cache 2 hours
             session.close()
@@ -4870,6 +4928,24 @@ def generate_full_exam_from_suggestion():
 
     detected_domain = suggestion.get('detected_domain', '')
     domain_line = f"- Domaine disciplinaire : {detected_domain}" if detected_domain else ""
+
+    # Moteur RAG : passages du cours cités par la suggestion (Générer
+    # Suggestions « Depuis Moodle »). Le sujet complet reste ancré dans la
+    # matière réellement enseignée, avec les mêmes règles anti-invention.
+    passages = [p for p in (suggestion.get('rag_passages') or []) if isinstance(p, dict) and p.get('content')][:12]
+    passages_line = ''
+    if passages:
+        budget, parts = 14000, []
+        for p in passages:
+            chunk = f"[{str(p.get('id', ''))[:6]}] ({str(p.get('filename', ''))[:150]})\n{str(p['content'])[:3000]}"
+            if parts and budget - len(chunk) < 0:
+                break
+            parts.append(chunk); budget -= len(chunk)
+        passages_line = ("- PASSAGES DU COURS (source unique de vérité) :\n" + '\n\n'.join(parts) +
+                         "\n- RÈGLES D'ANCRAGE : chaque question, chaque choix de réponse et chaque élément du barème "
+                         "doit être justifiable par ces passages. N'ajoute aucune notion, définition, date, chiffre ou "
+                         "auteur absent des passages. Dans le barème, indique entre crochets le passage qui justifie "
+                         "la réponse attendue (ex : [S3]).")
 
     # Retour DFIP #22 (repris Atelier CEI 7/08) — philosophie de notation
     # QUALITATIVE choisie/adaptée par l'enseignant dès le choix de la
@@ -5180,6 +5256,7 @@ Contexte de l'examen : « {title} », niveau {student_level}, difficulté domina
 {bloom_line}
 {media_for_this_batch}
 {grading_hint_line}
+{passages_line}
 
 Génère EXACTEMENT {n} questions de type « {_t_title} » pour cet examen (uniquement CES {n} questions, pas tout l'examen).
 

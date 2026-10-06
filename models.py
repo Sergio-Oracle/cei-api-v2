@@ -1447,6 +1447,13 @@ class RagEngine(Base):
     updated_at          = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc),
                                  onupdate=lambda: datetime.now(timezone.utc))
     created_by_admin_id = Column(Integer, ForeignKey('users.id'), nullable=True)
+    # Indexation automatique des documents Moodle (service cei-moodle-sync).
+    # Activable seulement après une première indexation réelle validée par
+    # l'admin (simulation → rapport → indexation → automatique).
+    auto_index          = Column(Boolean, default=False)
+    first_index_at      = Column(DateTime(timezone=True), nullable=True)
+    auto_index_last_at  = Column(DateTime(timezone=True), nullable=True)
+    auto_index_report   = Column(Text, nullable=True)   # JSON du dernier passage
 
     def to_dict(self):
         return {
@@ -1455,11 +1462,58 @@ class RagEngine(Base):
             'base_url': self.base_url,
             'key_hint': f'…{self.api_key_last4}',
             'is_active': bool(self.is_active),
+            'auto_index': bool(self.auto_index),
+            'first_index_at': self.first_index_at.isoformat() if self.first_index_at else None,
+            'auto_index_last_at': self.auto_index_last_at.isoformat() if self.auto_index_last_at else None,
+            'auto_index_report': json.loads(self.auto_index_report) if self.auto_index_report else None,
             'last_check_at': self.last_check_at.isoformat() if self.last_check_at else None,
             'last_check_ok': self.last_check_ok,
             'last_check': json.loads(self.last_check_info) if self.last_check_info else None,
             'created_at': self.created_at.isoformat() if self.created_at else None,
         }
+
+
+class RagDataset(Base):
+    """Base documentaire RAGFlow d'un EC, sur un moteur donné."""
+    __tablename__ = 'rag_datasets'
+    __table_args__ = (UniqueConstraint('engine_id', 'ec_id', name='uq_rag_dataset_engine_ec'),)
+    id          = Column(Integer, primary_key=True)
+    engine_id   = Column(Integer, ForeignKey('rag_engines.id', ondelete='CASCADE'), nullable=False, index=True)
+    ec_id       = Column(Integer, ForeignKey('ecs.id', ondelete='CASCADE'), nullable=False, index=True)
+    dataset_id  = Column(String(64), nullable=False)
+    created_at  = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class RagDocument(Base):
+    """Document de cours Moodle indexé dans RAGFlow. Identifié par son
+    adresse Moodle (fileurl) ; timemodified/filesize détectent un fichier
+    remplacé. status : indexing | ready | failed."""
+    __tablename__ = 'rag_documents'
+    __table_args__ = (UniqueConstraint('engine_id', 'ec_id', 'fileurl', name='uq_rag_document'),)
+    id            = Column(Integer, primary_key=True)
+    engine_id     = Column(Integer, ForeignKey('rag_engines.id', ondelete='CASCADE'), nullable=False, index=True)
+    ec_id         = Column(Integer, ForeignKey('ecs.id', ondelete='CASCADE'), nullable=False, index=True)
+    fileurl       = Column(String(1000), nullable=False)
+    filename      = Column(String(500), nullable=False)
+    title         = Column(String(500), nullable=True)
+    section       = Column(String(500), nullable=True)
+    module        = Column(String(500), nullable=True)
+    timemodified  = Column(Integer, nullable=True)
+    filesize      = Column(Integer, nullable=True)
+    dataset_id    = Column(String(64), nullable=False)
+    document_id   = Column(String(64), nullable=False)
+    status        = Column(String(20), nullable=False, default='indexing')
+    layout        = Column(String(20), nullable=False, default='Plain Text')
+    chunks        = Column(Integer, default=0)
+    error         = Column(Text, nullable=True)
+    created_at    = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at    = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc),
+                           onupdate=lambda: datetime.now(timezone.utc))
+
+    def to_dict(self):
+        return {'id': self.id, 'ec_id': self.ec_id, 'fileurl': self.fileurl, 'filename': self.filename,
+                'title': self.title, 'module': self.module, 'status': self.status, 'chunks': self.chunks or 0,
+                'error': self.error, 'updated_at': self.updated_at.isoformat() if self.updated_at else None}
 
 
 class LtiLineItem(Base):
@@ -1638,6 +1692,15 @@ def init_db():
     # statement_timeout=2s évite les blocages si la table est verrouillée par l'app active
     from sqlalchemy import text as _text
     _migrations = [
+        # Moteur RAG : indexation automatique des documents Moodle
+        ("SELECT 1 FROM information_schema.columns WHERE table_name='rag_engines' AND column_name='auto_index'",
+         "ALTER TABLE rag_engines ADD COLUMN auto_index BOOLEAN DEFAULT FALSE"),
+        ("SELECT 1 FROM information_schema.columns WHERE table_name='rag_engines' AND column_name='first_index_at'",
+         "ALTER TABLE rag_engines ADD COLUMN first_index_at TIMESTAMP WITH TIME ZONE"),
+        ("SELECT 1 FROM information_schema.columns WHERE table_name='rag_engines' AND column_name='auto_index_last_at'",
+         "ALTER TABLE rag_engines ADD COLUMN auto_index_last_at TIMESTAMP WITH TIME ZONE"),
+        ("SELECT 1 FROM information_schema.columns WHERE table_name='rag_engines' AND column_name='auto_index_report'",
+         "ALTER TABLE rag_engines ADD COLUMN auto_index_report TEXT"),
         # EC : détail du TPE (semi-dirigé / non dirigé)
         ("SELECT 1 FROM information_schema.columns WHERE table_name='ecs' AND column_name='tpe_semi_dirige'",
          "ALTER TABLE ecs ADD COLUMN tpe_semi_dirige INTEGER"),

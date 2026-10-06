@@ -130,6 +130,57 @@ class RagflowClient:
         self._call('POST', f'/datasets/{dataset_id}/documents/parse',
                    json={'document_ids': document_ids}, timeout=60)
 
+    # ── Écriture (indexation des documents de cours) ────────────────────────
+
+    def create_dataset(self, name: str, description: str, layout: str = 'Plain Text') -> str:
+        body = self._call('POST', '/datasets', json={
+            'name': name, 'description': description, 'language': 'French', 'chunk_method': 'naive',
+            # Ni mots-clés ni questions générés à l'indexation : chacun
+            # appellerait le modèle de chat pour CHAQUE fragment.
+            'parser_config': {'chunk_token_num': 512, 'layout_recognize': layout,
+                              'auto_keywords': 0, 'auto_questions': 0},
+        })
+        return body['data']['id']
+
+    def dataset_exists(self, dataset_id: str) -> bool:
+        status, body = self._request('GET', f'/datasets/{dataset_id}')
+        return isinstance(body, dict) and body.get('code') == 0
+
+    def upload(self, dataset_id: str, filename: str, content: bytes) -> str:
+        body = self._call('POST', f'/datasets/{dataset_id}/documents',
+                          files={'file': (filename, content)}, timeout=300)
+        return body['data'][0]['id']
+
+    def delete_documents(self, dataset_id: str, document_ids: list) -> None:
+        self._call('DELETE', f'/datasets/{dataset_id}/documents', json={'ids': document_ids}, timeout=60)
+
+    def set_layout(self, dataset_id: str, document_id: str, layout: str) -> None:
+        self._call('PATCH', f'/datasets/{dataset_id}/documents/{document_id}',
+                   json={'parser_config': {'chunk_token_num': 512, 'layout_recognize': layout,
+                                           'auto_keywords': 0, 'auto_questions': 0}})
+
+    def document(self, dataset_id: str, document_id: str) -> dict | None:
+        body = self._call('GET', f'/datasets/{dataset_id}/documents', params={'id': document_id})
+        docs = (body.get('data') or {}).get('docs') or []
+        return docs[0] if docs else None
+
+    # ── Lecture des passages (génération ancrée) ────────────────────────────
+
+    def chunks(self, dataset_id: str, document_id: str, page: int = 1, page_size: int = 100) -> tuple[list, int]:
+        body = self._call('GET', f'/datasets/{dataset_id}/documents/{document_id}/chunks',
+                          params={'page': page, 'page_size': page_size})
+        data = body.get('data') or {}
+        return data.get('chunks') or [], data.get('total') or 0
+
+    def retrieve(self, dataset_ids: list, document_ids: list, question: str, top_k: int = 12,
+                 threshold: float = 0.2) -> list:
+        body = self._call('POST', '/retrieval', json={
+            'question': question, 'dataset_ids': dataset_ids, 'document_ids': document_ids,
+            'page_size': top_k, 'top_k': 256, 'similarity_threshold': threshold,
+            'vector_similarity_weight': 0.5, 'keyword': False, 'highlight': False,
+        }, timeout=60)
+        return (body.get('data') or {}).get('chunks') or []
+
     # ── Vues pour la page d'administration ──────────────────────────────────
 
     def diagnose(self) -> dict:

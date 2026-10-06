@@ -36,6 +36,12 @@ OCR_LAYOUT = 'DeepDOC'
 CHECKS_PER_TICK = 2          # cours Moodle relus par passage
 UPLOADS_PER_TICK = 3         # fichiers envoyés au plus par passage
 STATUS_EVERY = 60            # s — suivi des documents en cours d'indexation
+MAX_AUTO_RETRIES = 3         # relances automatiques d'une erreur passagère
+
+# Erreurs passagères (moteur d'embedding surchargé, redémarrage…) : relancées
+# seules. Les autres (fichier illisible, aucun texte) restent en échec, avec
+# leur cause affichée à l'admin ; le document reste utilisable en texte brut.
+_TRANSIENT = re.compile(r'timed out|timeout|Connection|bind embedding|Max retries|503|502', re.I)
 
 
 def _lock(ec_id: int) -> bool:
@@ -164,13 +170,13 @@ def sync_ec(session, engine, ec, dry_run: bool = True, max_uploads: int | None =
             row.section, row.module = m.get('section'), m.get('module')
             row.timemodified, row.filesize = m['timemodified'], m['filesize']
             row.dataset_id, row.document_id = dataset_id, doc_id
-            row.status, row.layout, row.chunks, row.error = 'indexing', FAST_LAYOUT, 0, None
+            row.status, row.layout, row.chunks, row.error, row.attempts = 'indexing', FAST_LAYOUT, 0, None, 0
             session.commit()
             sent += 1
         for row in plan['retry']:
             try:
                 rf.parse(row.dataset_id, [row.document_id])
-                row.status, row.error = 'indexing', None
+                row.status, row.error, row.attempts = 'indexing', None, 0
                 session.commit()
                 retried += 1
             except RagflowError as e:
@@ -188,6 +194,15 @@ def sync_ec(session, engine, ec, dry_run: bool = True, max_uploads: int | None =
     remaining = len(plan['add']) + len(plan['update']) - sent - len(errors)
     return _report(plan, {'sent': sent, 'retried': retried, 'removed': removed,
                           'errors': errors, 'remaining': max(0, remaining)})
+
+
+def _explain(msg: str) -> str:
+    """Cause lisible en tête du journal technique de RAGFlow."""
+    if _TRANSIENT.search(msg):
+        return f"Moteur d'indexation surchargé (relancé {MAX_AUTO_RETRIES} fois sans succès) — utilisez « Relancer les échecs ». Détail : {msg[-300:]}"
+    if re.search(r'password|encrypt', msg, re.I):
+        return f'Fichier protégé par mot de passe : à remplacer dans Moodle par une version non protégée. Détail : {msg[-300:]}'
+    return msg
 
 
 def refresh_status(session, engine, ec_id: int | None = None) -> dict:
@@ -234,8 +249,17 @@ def refresh_status(session, engine, ec_id: int | None = None) -> dict:
                     row.status, row.error = 'failed', 'Aucun texte exploitable, même avec OCR'
                     counts['failed'] += 1
             elif run in ('FAIL', 'CANCEL'):
+                msg = (d.get('progress_msg') or 'Échec de l’indexation').strip()
+                if _TRANSIENT.search(msg) and (row.attempts or 0) < MAX_AUTO_RETRIES:
+                    try:
+                        rf.parse(dataset_id, [row.document_id])
+                        row.attempts = (row.attempts or 0) + 1
+                        counts['retried'] = counts.get('retried', 0) + 1
+                        continue
+                    except RagflowError:
+                        pass
                 row.status = 'failed'
-                row.error = (d.get('progress_msg') or 'Échec de l’indexation').strip()[-500:]
+                row.error = _explain(msg)[-500:]
                 counts['failed'] += 1
     session.commit()
     return counts

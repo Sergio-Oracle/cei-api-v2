@@ -267,7 +267,16 @@ def rag_engines_reindex(engine_id):
         if scope not in ('failed', 'all'):
             return jsonify({'error': "scope doit valoir 'failed' ou 'all'"}), 400
         try:
-            return jsonify(ragflow_client.client_for(engine).reindex(scope))
+            result = ragflow_client.client_for(engine).reindex(scope)
+            # Les documents relancés redeviennent « en cours » côté CEI, sinon
+            # leur nouvel état ne serait jamais relu (seuls les « en cours » le sont).
+            from models import RagDocument
+            q = session.query(RagDocument).filter_by(engine_id=engine.id)
+            if scope == 'failed':
+                q = q.filter_by(status='failed')
+            q.update({'status': 'indexing', 'error': None, 'attempts': 0}, synchronize_session=False)
+            session.commit()
+            return jsonify(result)
         except RagflowError as e:
             return jsonify({'error': str(e)}), 502
     except LookupError as e:

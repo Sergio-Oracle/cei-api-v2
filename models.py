@@ -1503,6 +1503,7 @@ class RagDocument(Base):
     dataset_id    = Column(String(64), nullable=False)
     document_id   = Column(String(64), nullable=False)
     status        = Column(String(20), nullable=False, default='indexing')
+    attempts      = Column(Integer, default=0)   # relances automatiques après une erreur passagère
     layout        = Column(String(20), nullable=False, default='Plain Text')
     chunks        = Column(Integer, default=0)
     error         = Column(Text, nullable=True)
@@ -1701,6 +1702,8 @@ def init_db():
          "ALTER TABLE rag_engines ADD COLUMN auto_index_last_at TIMESTAMP WITH TIME ZONE"),
         ("SELECT 1 FROM information_schema.columns WHERE table_name='rag_engines' AND column_name='auto_index_report'",
          "ALTER TABLE rag_engines ADD COLUMN auto_index_report TEXT"),
+        ("SELECT 1 FROM information_schema.columns WHERE table_name='rag_documents' AND column_name='attempts'",
+         "ALTER TABLE rag_documents ADD COLUMN attempts INTEGER DEFAULT 0"),
         # EC : détail du TPE (semi-dirigé / non dirigé)
         ("SELECT 1 FROM information_schema.columns WHERE table_name='ecs' AND column_name='tpe_semi_dirige'",
          "ALTER TABLE ecs ADD COLUMN tpe_semi_dirige INTEGER"),

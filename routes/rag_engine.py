@@ -11,6 +11,8 @@ Moteur RAG (RAGFlow) — page d'administration « Moteur RAG ».
   GET    /api/admin/rag/engines/<id>/status        état de l'indexation par base documentaire
   POST   /api/admin/rag/engines/<id>/reindex       relance l'indexation (échecs, ou tout)
 """
+import re
+
 from flask import Blueprint, jsonify, request
 
 from auth_paseto import paseto_required
@@ -416,5 +418,61 @@ def rag_ec_documents(ec_id):
         from models import RagDocument
         docs = session.query(RagDocument).filter_by(engine_id=engine.id, ec_id=ec_id).all()
         return jsonify({'active': True, 'documents': [d.to_dict() for d in docs]})
+    finally:
+        session.close()
+
+
+@rag_engine_bp.route('/api/admin/rag/engines/<int:engine_id>/datasets/<dataset_id>/documents', methods=['GET'])
+@paseto_required
+def rag_dataset_documents(engine_id, dataset_id):
+    """Détail d'une base : état de chaque document lu en direct dans RAGFlow
+    (file d'attente, progression, fragments, cause d'échec), complété par
+    ce que CEI sait de son origine Moodle (section, activité)."""
+    from models import RagDocument, RagDataset, EC
+    session = get_session()
+    if not require_admin(session):
+        return jsonify(_FORBIDDEN[0]), _FORBIDDEN[1]
+    try:
+        engine = _engine_or_404(session, engine_id)
+        try:
+            remote = ragflow_client.client_for(engine).documents(dataset_id)
+        except RagflowError as e:
+            return jsonify({'error': str(e)}), 502
+        local = {d.document_id: d for d in session.query(RagDocument).filter_by(engine_id=engine.id, dataset_id=dataset_id)}
+        link = session.query(RagDataset).filter_by(engine_id=engine.id, dataset_id=dataset_id).first()
+        ec = session.query(EC).filter_by(id=link.ec_id).first() if link else None
+        states = {'DONE': 'ready', 'RUNNING': 'running', 'SCHEDULE': 'queued', 'UNSTART': 'queued',
+                  'FAIL': 'failed', 'CANCEL': 'failed'}
+        docs = []
+        for d in remote:
+            row = local.get(d['id'])
+            state = states.get(d.get('run'), 'queued')
+            if state == 'ready' and not (d.get('chunk_count') or 0):
+                state = 'running' if row and row.status == 'indexing' else 'failed'   # reprise OCR en cours, ou aucun texte
+            msg = (d.get('progress_msg') or '').strip()
+            # RAGFlow annonce « en cours » un document qui attend son tour :
+            # « 2527 tasks are ahead in the queue… »
+            ahead = re.search(r'(\d+) tasks? (?:are|is) ahead in the queue', msg)
+            if state == 'running' and ahead:
+                state = 'queued'
+            docs.append({
+                'id': d['id'], 'name': d.get('name'), 'state': state,
+                'progress': round(float(d.get('progress') or 0), 3),
+                'chunks': d.get('chunk_count') or 0, 'size': d.get('size') or 0,
+                'duration': round(float(d.get('process_duration') or 0), 1) if state == 'ready' else None,
+                'queue_position': int(ahead.group(1)) + 1 if ahead and state == 'queued' else None,
+                'module': row.module if row else None, 'section': row.section if row else None,
+                'layout': row.layout if row else None, 'attempts': row.attempts if row else 0,
+                'error': (row.error if row and row.error else msg[-400:]) if state == 'failed' else None,
+                'last_message': msg.splitlines()[-1][-200:] if state == 'running' and msg else None,
+                'from_moodle': bool(row),
+            })
+        order = {'failed': 0, 'running': 1, 'queued': 2, 'ready': 3}
+        docs.sort(key=lambda x: (order[x['state']], (x['module'] or ''), x['name'] or ''))
+        counts = {k: sum(1 for x in docs if x['state'] == k) for k in order}
+        return jsonify({'dataset_id': dataset_id, 'ec_code': ec.code if ec else None, 'ec_name': ec.name if ec else None,
+                        'counts': counts, 'documents': docs})
+    except LookupError as e:
+        return jsonify({'error': str(e)}), 404
     finally:
         session.close()

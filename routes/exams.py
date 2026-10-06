@@ -4944,8 +4944,9 @@ def generate_full_exam_from_suggestion():
         passages_line = ("- PASSAGES DU COURS (source unique de vérité) :\n" + '\n\n'.join(parts) +
                          "\n- RÈGLES D'ANCRAGE : chaque question, chaque choix de réponse et chaque élément du barème "
                          "doit être justifiable par ces passages. N'ajoute aucune notion, définition, date, chiffre ou "
-                         "auteur absent des passages. Dans le barème, indique entre crochets le passage qui justifie "
-                         "la réponse attendue (ex : [S3]).")
+                         "auteur absent des passages. Dans le barème, garde la justification ou les critères habituels "
+                         "et ajoute À LA FIN, entre crochets, le passage qui les fonde (ex : « — la RAM est la "
+                         "mémoire centrale [S3] »).")
 
     # Retour DFIP #22 (repris Atelier CEI 7/08) — philosophie de notation
     # QUALITATIVE choisie/adaptée par l'enseignant dès le choix de la

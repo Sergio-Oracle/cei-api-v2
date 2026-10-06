@@ -121,6 +121,7 @@ from routes.api_clients    import api_clients_bp;     app.register_blueprint(api
 from routes.oidc           import oidc_bp;            app.register_blueprint(oidc_bp)
 from routes.lti            import lti_bp;             app.register_blueprint(lti_bp)
 from routes.moodle         import moodle_bp;          app.register_blueprint(moodle_bp)
+from routes.rag_engine     import rag_engine_bp;      app.register_blueprint(rag_engine_bp)
 from routes.external.student     import external_student_bp;     app.register_blueprint(external_student_bp)
 from routes.external.professor   import external_professor_bp;   app.register_blueprint(external_professor_bp)
 from routes.external.surveillant import external_surveillant_bp; app.register_blueprint(external_surveillant_bp)

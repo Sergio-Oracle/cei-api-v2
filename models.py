@@ -1428,6 +1428,40 @@ class MoodleInstance(Base):
         }
 
 
+class RagEngine(Base):
+    """Moteur RAG (RAGFlow) relié depuis la page « Moteur RAG ». Un seul en
+    service à la fois (is_active) : changer de serveur = ajouter le nouveau
+    puis le mettre en service. Clé API chiffrée (services/ragflow_client.py),
+    jamais renvoyée — seuls ses 4 derniers caractères sont exposés."""
+    __tablename__ = 'rag_engines'
+    id                  = Column(Integer, primary_key=True)
+    name                = Column(String(120), nullable=False)
+    base_url            = Column(String(255), nullable=False, unique=True)
+    api_key_encrypted   = Column(Text, nullable=False)
+    api_key_last4       = Column(String(4), nullable=False)
+    is_active           = Column(Boolean, default=False)
+    last_check_at       = Column(DateTime(timezone=True), nullable=True)
+    last_check_ok       = Column(Boolean, nullable=True)
+    last_check_info     = Column(Text, nullable=True)  # JSON du dernier diagnostic
+    created_at          = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+    updated_at          = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc),
+                                 onupdate=lambda: datetime.now(timezone.utc))
+    created_by_admin_id = Column(Integer, ForeignKey('users.id'), nullable=True)
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'name': self.name,
+            'base_url': self.base_url,
+            'key_hint': f'…{self.api_key_last4}',
+            'is_active': bool(self.is_active),
+            'last_check_at': self.last_check_at.isoformat() if self.last_check_at else None,
+            'last_check_ok': self.last_check_ok,
+            'last_check': json.loads(self.last_check_info) if self.last_check_info else None,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+        }
+
+
 class LtiLineItem(Base):
     """Colonne du carnet de notes Moodle créée par CEI (LTI AGS) pour un
     examen, dans le cours Moodle de son EC — une par examen, rattachée à

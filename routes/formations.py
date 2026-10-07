@@ -973,7 +973,7 @@ def assign_ec_to_professor():
         if session.query(ECAssignment).filter_by(ec_id=ec_id, professor_id=prof_id).first():
             session.close(); return jsonify({'error': 'Ce professeur est déjà affecté à cet EC'}), 400
         ec = session.query(EC).filter_by(id=ec_id).first()
-        session.add(ECAssignment(ec_id=ec_id, professor_id=prof_id), kind=('tuteur' if data.get('kind') == 'tuteur' else None))
+        session.add(ECAssignment(ec_id=ec_id, professor_id=prof_id))
         session.commit()
         # Correctif fiabilité (29/08, audit de montée en charge) : ec.code/
         # ec.name sont expirés par commit() — capturer avant close(). Avant
@@ -1013,7 +1013,7 @@ def assign_ec_by_id(eid):
             session.close(); return jsonify({'error': 'Professeur non trouvé'}), 404
         if session.query(ECAssignment).filter_by(ec_id=eid, professor_id=prof_id).first():
             session.close(); return jsonify({'error': 'Ce professeur est déjà affecté à cet EC'}), 400
-        session.add(ECAssignment(ec_id=eid, professor_id=prof_id), kind=('tuteur' if data.get('kind') == 'tuteur' else None))
+        session.add(ECAssignment(ec_id=eid, professor_id=prof_id))
         session.commit()
         # Correctif fiabilité (29/08, audit de montée en charge) — voir
         # assign_ec_to_professor ci-dessus pour le détail : capturer avant close().
@@ -1026,32 +1026,6 @@ def assign_ec_by_id(eid):
         except Exception:
             pass
         return jsonify({'success': True, 'message': 'EC affecté avec succès'}), 201
-    except Exception as e:
-        try: session.rollback(); session.close()
-        except Exception: pass
-        return jsonify({'error': str(e)}), 500
-
-
-@formations_bp.route('/api/admin/ec_assignments/<int:aid>', methods=['PUT'])
-@paseto_required
-def update_ec_assignment(aid):
-    """Change le type d'une affectation (responsable / tuteur). Fixé par
-    l'admin, il ne suit plus Moodle : l'affectation devient manuelle (la
-    synchronisation ne la modifie ni ne la retire)."""
-    try:
-        session = get_session()
-        ok, _ = _is_admin(session)
-        if not ok: session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
-        kind = (request.json or {}).get('kind')
-        if kind not in ('responsable', 'tuteur'):
-            session.close(); return jsonify({'error': "Type attendu : 'responsable' ou 'tuteur'"}), 400
-        a = session.query(ECAssignment).filter_by(id=aid).first()
-        if not a: session.close(); return jsonify({'error': 'Affectation non trouvée'}), 404
-        a.kind, a.source = kind, None
-        session.commit()
-        out = {'id': a.id, 'kind': a.kind, 'source': a.source}
-        session.close()
-        return jsonify({'success': True, 'assignment': out})
     except Exception as e:
         try: session.rollback(); session.close()
         except Exception: pass

@@ -75,17 +75,12 @@ DEFAULT_ROLE_MAP = {
 }
 
 
-# Tant que l'admin n'a pas enregistré de table (après simulation), une
-# plateforme garde le fonctionnement antérieur : tout enseignant est
-# responsable. La table par défaut ci-dessus n'est qu'une proposition.
-LEGACY_ROLE_MAP = {'editingteacher': 'responsable', 'teacher': 'responsable', 'no_editor_fallback': True}
-
-
 def role_map(instance=None) -> dict:
-    """Table en vigueur pour la plateforme."""
+    """Règle appliquée à la plateforme : celle ci-dessus, sans réglage à
+    faire par l'admin (les rôles sont des données que Moodle fournit). Une
+    valeur enregistrée dans moodle_instances.role_map (JSON) la remplace,
+    pour une université qui l'exigerait."""
     raw = getattr(instance, 'role_map', None) if instance is not None else None
-    if not raw:
-        return dict(LEGACY_ROLE_MAP)
     rm = dict(DEFAULT_ROLE_MAP)
     if raw:
         try:
@@ -213,7 +208,7 @@ class MoodleClient:
     def __init__(self, base_url: str, token: str, rmap: dict | None = None):
         self.base_url = normalize_base_url(base_url)
         self.token = token
-        self.role_map = rmap or dict(LEGACY_ROLE_MAP)
+        self.role_map = rmap or dict(DEFAULT_ROLE_MAP)
 
     def _teacher_capabilities(self, course_ids: list, timeout: int = 180) -> dict:
         """{course_id: (correcteurs {id: user}, éditeurs {ids})} en UN appel."""

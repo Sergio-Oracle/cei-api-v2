@@ -1404,7 +1404,8 @@ class MoodleInstance(Base):
     auto_sync_last_full_at = Column(DateTime(timezone=True), nullable=True)
     auto_sync_last_report  = Column(Text, nullable=True)   # JSON
     # Correspondance des rôles enseignants Moodle → CEI (JSON, voir
-    # services/moodle_sync.role_map) ; NULL = valeurs par défaut.
+    # services/moodle_sync.role_map) ; NULL = règle par défaut, appliquée
+    # automatiquement (aucun réglage côté admin).
     role_map            = Column(Text, nullable=True)
 
     pole = relationship('Pole')
@@ -1417,7 +1418,6 @@ class MoodleInstance(Base):
             'base_url': self.base_url,
             'token_hint': f'…{self.token_last4}',
             'role_map': role_map(self),
-            'role_map_configured': bool(self.role_map),
             'pole_id': self.pole_id,
             'pole_code': self.pole.code if self.pole else None,
             'is_active': self.is_active,

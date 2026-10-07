@@ -3535,7 +3535,10 @@ OPENAPI_SPEC = {
                 "porte `sources` (passages cités, vérifiés côté serveur) et `rag_passages` (leur texte, à renvoyer tel "
                 "quel dans la suggestion à `/api/subjects/generate-full-exam`, qui ancre alors le sujet complet et son "
                 "barème dans ces passages). La réponse liste `rag_sources` (id, fichier, extrait). Moteur injoignable : "
-                "extraction classique, sans erreur."
+                "extraction classique, sans erreur.\n\n"
+                "**Contrôle anti-invention (thème)** : avec `rag_focus`, l'IA vérifie que les passages retrouvés traitent réellement du thème "
+                "(le score de RAGFlow ne suffit pas). Thème non couvert → **422** `{not_covered: true, error, rag_sources}` au lieu de "
+                "suggestions inventées. Résultat du contrôle dans `rag_coverage` ({covered, reason} ; covered=null si l'IA n'a pas pu vérifier)."
             ),
             "requestBody": {"required": True, "content": {"multipart/form-data": {"schema": {
                 "type": "object",
@@ -3582,6 +3585,9 @@ OPENAPI_SPEC = {
             "summary": "Générer un sujet complet depuis une suggestion",
             "description": (
                 "Prend un objet suggestion (issu de generate-exam-suggestions) et génère un sujet complet avec questions numérotées et barème. "
+                "**Moteur RAG** : si la suggestion porte `rag_passages`, le sujet et le barème sont ancrés dans ces passages (source [Sx] citée "
+                "dans le barème), puis chaque réponse attendue est vérifiée contre le passage cité. Résultat dans `grounding` : "
+                "{checked, status: ok|partial, unsupported: [{question, title, cited, reason}]} — questions signalées à l'enseignant, jamais retirées. "
                 "`suggestion.question_types` peut inclure \"Questions dépendantes (sous-questions liées)\" (marqueur [SUBOPEN]) — exercices en "
                 "plusieurs parties a/b/c où chaque sous-question s'appuie explicitement sur le résultat de la précédente ; le barème généré "
                 "applique systématiquement la règle de l'erreur reportée. `suggestion.grading_criteria`, s'il est fourni (éventuellement "

@@ -4653,6 +4653,24 @@ def generate_exam_suggestions():
                 content_parts.append(f"--- Fichier Moodle: {item['filename']} ({item['module']}) ---\n{item['text']}")
             filename = filename or f"moodle_{ec.code}"
 
+        # Contrôle anti-invention 1 : le thème ciblé doit être réellement
+        # traité par les documents cochés, sinon on le dit au lieu d'inventer.
+        rag_focus = (request.form.get('rag_focus') or '').strip()
+        coverage = None
+        if rag_sources and rag_focus:
+            from services.rag_grounding import check_coverage
+            coverage = check_coverage(rag_focus, rag_sources)
+            if coverage['covered'] is False:
+                for p in temp_filepaths:
+                    if os.path.exists(p):
+                        os.remove(p)
+                session.close()
+                return jsonify({'success': False, 'not_covered': True,
+                                'error': f"Les documents cochés ne traitent pas du thème « {rag_focus} » : {coverage['reason']} "
+                                         "Choisissez un autre thème, cochez d'autres documents, ou laissez le thème vide pour couvrir tout le cours.",
+                                'rag_sources': [{'id': p['id'], 'filename': p['filename'], 'module': p['module'],
+                                                 'excerpt': p['content'][:400]} for p in rag_sources[:5]]}), 422
+
         course_content = '\n\n'.join(content_parts)
         passages_text = '\n\n'.join(f"[{p['id']}] ({p['filename']})\n{p['content']}" for p in rag_sources)
         if passages_text:
@@ -4874,6 +4892,7 @@ Réponds UNIQUEMENT avec un JSON valide dans ce format exact (OBLIGATOIREMENT 3 
                 'course_filename': filename,
                 'rag_sources': [{'id': p['id'], 'filename': p['filename'], 'module': p['module'],
                                  'excerpt': p['content'][:400]} for p in rag_sources],
+                'rag_coverage': coverage,
             }
             cache_set(cache_key, payload, ttl=7200)   # cache 2 hours
             session.close()
@@ -5460,6 +5479,13 @@ QUESTIONS
                     duplicates.append({'similarity': round(sim * 100, 1)})
                     break
 
+        # Contrôle anti-invention 2 : chaque réponse attendue doit être
+        # justifiée par le passage du cours cité dans le barème.
+        grounding = None
+        if passages:
+            from services.rag_grounding import verify_answers
+            grounding = verify_answers(content, rubric, passages)
+
         return jsonify({
             'success': True,
             'title': title,
@@ -5467,6 +5493,7 @@ QUESTIONS
             'rubric': rubric,
             'full_text': full_exam_text,
             'duplicates': duplicates,
+            'grounding': grounding,
         })
 
     except Exception as e:

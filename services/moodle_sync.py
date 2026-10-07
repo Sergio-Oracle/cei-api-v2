@@ -57,6 +57,77 @@ class MoodleError(Exception):
     pass
 
 
+# ── Correspondance des rôles enseignants (document d'intégration, section 8) ──
+# Moodle distingue l'enseignant éditeur (editingteacher, peut modifier le
+# cours : capacité moodle/course:manageactivities) de l'enseignant non éditeur
+# (teacher, « tuteur » : note sans modifier). Côté CEI, l'affectation à l'EC
+# est « responsable » (crée sujets et examens, publie) ou « tuteur » (voit et
+# corrige, ne crée ni ne publie), ou la personne est ignorée.
+TEACHER_CAPS = ('mod/assign:grade', 'moodle/course:manageactivities')
+ROLE_CHOICES = ('responsable', 'tuteur', 'ignore')
+DEFAULT_ROLE_MAP = {
+    'editingteacher': 'responsable',
+    'teacher': 'tuteur',
+    # Cours sans aucun responsable (fréquent : 358 tuteurs pour 19 éditeurs
+    # sur la préprod) : ses tuteurs deviennent responsables, pour qu'il y ait
+    # toujours quelqu'un pour créer les examens (choix de l'utilisateur, 07/10).
+    'no_editor_fallback': True,
+}
+
+
+# Tant que l'admin n'a pas enregistré de table (après simulation), une
+# plateforme garde le fonctionnement antérieur : tout enseignant est
+# responsable. La table par défaut ci-dessus n'est qu'une proposition.
+LEGACY_ROLE_MAP = {'editingteacher': 'responsable', 'teacher': 'responsable', 'no_editor_fallback': True}
+
+
+def role_map(instance=None) -> dict:
+    """Table en vigueur pour la plateforme."""
+    raw = getattr(instance, 'role_map', None) if instance is not None else None
+    if not raw:
+        return dict(LEGACY_ROLE_MAP)
+    rm = dict(DEFAULT_ROLE_MAP)
+    if raw:
+        try:
+            saved = json.loads(raw) if isinstance(raw, str) else dict(raw)
+        except (ValueError, TypeError):
+            saved = {}
+        for k in ('editingteacher', 'teacher'):
+            if saved.get(k) in ROLE_CHOICES:
+                rm[k] = saved[k]
+        if 'no_editor_fallback' in saved:
+            rm['no_editor_fallback'] = bool(saved['no_editor_fallback'])
+    return rm
+
+
+def validate_role_map(data) -> dict:
+    if not isinstance(data, dict):
+        raise ValueError('Table de correspondance invalide')
+    out = {}
+    for k in ('editingteacher', 'teacher'):
+        v = data.get(k, DEFAULT_ROLE_MAP[k])
+        if v not in ROLE_CHOICES:
+            raise ValueError(f'Rôle CEI inconnu pour {k} : {v}')
+        out[k] = v
+    out['no_editor_fallback'] = bool(data.get('no_editor_fallback', DEFAULT_ROLE_MAP['no_editor_fallback']))
+    return out
+
+
+def teacher_kinds(graders: set, editors: set, rmap: dict, with_flag: bool = False):
+    """{id Moodle: 'responsable'|'tuteur'} pour les enseignants d'UN cours
+    (les « ignorés » n'apparaissent pas). with_flag : renvoie aussi si la
+    règle « cours sans éditeur » a été appliquée."""
+    kinds = {}
+    for uid in graders | editors:
+        kind = rmap['editingteacher' if uid in editors else 'teacher']
+        if kind != 'ignore':
+            kinds[uid] = kind
+    fallback = bool(rmap.get('no_editor_fallback') and kinds and 'responsable' not in kinds.values())
+    if fallback:
+        kinds = {uid: 'responsable' for uid in kinds}
+    return (kinds, fallback) if with_flag else kinds
+
+
 def is_enabled() -> bool:
     return os.getenv('MOODLE_SYNC_ENABLED', 'false').lower() == 'true'
 
@@ -139,9 +210,26 @@ def _flatten(params: dict, prefix: str = '') -> dict:
 
 
 class MoodleClient:
-    def __init__(self, base_url: str, token: str):
+    def __init__(self, base_url: str, token: str, rmap: dict | None = None):
         self.base_url = normalize_base_url(base_url)
         self.token = token
+        self.role_map = rmap or dict(LEGACY_ROLE_MAP)
+
+    def _teacher_capabilities(self, course_ids: list, timeout: int = 180) -> dict:
+        """{course_id: (correcteurs {id: user}, éditeurs {ids})} en UN appel."""
+        if not course_ids:
+            return {}
+        res = self.call('core_enrol_get_enrolled_users_with_capability', {'coursecapabilities': [
+            {'courseid': cid, 'capabilities': list(TEACHER_CAPS)} for cid in course_ids]}, timeout=timeout)
+        out = {cid: ({}, set()) for cid in course_ids}
+        for r in res:
+            users = r.get('users', []) or []
+            graders, editors = out.setdefault(r['courseid'], ({}, set()))
+            if r.get('capability') == 'moodle/course:manageactivities':
+                editors.update(u['id'] for u in users)
+            for u in users:   # un éditeur qui ne note pas reste un enseignant du cours
+                graders.setdefault(u['id'], u)
+        return out
 
     def call(self, wsfunction: str, params: dict | None = None, timeout: int = 60):
         data = {'wstoken': self.token, 'moodlewsrestformat': 'json', 'wsfunction': wsfunction}
@@ -207,12 +295,14 @@ class MoodleClient:
             return None
         user = users[0]
         courses = [c for c in self.call('core_enrol_get_users_courses', {'userid': user['id']}) if c.get('id') != 1]
-        teaching = set()
+        teaching = {}   # code du cours → 'responsable' | 'tuteur'
         if courses:
-            res = self.call('core_enrol_get_enrolled_users_with_capability', {'coursecapabilities': [
-                {'courseid': c['id'], 'capabilities': ['mod/assign:grade']} for c in courses]})
-            teaching_ids = {r['courseid'] for r in res for u in r.get('users', []) if u.get('id') == user['id']}
-            teaching = {c['shortname'] for c in courses if c['id'] in teaching_ids}
+            caps = self._teacher_capabilities([c['id'] for c in courses], timeout=60)
+            for c in courses:
+                graders, editors = caps.get(c['id'], ({}, set()))
+                kind = teacher_kinds(set(graders), editors, self.role_map).get(user['id'])
+                if kind:
+                    teaching[c['shortname']] = kind
         return {
             'moodle_id': user['id'],
             'fullname': (user.get('fullname') or '').strip(),
@@ -221,25 +311,25 @@ class MoodleClient:
             # (AES, SJ, DIL, SPO, SEG… — vérifié sur 8 667 étudiants le 25/09)
             'department': (user.get('department') or '').strip().upper(),
             'course_codes': {c['shortname'] for c in courses},
-            'teaching_codes': teaching,
+            'teaching_codes': set(teaching),
+            'teaching': teaching,
         }
 
     def teachers_by_email(self) -> dict:
-        """{email: [codes des cours enseignés]} pour TOUS les cours, en un seul
-        appel (~4 s pour 118 cours et 229 enseignants, mesuré le 25/09)."""
+        """{email: {code du cours: 'responsable'|'tuteur'}} pour TOUS les cours,
+        en un seul appel (3,2 s pour 118 cours avec les deux capacités, mesuré
+        le 07/10)."""
         courses = self.list_courses()
         if not courses:
             return {}
         code = {c['id']: c['shortname'] for c in courses}
-        res = self.call('core_enrol_get_enrolled_users_with_capability', {'coursecapabilities': [
-            {'courseid': c['id'], 'capabilities': ['mod/assign:grade']} for c in courses]}, timeout=180)
         teachers = {}
-        for r in res:
-            for u in r.get('users', []):
-                email = (u.get('email') or '').strip().lower()
+        for cid, (graders, editors) in self._teacher_capabilities(list(code)).items():
+            for uid, kind in teacher_kinds(set(graders), editors, self.role_map).items():
+                email = (graders.get(uid, {}).get('email') or '').strip().lower()
                 if email:
-                    teachers.setdefault(email, set()).add(code[r['courseid']])
-        return {e: sorted(c) for e, c in teachers.items()}
+                    teachers.setdefault(email, {})[code[cid]] = kind
+        return teachers
 
     def list_courses(self) -> list[dict]:
         """Tous les cours visibles, hors page d'accueil du site (id=1)."""
@@ -305,15 +395,23 @@ class MoodleClient:
         ]
 
     def course_teachers(self, course_id: int) -> list[dict]:
-        """Enseignants d'un cours (éditeurs ou non) : capacité mod/assign:grade."""
-        res = self.call('core_enrol_get_enrolled_users_with_capability', {
-            'coursecapabilities': [{'courseid': course_id, 'capabilities': ['mod/assign:grade']}]})
-        users = res[0].get('users', []) if res else []
-        return [
-            {'moodle_id': u.get('id'), 'email': (u.get('email') or '').strip().lower(),
-             'fullname': (u.get('fullname') or '').strip()}
-            for u in users if u.get('email')
-        ]
+        """Enseignants d'un cours avec leur rôle CEI selon la table de la
+        plateforme ('responsable' ou 'tuteur') ; les rôles ignorés sont exclus
+        et listés à part dans 'ignored' via course_teachers_detail()."""
+        return self.course_teachers_detail(course_id)['teachers']
+
+    def course_teachers_detail(self, course_id: int) -> dict:
+        graders, editors = self._teacher_capabilities([course_id], timeout=60).get(course_id, ({}, set()))
+        kinds, fallback = teacher_kinds(set(graders), editors, self.role_map, with_flag=True)
+        teachers, ignored = [], []
+        for uid, u in graders.items():
+            email = (u.get('email') or '').strip().lower()
+            if not email:
+                continue
+            entry = {'moodle_id': uid, 'email': email, 'fullname': (u.get('fullname') or '').strip(),
+                     'editor': uid in editors, 'kind': kinds.get(uid)}
+            (teachers if entry['kind'] else ignored).append(entry)
+        return {'teachers': teachers, 'ignored': ignored, 'fallback': fallback}
 
     # ── Téléchargement + extraction ──
 
@@ -384,7 +482,7 @@ class MoodleClient:
 # ── Plateformes enregistrées ─────────────────────────────────────────────────
 
 def client_for(instance) -> MoodleClient:
-    return MoodleClient(instance.base_url, decrypt_token(instance.token_encrypted))
+    return MoodleClient(instance.base_url, decrypt_token(instance.token_encrypted), role_map(instance))
 
 
 def record_check(session, instance, diagnosis: dict | None, error: str | None = None):
@@ -427,7 +525,7 @@ def active_instances(session) -> list:
 # 6 heures. Une connexion ne l'attend jamais : sans liste disponible, elle
 # se fait simplement sans cette vérification.
 
-_TEACHERS_KEY = 'cei:moodle:teachers'
+_TEACHERS_KEY = 'cei:moodle:teachers:v2'   # {email: {code: rôle CEI}}
 _TEACHERS_FRESH_KEY = 'cei:moodle:teachers:fresh'
 _TEACHERS_LOCK_KEY = 'cei:moodle:teachers:lock'
 
@@ -438,13 +536,16 @@ def refresh_teacher_map(session) -> dict | None:
     for inst in active_instances(session):
         try:
             for email, codes in client_for(inst).teachers_by_email().items():
-                merged.setdefault(email, set()).update(codes)
+                mine = merged.setdefault(email, {})
+                for code, kind in codes.items():   # même code sur deux plateformes : responsable l'emporte
+                    if mine.get(code) != 'responsable':
+                        mine[code] = kind
             ok = True
         except MoodleError as e:
             print(f'[moodle_sync] liste des enseignants indisponible sur {inst.name} : {e}')
     if not ok:
         return None  # on garde l'ancienne liste plutôt que de l'effacer
-    data = {e: sorted(c) for e, c in merged.items()}
+    data = merged
     cache_set(_TEACHERS_KEY, data, ttl=7 * 86400)
     cache_set(_TEACHERS_FRESH_KEY, 1, ttl=6 * 3600)
     return data
@@ -462,7 +563,7 @@ def _refresh_teacher_map_background():
 
 
 def teacher_map() -> dict:
-    """{email: [codes]} — ne bloque jamais : renvoie la liste en cache (même
+    """{email: {code: rôle CEI}} — ne bloque jamais : renvoie la liste en cache (même
     un peu ancienne) et lance un rafraîchissement en arrière-plan si besoin."""
     import threading
     from cache import cache_get, cache_set_nx

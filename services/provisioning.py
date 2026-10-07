@@ -73,7 +73,12 @@ def _find_in_moodle(session, email):
         'department': next((p['department'] for p in found if p['department']), ''),
         'course_codes': set().union(*(p['course_codes'] for p in found)),
         'teaching_codes': set().union(*(p['teaching_codes'] for p in found)),
+        'teaching': {},
     }
+    for p in found:   # même code sur deux plateformes : responsable l'emporte
+        for code, kind in (p.get('teaching') or {}).items():
+            if merged['teaching'].get(code) != 'responsable':
+                merged['teaching'][code] = kind
     if not merged['course_codes']:
         return None, NO_MOODLE_COURSE
     return merged, None
@@ -152,12 +157,15 @@ def upgrade_if_moodle_teacher(session, user):
         codes = moodle_sync.teacher_map().get(user.email.strip().lower())
         if not codes:
             return False
+        if isinstance(codes, list):            # ancienne forme du cache : responsable
+            codes = {c: 'responsable' for c in codes}
         user.role = UserRole.PROFESSOR
         already = {ec_id for (ec_id,) in session.query(ECAssignment.ec_id).filter_by(professor_id=user.id)}
-        ecs = session.query(EC).filter(EC.code.in_(codes)).all()
+        ecs = session.query(EC).filter(EC.code.in_(list(codes))).all()
         for ec in ecs:
             if ec.id not in already:
-                session.add(ECAssignment(ec_id=ec.id, professor_id=user.id, source="moodle"))
+                session.add(ECAssignment(ec_id=ec.id, professor_id=user.id, source="moodle",
+                                         kind=codes.get(ec.code, 'responsable')))
         session.commit()
         print(f"[provisioning] {user.email} : étudiant → professeur (enseigne dans Moodle : "
               f"{', '.join(codes)} ; {len(ecs)} EC CEI affecté(s))")
@@ -219,7 +227,8 @@ def sync_course(session, ec, client, course, dry_run=True):
       - retraits suspendus si la liste Moodle chute brutalement.
     dry_run → compte sans rien écrire. Renvoie un bilan détaillé."""
     students = client.enrolled_students(course['id'])
-    teachers = client.course_teachers(course['id'])
+    detail = client.course_teachers_detail(course['id'])
+    teachers = detail['teachers']
     teacher_emails = {t['email'] for t in teachers}
 
     emails = sorted({x['email'] for x in students + teachers if x['email']})
@@ -249,7 +258,12 @@ def sync_course(session, ec, client, course, dry_run=True):
     # global à partir de ces listes.
     t_rep = {'moodle': len(teachers), 'created': 0, 'upgraded': 0, 'assignments_added': 0,
              'other_role': [], 'created_emails': [], 'upgraded_emails': [],
-             'assignments_removed': 0, 'removed_emails': []}
+             'assignments_removed': 0, 'removed_emails': [],
+             # Correspondance des rôles (section 8 du document d'intégration)
+             'responsables': sum(1 for t in teachers if t['kind'] == 'responsable'),
+             'tuteurs': sum(1 for t in teachers if t['kind'] == 'tuteur'),
+             'ignored': len(detail['ignored']), 'no_editor_fallback': detail['fallback'],
+             'kind_changed': 0, 'kind_changed_emails': [], 'tutor_emails': [t['email'] for t in teachers if t['kind'] == 'tuteur']}
     s_rep = {'moodle': len(students), 'created': 0, 'enrollments_added': 0, 'already_enrolled': 0,
              'formation_filled': 0, 'other_role': 0, 'without_formation': {}, 'formations_created': [],
              'created_emails': [], 'enrolled_emails': [], 'formation_filled_emails': [],
@@ -266,7 +280,7 @@ def sync_course(session, ec, client, course, dry_run=True):
                 u.full_name = fullname
 
     # ── Enseignants ──
-    assigned = {pid for (pid,) in session.query(ECAssignment.professor_id).filter_by(ec_id=ec.id)}
+    assigned = {a.professor_id: a for a in session.query(ECAssignment).filter_by(ec_id=ec.id)}
     for t in teachers:
         u = existing.get(t['email'])
         if u is None:
@@ -289,8 +303,16 @@ def sync_course(session, ec, client, course, dry_run=True):
         if u is None or u.id not in assigned:
             t_rep['assignments_added'] += 1
             if not dry_run:
-                session.add(ECAssignment(ec_id=ec.id, professor_id=u.id, source='moodle'))
-                assigned.add(u.id)
+                assigned[u.id] = ECAssignment(ec_id=ec.id, professor_id=u.id, source='moodle', kind=t['kind'])
+                session.add(assigned[u.id])
+        elif assigned[u.id].source == 'moodle' and (assigned[u.id].kind or 'responsable') != t['kind']:
+            # Rôle changé dans Moodle (ou table de correspondance modifiée) :
+            # seules les affectations venues de Moodle suivent, jamais celles
+            # saisies par l'admin.
+            t_rep['kind_changed'] += 1
+            t_rep['kind_changed_emails'].append(f"{t['email']} → {t['kind']}")
+            if not dry_run:
+                assigned[u.id].kind = t['kind']
 
     # Enseignants qui n'enseignent plus ce cours dans Moodle : affectation
     # retirée si elle venait de Moodle. Liste Moodle vide → rien retiré
@@ -432,12 +454,18 @@ def refresh_person(session, user) -> dict | None:
                 session.delete(row)
                 rep['enrollments_removed'] += 1
     elif user.role == UserRole.PROFESSOR:
-        teaching = person['teaching_codes']
-        expected = {ec.id for ec in session.query(EC).filter(EC.code.in_(teaching)).all()} if teaching else set()
+        teaching = person.get('teaching') or {c: 'responsable' for c in person['teaching_codes']}
+        ecs = session.query(EC).filter(EC.code.in_(list(teaching))).all() if teaching else []
+        kind_of = {ec.id: teaching[ec.code] for ec in ecs}
+        expected = set(kind_of)
         current = {row.ec_id: row for row in session.query(ECAssignment).filter_by(professor_id=user.id)}
         for ec_id in expected - set(current):
-            session.add(ECAssignment(ec_id=ec_id, professor_id=user.id, source='moodle'))
+            session.add(ECAssignment(ec_id=ec_id, professor_id=user.id, source='moodle', kind=kind_of[ec_id]))
             rep['assignments_added'] += 1
+        for ec_id in expected & set(current):
+            row = current[ec_id]
+            if row.source == 'moodle' and (row.kind or 'responsable') != kind_of[ec_id]:
+                row.kind = kind_of[ec_id]
         for ec_id, row in current.items():
             if ec_id not in expected and row.source == 'moodle':
                 session.delete(row)
@@ -506,9 +534,11 @@ def provision_from_moodle(session, email):
         return session.query(User).filter_by(email=email).first(), None
 
     if is_teacher:
+        teaching = person.get('teaching') or {}
         ecs = session.query(EC).filter(EC.code.in_(person['teaching_codes'])).all()
         for ec in ecs:
-            session.add(ECAssignment(ec_id=ec.id, professor_id=user.id, source="moodle"))
+            session.add(ECAssignment(ec_id=ec.id, professor_id=user.id, source="moodle",
+                                     kind=teaching.get(ec.code, 'responsable')))
         detail = f"{len(ecs)} EC affecté(s)"
     else:
         ecs = session.query(EC).filter(EC.code.in_(person['course_codes'])).all()

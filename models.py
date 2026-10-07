@@ -276,7 +276,8 @@ class EC(Base):
             # nécessaire pour pouvoir retirer un professeur précis via
             # DELETE /api/admin/ec_assignments/<id> (plusieurs professeurs
             # peuvent être affectés au même EC, sans contrainte l'empêchant).
-            'assignments': [{'id': a.id, 'professor_id': a.professor_id} for a in self.assignments],
+            'assignments': [{'id': a.id, 'professor_id': a.professor_id, 'kind': a.kind or 'responsable',
+                             'source': a.source} for a in self.assignments],
             'pole_id': pole.id if pole else None,
             'pole_code': pole.code if pole else None,
             'pole_name': pole.name if pole else None,
@@ -298,6 +299,9 @@ class ECAssignment(Base):
     # 'moodle' = créée par la synchronisation Moodle, qui peut donc la retirer
     # quand l'enseignant n'enseigne plus le cours ; NULL = saisie par l'admin, jamais retirée.
     source = Column(String(20), nullable=True)
+    # 'responsable' (NULL = responsable, valeur des affectations existantes) ou
+    # 'tuteur' : voit et corrige, ne crée ni sujet ni examen, ne publie pas.
+    kind = Column(String(20), nullable=True)
 
     __table_args__ = (UniqueConstraint('ec_id', 'professor_id', name='unique_ec_professor'),)
 
@@ -1399,15 +1403,21 @@ class MoodleInstance(Base):
     auto_sync_last_at   = Column(DateTime(timezone=True), nullable=True)
     auto_sync_last_full_at = Column(DateTime(timezone=True), nullable=True)
     auto_sync_last_report  = Column(Text, nullable=True)   # JSON
+    # Correspondance des rôles enseignants Moodle → CEI (JSON, voir
+    # services/moodle_sync.role_map) ; NULL = valeurs par défaut.
+    role_map            = Column(Text, nullable=True)
 
     pole = relationship('Pole')
 
     def to_dict(self):
+        from services.moodle_sync import role_map
         return {
             'id': self.id,
             'name': self.name,
             'base_url': self.base_url,
             'token_hint': f'…{self.token_last4}',
+            'role_map': role_map(self),
+            'role_map_configured': bool(self.role_map),
             'pole_id': self.pole_id,
             'pole_code': self.pole.code if self.pole else None,
             'is_active': self.is_active,
@@ -1702,6 +1712,10 @@ def init_db():
          "ALTER TABLE rag_engines ADD COLUMN auto_index_last_at TIMESTAMP WITH TIME ZONE"),
         ("SELECT 1 FROM information_schema.columns WHERE table_name='rag_engines' AND column_name='auto_index_report'",
          "ALTER TABLE rag_engines ADD COLUMN auto_index_report TEXT"),
+        ("SELECT 1 FROM information_schema.columns WHERE table_name='ec_assignments' AND column_name='kind'",
+         "ALTER TABLE ec_assignments ADD COLUMN kind VARCHAR(20)"),
+        ("SELECT 1 FROM information_schema.columns WHERE table_name='moodle_instances' AND column_name='role_map'",
+         "ALTER TABLE moodle_instances ADD COLUMN role_map TEXT"),
         ("SELECT 1 FROM information_schema.columns WHERE table_name='rag_documents' AND column_name='attempts'",
          "ALTER TABLE rag_documents ADD COLUMN attempts INTEGER DEFAULT 0"),
         # EC : détail du TPE (semi-dirigé / non dirigé)

@@ -184,6 +184,11 @@ def create_online_exam():
         if not subject:
             session.close()
             return jsonify({'error': 'Le sujet sélectionné n\'existe pas'}), 404
+        if user.role == UserRole.PROFESSOR and subject.ec_id:
+            from services.ec_rights import assignment_kind, TUTOR_MESSAGE
+            if assignment_kind(session, subject.ec_id, user.id) == 'tuteur':
+                session.close()
+                return jsonify({'error': TUTOR_MESSAGE, 'tutor': True}), 403
 
         # Le frontend envoie la valeur brute du datetime-local + "Z"
         # (ex: "2026-03-30T18:05:00Z"). Dakar = UTC+0, donc la valeur
@@ -4594,6 +4599,9 @@ def generate_exam_suggestions():
                 return jsonify({'success': False, 'error': 'Synchronisation Moodle désactivée'}), 503
             try:
                 ec = resolve_ec_for_user(session, moodle_ec_id, user)
+                from services.ec_rights import can_author, TUTOR_MESSAGE
+                if not can_author(session, ec.id, user):
+                    raise PermissionError(TUTOR_MESSAGE)
             except PermissionError as e:
                 session.close()
                 return jsonify({'success': False, 'error': str(e)}), 403
@@ -5780,6 +5788,10 @@ def create_subject_from_suggestion():
             if not asgn:
                 session.close()
                 return jsonify({'success': False, 'error': "Vous n'êtes pas responsable de cet EC"}), 403
+            if (asgn.kind or 'responsable') == 'tuteur':
+                from services.ec_rights import TUTOR_MESSAGE
+                session.close()
+                return jsonify({'success': False, 'error': TUTOR_MESSAGE, 'tutor': True}), 403
 
         # Utiliser le barème fourni — NE PAS appeler l'IA ici (déjà fait lors de la génération)
         rubric = data.get('rubric_override') or None

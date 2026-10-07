@@ -248,6 +248,9 @@ class SubjectService:
                     ec_id=ec_id, professor_id=creator_id).first()
                 if not asgn:
                     raise PermissionError("Vous n'êtes pas responsable de cet EC")
+                if (asgn.kind or 'responsable') == 'tuteur':
+                    from services.ec_rights import TUTOR_MESSAGE
+                    raise PermissionError(TUTOR_MESSAGE)
                 ec = session.query(EC).filter_by(id=ec_id).first()
                 if not ec:
                     raise LookupError('EC non trouvé')

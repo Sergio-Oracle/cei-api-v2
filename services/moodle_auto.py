@@ -117,8 +117,9 @@ def watch_teachers(inst, session) -> list:
     moodle_sync.refresh_teacher_map(session)
     by_course = {}
     for email, codes in (moodle_sync.teacher_map() or {}).items():
-        for code in codes:
-            by_course.setdefault(code, []).append(email)
+        items = codes.items() if isinstance(codes, dict) else ((c, '') for c in codes)
+        for code, kind in items:   # le rôle compte : un tuteur devenu éditeur relance le cours
+            by_course.setdefault(code, []).append(f'{email}:{kind}')
     current = {code: _digest(sorted(emails)) for code, emails in by_course.items()}
     before = cache_get(_k(inst.id, 'watch:teachers'))
     cache_set(_k(inst.id, 'watch:teachers'), current, ttl=7 * 86400)

@@ -955,6 +955,38 @@ def delete_ec(eid):
 # AFFECTATIONS EC ↔ PROFESSEUR
 # ═══════════════════════════════════════════════════════════════════════════════
 
+@formations_bp.route('/api/admin/ec_assignments/overview', methods=['GET'])
+@paseto_required
+def ec_assignments_overview():
+    """Page Affectations EC en UN appel léger : EC actifs (code, intitulé,
+    UE), leurs affectations, et les professeurs (id, nom). Trois requêtes
+    SQL en colonnes seules, sans charger les objets complets (avant : la
+    liste complète des EC, 153 Ko, puis les professeurs en plusieurs pages)."""
+    try:
+        session = get_session()
+        ok, _ = _is_admin(session)
+        if not ok: return jsonify({'error': 'Accès non autorisé'}), 403
+        kind_col = getattr(ECAssignment, 'kind', None)
+        cols = [ECAssignment.id, ECAssignment.ec_id, ECAssignment.professor_id] + ([kind_col] if kind_col is not None else [])
+        by_ec = {}
+        for row in session.query(*cols).all():
+            by_ec.setdefault(row[1], []).append({'id': row[0], 'professor_id': row[2],
+                                                'kind': (row[3] if kind_col is not None else None) or 'responsable'})
+        ecs = [{'id': i, 'code': c, 'name': n, 'ue_code': u, 'assignments': by_ec.get(i, [])}
+               for i, c, n, u in (session.query(EC.id, EC.code, EC.name, UE.code)
+                                  .join(UE, UE.id == EC.ue_id).filter(EC.is_active == True)   # noqa: E712
+                                  .order_by(EC.code).all())]
+        profs = [{'id': i, 'full_name': n, 'email': m, 'is_active': a}
+                 for i, n, m, a in (session.query(User.id, User.full_name, User.email, User.is_active)
+                                 .filter(User.role == UserRole.PROFESSOR).order_by(User.full_name).all())]
+        session.close()
+        return jsonify({'ecs': ecs, 'professors': profs})
+    except Exception as e:
+        try: session.rollback(); session.close()
+        except Exception: pass
+        return jsonify({'error': str(e)}), 500
+
+
 @formations_bp.route('/api/admin/ec_assignments', methods=['POST'])
 @paseto_required
 def assign_ec_to_professor():

@@ -300,11 +300,15 @@ def refresh_token_endpoint():
             # seulement si un marqueur existait déjà) : auto-guérison si
             # Redis a été vidé/redémarré entre-temps.
             _set_active_session(user.id, new_refresh, _device_label(request), int(REFRESH_TTL.total_seconds()))
+        # Profil renvoyé avec le jeton : l'interface n'a plus besoin d'un
+        # second aller-retour (/api/auth/me) pour s'afficher.
+        user_data = user.to_dict()
         session.close()
 
         resp = make_response(jsonify({
             'access_token': new_access,
             'expires_in': int(ACCESS_TTL.total_seconds()),
+            'user': user_data,
         }))
         set_refresh_cookie(resp, new_refresh)
         return resp, 200

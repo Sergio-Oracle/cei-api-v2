@@ -551,8 +551,9 @@ OPENAPI_SPEC = {
                 "200": {"description": "Nouvel access token + nouveau cookie refresh", "content": {"application/json": {"schema": {
                     "type": "object",
                     "properties": {
-                        "success":      {"type": "boolean"},
-                        "access_token": {"type": "string", "example": "v4.public.eyJzdWIiOi..."}
+                        "access_token": {"type": "string", "example": "v4.public.eyJzdWIiOi..."},
+                        "expires_in":   {"type": "integer", "example": 900},
+                        "user":         {"type": "object", "description": "Profil de l'utilisateur (même contenu que GET /api/auth/me) : l'interface s'affiche sans second aller-retour"}
                     }
                 }}}},
                 "401": {"description": "Cookie absent, token révoqué ou expiré"}

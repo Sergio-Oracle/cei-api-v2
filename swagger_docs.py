@@ -1131,6 +1131,7 @@ OPENAPI_SPEC = {
                 "responses": {"200": {"description": "EC supprimé"}}
             }
         },
+        '/api/admin/ec_assignments/overview': {'get': {'tags': ['Formations'], 'summary': 'Vue légère de la page Affectations EC (admin)', 'description': "En un appel : EC actifs (id, code, intitulé, code d'UE) avec leurs affectations, et la liste des professeurs (id, nom, email, actif). Colonnes seules, sans objets complets.", 'responses': {'200': {'description': 'EC et professeurs', 'content': {'application/json': {'example': {'ecs': [{'id': 12, 'code': 'AES1111', 'name': 'Droit constitutionnel', 'ue_code': 'AES111', 'assignments': [{'id': 3, 'professor_id': 40, 'kind': 'responsable'}]}], 'professors': [{'id': 40, 'full_name': 'Awa Doucouré', 'email': 'awa.doucoure@unchk.edu.sn', 'is_active': True}]}}}}, '403': {'$ref': '#/components/responses/Forbidden'}}}},
         "/api/admin/ec_assignments": {"post": {
             "tags": ["Académique"], "summary": "Affecter un professeur à un EC (admin)",
             "requestBody": {"required": True, "content": {"application/json": {"schema": {

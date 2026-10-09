@@ -3029,6 +3029,8 @@ def publish_exam_results(exam_id):
         data = request.get_json(silent=True) or {}
         was_published = bool(exam.results_published)
         exam.results_published = bool(data.get('published', True))
+        if exam.results_published and not was_published:
+            exam.results_published_at = utcnow()
         session.commit()
         published = exam.results_published
 

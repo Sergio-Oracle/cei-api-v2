@@ -23,7 +23,7 @@ from models      import (
     CameraLog, ExamStatus, AttemptStatus, ExamProctor, ProctorAssignment,
     QuestionBank, EC, ECAssignment, StudentUEEnrollment,
     SubjectMedia, IncidentDismissal, ExamAccessCode,
-    ProctorGroup, ProctorGroupEC, ProctorGroupExam, BiometricEnrollment,
+    ProctorGroup, ProctorGroupEC, ProctorGroupExam, BiometricEnrollment, utc_iso,
 )
 from werkzeug.utils import secure_filename
 from werkzeug.exceptions import RequestEntityTooLarge
@@ -142,7 +142,7 @@ def get_online_exams():
                         'score':        attempt.score if published else None,
                         'feedback':     attempt.feedback if published else None,
                         'corrected_at': attempt.corrected_at.isoformat() if (attempt.corrected_at and published) else None,
-                        'submitted_at': attempt.submitted_at.isoformat() if attempt.submitted_at else None,
+                        'submitted_at': utc_iso(attempt.submitted_at),
                         'pending_publication': attempt.score is not None and not published,
                     }
                 else:
@@ -971,7 +971,9 @@ def save_exam_answers(attempt_id):
         
         if attempt.status != AttemptStatus.IN_PROGRESS:
             session.close()
-            return jsonify({'error': 'Impossible de modifier une tentative terminée'}), 400
+            return jsonify({'error': 'Impossible de modifier une tentative terminée',
+                            'already_submitted': attempt.status != AttemptStatus.BANNED,
+                            'banned': attempt.status == AttemptStatus.BANNED}), 400
         
         data = request.get_json(silent=True) or {}
         attempt.answers = data.get('answers', '{}')
@@ -1263,7 +1265,7 @@ def get_exam_attempt_result(attempt_id):
             'score':        attempt.score if published else None,
             'feedback':     attempt.feedback if published else None,
             'corrected_at': attempt.corrected_at.isoformat() if (attempt.corrected_at and published) else None,
-            'submitted_at': attempt.submitted_at.isoformat() if attempt.submitted_at else None,
+            'submitted_at': utc_iso(attempt.submitted_at),
             'status':       attempt.status.value,
             'results_published': published,
             'pending_publication': attempt.score is not None and not published,
@@ -1320,7 +1322,9 @@ def get_exam_attempt_subject(attempt_id):
             'exam_title': attempt.exam.title,
             'duration_minutes': attempt.exam.duration_minutes,
             'extra_minutes': attempt.extra_minutes or 0,
-            'started_at': attempt.started_at.isoformat() if attempt.started_at else None,
+            'started_at': utc_iso(attempt.started_at),
+            'server_now': utc_iso(datetime.utcnow()),
+            'elapsed_seconds': max(0.0, (datetime.utcnow() - attempt.started_at).total_seconds()) if attempt.started_at else None,
             'current_answer': current_answer,
         }
 
@@ -2110,7 +2114,9 @@ def submit_exam_attempt(attempt_id):
         
         if attempt.status != AttemptStatus.IN_PROGRESS:
             session.close()
-            return jsonify({'error': 'Tentative déjà soumise ou bannie'}), 400
+            banned = attempt.status == AttemptStatus.BANNED
+            return jsonify({'error': 'Tentative bannie' if banned else 'Tentative déjà soumise',
+                            'banned': banned, 'already_submitted': not banned}), 400
         
         # Sauvegarder les dernières réponses
         data = request.get_json(silent=True) or {}

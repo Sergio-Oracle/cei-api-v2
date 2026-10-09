@@ -12,3 +12,12 @@ def test_points_lus_dans_le_bareme():
 def test_points_dans_le_sujet():
     m = _question_points_map("Question 1 — Titre (3 pts)\nA) x", "")
     assert m.get("1") == 3.0
+
+
+def test_dates_api_en_utc_explicite():
+    """Régression 09/10 : une date sans « Z » était lue à l'heure locale de l'appareil
+    (examens « Terminé », « déjà soumis »)."""
+    from datetime import datetime
+    from models import utc_iso
+    assert utc_iso(datetime(2026, 10, 9, 12, 0, 0)).endswith('Z')
+    assert utc_iso(None) is None

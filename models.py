@@ -796,6 +796,17 @@ class OnlineExam(Base):
             'attempts_count': len(self.attempts) if self.attempts else 0
         }
 
+def utc_iso(dt):
+    """Date UTC naïve de la base → ISO 8601 avec « Z ». Sans fuseau, le navigateur
+    lit « 2026-10-09T12:32:38 » comme l'heure LOCALE de l'appareil : sur un appareil
+    réglé sur un autre fuseau que Dakar, le minuteur d'examen était décalé de
+    plusieurs heures (copies soumises dès l'entrée, 09/10/2026)."""
+    if dt is None:
+        return None
+    s = dt.isoformat()
+    return s if (s.endswith('Z') or '+' in s[10:] or '-' in s[10:]) else s + 'Z'
+
+
 class ExamAttempt(Base):
     """Tentative de composition d'un étudiant"""
     __tablename__ = 'exam_attempts'
@@ -875,12 +886,16 @@ class ExamAttempt(Base):
             'student_id': self.student_id,
             'student_name': self.student.full_name if self.student else None,
             'status': self.status.value,
-            'started_at': self.started_at.isoformat() if self.started_at else None,
-            'submitted_at': self.submitted_at.isoformat() if self.submitted_at else None,
+            'started_at': utc_iso(self.started_at),
+            'submitted_at': utc_iso(self.submitted_at),
+            # Temps écoulé calculé par le SERVEUR : le minuteur de l'examen ne dépend ainsi
+            # ni de l'heure, ni du fuseau horaire de l'appareil de l'étudiant.
+            'server_now': utc_iso(datetime.utcnow()),
+            'elapsed_seconds': max(0.0, (datetime.utcnow() - self.started_at).total_seconds()) if self.started_at else None,
             'tab_switches': self.tab_switches,
             'warnings_count': self.warnings_count,
             'no_face_count': self.no_face_count or 0,
-            'banned_at': self.banned_at.isoformat() if self.banned_at else None,
+            'banned_at': utc_iso(self.banned_at),
             'ban_reason': self.ban_reason,
             'risk_score': self.risk_score or 0,
             'last_seen_at': self.last_seen_at.isoformat() if self.last_seen_at else None,

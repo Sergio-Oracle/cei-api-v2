@@ -18,10 +18,10 @@ from models import (
     StudentUEEnrollment, User, UserRole,
 )
 
-# Statuts d'examen sur lesquels la resynchronisation automatique agit — un
-# examen déjà ACTIVE n'est pas touché ici pour ne pas perturber une
-# surveillance en cours (filet de sécurité séparé : heartbeat/déconnexion).
-_SYNCABLE_STATUSES = [ExamStatus.DRAFT, ExamStatus.SCHEDULED]
+# Statuts d'examen sur lesquels la resynchronisation automatique agit. Un examen
+# ACTIVE n'accepte que des AJOUTS de surveillants (voir _extend_active_exam) :
+# jamais de retrait ni de déplacement d'un étudiant déjà pris en charge.
+_SYNCABLE_STATUSES = [ExamStatus.DRAFT, ExamStatus.SCHEDULED, ExamStatus.ACTIVE]
 
 
 def exam_group_ids(session, exam) -> list:
@@ -40,6 +40,56 @@ def exam_groups(session, exam) -> list:
     return session.query(ProctorGroup).filter(ProctorGroup.id.in_(ids)).all() if ids else []
 
 
+def _extend_active_exam(session, exam, target_ids) -> list:
+    """Examen DÉJÀ COMMENCÉ : on peut y AJOUTER des surveillants à tout moment
+    (nouveau membre du groupe, groupe rattaché en retard...), jamais en
+    retirer ni déplacer un étudiant déjà pris en charge. Seuls les étudiants
+    pas encore entrés en examen sont répartis à nouveau, pour que les
+    nouveaux surveillants aient leur part."""
+    current = {ep.proctor_id for ep in session.query(ExamProctor).filter_by(exam_id=exam.id).all()}
+    new_ids = [pid for pid in target_ids if pid not in current]
+    to_notify = []
+    for pid in new_ids:
+        session.add(ExamProctor(exam_id=exam.id, proctor_id=pid, assigned_by_id=exam.created_by_id))
+        to_notify.append({
+            'user_id': pid, 'event': 'proctor_assigned',
+            'title': 'Nouvel examen à surveiller',
+            'message': f'Vous surveillez « {exam.title} » (groupe) — l\'examen est déjà en cours.',
+            'priority': 'high', 'tags': ['eyes'],
+        })
+    session.commit()
+    rebalance_unstarted(session, exam, force=bool(new_ids))
+    return to_notify
+
+
+def rebalance_unstarted(session, exam, force=True):
+    """Répartit à nouveau, entre TOUS les surveillants de l'examen, les seuls
+    étudiants qui ne sont pas encore entrés en examen (équilibré selon la
+    charge déjà portée). Les étudiants déjà en cours ou rendus ne bougent pas."""
+    all_ids = [ep.proctor_id for ep in session.query(ExamProctor).filter_by(exam_id=exam.id).all()]
+    if not all_ids:
+        return
+    assignments = session.query(ProctorAssignment).filter_by(exam_id=exam.id).order_by(ProctorAssignment.id).all()
+    if not assignments:
+        _redistribute_students(session, exam, all_ids)
+        return
+    started = {sid for (sid,) in session.query(ExamAttempt.student_id).filter_by(exam_id=exam.id)}
+    counts = {pid: 0 for pid in all_ids}
+    free = []
+    for pa in assignments:
+        if pa.attempt_id or pa.student_id in started:
+            if pa.proctor_id in counts:
+                counts[pa.proctor_id] += 1
+        else:
+            free.append(pa)
+    if force or any(pa.proctor_id not in counts for pa in free):
+        for pa in free:
+            pid = min(counts, key=counts.get)
+            pa.proctor_id = pid
+            counts[pid] += 1
+        session.commit()
+
+
 def sync_exam_proctors(session, exam) -> list:
     """Surveillants + pré-répartition des étudiants d'UN examen à venir, à
     partir de ses groupes. Renvoie les notifications à envoyer."""
@@ -52,6 +102,9 @@ def sync_exam_proctors(session, exam) -> list:
                 seen.add(m.proctor_id)
                 target_ids.append(m.proctor_id)
     target_set = set(target_ids)
+
+    if exam.status == ExamStatus.ACTIVE:
+        return _extend_active_exam(session, exam, target_ids)
 
     to_notify = []
     current = {ep.proctor_id: ep for ep in session.query(ExamProctor).filter_by(exam_id=exam.id).all()}
@@ -73,12 +126,6 @@ def sync_exam_proctors(session, exam) -> list:
     return to_notify
 
 
-def _active_unwatched(session, query) -> list:
-    """Examens ACTIVE de la requête sans aucun surveillant affecté."""
-    return [e for e in query.filter(OnlineExam.status == ExamStatus.ACTIVE).all()
-            if not session.query(ExamProctor).filter_by(exam_id=e.id).first()]
-
-
 def sync_ec_proctors(session, ec_id):
     """Recalcule les surveillants + la pré-répartition des étudiants pour
     tous les examens à venir liés à cet EC. À appeler après toute
@@ -87,10 +134,6 @@ def sync_ec_proctors(session, ec_id):
         Subject.ec_id == ec_id,
         OnlineExam.status.in_(_SYNCABLE_STATUSES),
     ).all()
-    # Examen déjà ACTIVE (créé après son heure de début, ou groupe rattaché en
-    # retard) mais que PERSONNE ne surveille : rien à perturber, on affecte.
-    exams += _active_unwatched(session, session.query(OnlineExam).join(
-        Subject, OnlineExam.subject_id == Subject.id).filter(Subject.ec_id == ec_id))
     to_notify = []
     for exam in exams:
         to_notify.extend(sync_exam_proctors(session, exam))
@@ -101,9 +144,7 @@ def sync_group(session, group_id) -> list:
     """Après un changement de membres : tous les examens à venir du groupe
     (ceux de ses EC et ceux rattachés directement)."""
     to_notify = []
-    for exam, _source in group_exams(session, group_id, statuses=_SYNCABLE_STATUSES + [ExamStatus.ACTIVE]):
-        if exam.status == ExamStatus.ACTIVE and session.query(ExamProctor).filter_by(exam_id=exam.id).first():
-            continue  # déjà surveillé : on ne touche pas à une surveillance en cours
+    for exam, _source in group_exams(session, group_id, statuses=_SYNCABLE_STATUSES):
         to_notify.extend(sync_exam_proctors(session, exam))
     return to_notify
 

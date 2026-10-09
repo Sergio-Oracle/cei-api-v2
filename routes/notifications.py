@@ -39,8 +39,12 @@ def get_notifications():
             ExamAttempt.student_id == user_id,
             ExamAttempt.corrected_at != None,
             ExamAttempt.score != None,
-        ).order_by(ExamAttempt.corrected_at.desc()).limit(20).all():
+        ).order_by(ExamAttempt.corrected_at.desc()).limit(60).all():
             exam = att.exam
+            # La note n'est connue de l'étudiant qu'une fois les résultats publiés
+            # par l'enseignant (même règle que /api/student/online_results)
+            if not exam or not exam.results_published:
+                continue
             notifications.append({
                 'id':           f'attempt_{att.id}',
                 'type':         'online_exam',

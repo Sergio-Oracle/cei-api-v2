@@ -122,6 +122,9 @@ def get_online_exams():
                 student_attempts = session.query(ExamAttempt).filter_by(student_id=user_id).all()
                 attempts_by_exam = {a.exam_id: a for a in student_attempts}
 
+        if user.role != UserRole.STUDENT:
+            threading.Thread(target=_sweep_uncorrected, daemon=True).start()
+
         exams_list = []
         for exam in exams:
             d = exam.to_dict()
@@ -1911,6 +1914,33 @@ numéro exact de la question et son total de points tel qu'indiqué. N'ajoute au
 le premier bloc "### Question" ni de section de synthèse générale après le dernier bloc.
 Tu DOIS terminer ta correction par une ligne contenant EXACTEMENT : "Points obtenus : XX.XX"
 (la somme de tous les points ci-dessus, jamais "Note totale", jamais "/20")."""
+
+
+def _sweep_uncorrected(limit: int = 15):
+    """Filet de sécurité : corrige les copies rendues sur un examen « IA auto »
+    qui n'ont jamais été corrigées (thread tué par un redémarrage, copie
+    soumise automatiquement à la clôture, ancienne panne...). Au plus un
+    passage toutes les 5 minutes (verrou Redis), jamais sur les copies vides."""
+    from cache import cache_set_nx
+    if not cache_set_nx('cei:sweep:uncorrected', 300):
+        return
+    session = get_session()
+    try:
+        limite = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=2)
+        ids = [r.id for r in session.query(ExamAttempt.id)
+               .join(OnlineExam, OnlineExam.id == ExamAttempt.exam_id)
+               .filter(OnlineExam.auto_correct == True,
+                       ExamAttempt.status.in_([AttemptStatus.SUBMITTED, AttemptStatus.AUTO_SUBMITTED]),
+                       ExamAttempt.corrected_at.is_(None),
+                       ExamAttempt.answers.isnot(None), ExamAttempt.answers != '', ExamAttempt.answers != '{}',
+                       ExamAttempt.submitted_at < limite)
+               .order_by(ExamAttempt.submitted_at.desc()).limit(limit).all()]
+    finally:
+        session.close()
+    if ids:
+        print(f"Filet correction : {len(ids)} copie(s) non corrigée(s) reprise(s)")
+    for i in ids:
+        _run_auto_correction(i)
 
 
 def _run_auto_correction(attempt_id: int):

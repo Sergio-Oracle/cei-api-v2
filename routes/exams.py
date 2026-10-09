@@ -1718,11 +1718,13 @@ def _build_readable_student_answers(subject_content: str, answers_data, exclude_
             answers_data.get('answer') or answers_data.get('text') or '')
 
 
+# Séparateur après le numéro : « — », « - », « : », « . » OU une parenthèse de points
+# (« Question 1 (1.5 pts) : », format des sujets importés depuis un document Word).
 _RUBRIC_Q_BLOCK_RE = re.compile(
-    r'Question\s+(\d{1,3})\s*[—\-–:.].*?(?=\nQuestion\s+\d{1,3}\s*[—\-–:.]|\n─+\nTOTAL|\Z)', re.S)
+    r'Question\s+(\d{1,3})\s*(?:[—\-–:.]|\().*?(?=\nQuestion\s+\d{1,3}\s*(?:[—\-–:.]|\()|\n─+\nTOTAL|\Z)', re.S)
 _RUBRIC_QCM_ANSWER_RE = re.compile(r'[Bb]onnes?\s+r[ée]ponses?\s*:\s*([A-Fa-f]\)?(?:\s*,\s*[A-Fa-f]\)?)*)')
 _RUBRIC_VF_ANSWER_RE  = re.compile(r'R[ée]ponse\s*:\s*(Vrai|Faux)', re.I)
-_Q_POINTS_RE          = re.compile(r'Question\s+(\d{1,3})\s*[—\-–:.].*?\((\d+(?:\.\d+)?)\s*pts?\)')
+_Q_POINTS_RE          = re.compile(r'Question\s+(\d{1,3})\s*(?:[—\-–:.][^\n]*?)?\(\s*(\d+(?:[.,]\d+)?)\s*pts?\s*\)')
 
 
 def _extract_correct_answers(rubric: str) -> dict:
@@ -1747,8 +1749,13 @@ def _extract_correct_answers(rubric: str) -> dict:
     return result
 
 
-def _question_points_map(content: str) -> dict:
-    return {m.group(1): float(m.group(2)) for m in _Q_POINTS_RE.finditer(content or '')}
+def _question_points_map(content: str, rubric: str = '') -> dict:
+    """Points par question, lus dans le sujet ; à défaut dans le barème — un sujet
+    importé d'un document Word n'indique ses points que dans le barème."""
+    points = {m.group(1): float(m.group(2).replace(',', '.')) for m in _Q_POINTS_RE.finditer(content or '')}
+    for m in _Q_POINTS_RE.finditer(rubric or ''):
+        points.setdefault(m.group(1), float(m.group(2).replace(',', '.')))
+    return points
 
 
 def _deterministic_grade(content: str, rubric: str, answers_data) -> tuple:
@@ -1764,7 +1771,7 @@ def _deterministic_grade(content: str, rubric: str, answers_data) -> tuple:
         return 0.0, 0.0, 0.0, [], set(), []
 
     questions   = _parse_subject_questions_for_grading(content)
-    points_map  = _question_points_map(content)
+    points_map  = _question_points_map(content, rubric)
     correct_map = _extract_correct_answers(rubric)
 
     score, max_score = 0.0, 0.0
@@ -1947,6 +1954,8 @@ def _run_auto_correction(attempt_id: int):
         # demandée), plutôt que de supposer un total fixe.
         det_score, det_max, total_max, det_breakdown, det_nums, det_structured = _deterministic_grade(
             subject.content, subject.rubric or '', answers_data)
+        if total_max <= 0.01:
+            total_max = 20.0   # barème non reconnu : l'IA corrige toute la copie sur 20
         remaining_max = round(total_max - det_max, 2)
         det_section = (
             "=== Tes réponses aux questions à choix ===\n"
@@ -1968,6 +1977,16 @@ def _run_auto_correction(attempt_id: int):
         if remaining_max <= 0.01 or not student_answers.strip():
             score    = _to_20(det_score)
             result   = f"{det_section}Note totale: {score:.2f}/20"
+            # Sujet entièrement noté automatiquement (QCM, vrai/faux, appariement) : aucun
+            # appel à l'IA — la note DOIT quand même être enregistrée. Avant ce correctif
+            # elle était calculée puis perdue (copies « Non corrigé » en permanence).
+            attempt.score = score
+            attempt.feedback = result
+            attempt.question_scores = json.dumps(det_structured)
+            attempt.corrected_at = utcnow()
+            attempt.corrected_by_id = None
+            session.commit()
+            print(f"Auto-correction {attempt_id} terminée (notation automatique, sans IA) : {score}/20")
         else:
             system_prompt = _build_correction_system_prompt(
                 exam.title + (" — " + subject.title if subject.title else ""),
@@ -2390,6 +2409,8 @@ def _run_ai_correction(attempt, corrected_by_id=None) -> float:
     # génération), plutôt que de supposer un total fixe.
     det_score, det_max, total_max, det_breakdown, det_nums, det_structured = _deterministic_grade(
         subject.content, subject.rubric or '', answers_data if isinstance(answers_data, dict) else {})
+    if total_max <= 0.01:
+        total_max = 20.0   # barème non reconnu : l'IA corrige toute la copie sur 20
     remaining_max = round(total_max - det_max, 2)
     det_section = (
         "=== Tes réponses aux questions à choix ===\n"

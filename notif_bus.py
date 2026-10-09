@@ -37,6 +37,12 @@ _REDIS_URL = os.getenv('REDIS_URL', 'redis://127.0.0.1:6379/0')
 _QUEUE_MAX = 50
 _QUEUE_TTL = 3600  # 1 h
 
+# Historique consultable (page « Notifications » du personnel) : copie des mêmes
+# événements, NON drainée par le poll — sinon la cloche annonce « 1 » mais la
+# page reste vide, l'événement ayant déjà été consommé par le poll.
+_HIST_MAX = 100
+_HIST_TTL = 30 * 24 * 3600  # 30 jours
+
 # Correctif montée en charge (29/08, audit) : chaque appel notify_user/
 # notify_exam créait des threads OS natifs sans limite — publier les
 # résultats d'un examen à 300 étudiants créait des centaines de threads d'un
@@ -65,9 +71,14 @@ def _enqueue(user_id, payload: dict) -> None:
     try:
         key = f'cei:notif:user:{user_id}'
         p = _get_redis().pipeline(transaction=True)
-        p.rpush(key, json.dumps(payload))
+        hkey = f'cei:notif:history:{user_id}'
+        data = json.dumps(payload)
+        p.rpush(key, data)
         p.ltrim(key, -_QUEUE_MAX, -1)
         p.expire(key, _QUEUE_TTL)
+        p.rpush(hkey, data)
+        p.ltrim(hkey, -_HIST_MAX, -1)
+        p.expire(hkey, _HIST_TTL)
         p.execute()
     except Exception as exc:
         _log.warning('Redis enqueue failed user=%s: %s', user_id, exc)
@@ -85,6 +96,10 @@ def _enqueue_many(user_ids, payload: dict) -> None:
             p.rpush(key, data)
             p.ltrim(key, -_QUEUE_MAX, -1)
             p.expire(key, _QUEUE_TTL)
+            hkey = f'cei:notif:history:{uid}'
+            p.rpush(hkey, data)
+            p.ltrim(hkey, -_HIST_MAX, -1)
+            p.expire(hkey, _HIST_TTL)
         p.execute()
     except Exception as exc:
         _log.warning('Redis enqueue_many failed: %s', exc)

@@ -23,6 +23,43 @@ _REDIS_URL = os.getenv('REDIS_URL', 'redis://127.0.0.1:6379/0')
 notifications_bp = Blueprint('notifications', __name__)
 
 
+def _staff_notifications(user):
+    """Personnel (professeur, surveillant, superviseur, admin) : historique des
+    événements du bus (Redis, 30 jours) — le poll les consomme pour la cloche,
+    cette copie reste pour la page « Notifications »."""
+    items = []
+    try:
+        r = _redis_lib.from_url(_REDIS_URL, decode_responses=True, socket_connect_timeout=1)
+        raw = r.lrange(f'cei:notif:history:{user.id}', 0, -1)
+    except Exception as e:
+        _log.warning('historique notifications indisponible: %s', e)
+        raw = []
+    last_read = user.notifications_last_read
+    last_ms = None
+    if last_read:
+        if last_read.tzinfo is None:
+            last_read = last_read.replace(tzinfo=timezone.utc)
+        last_ms = last_read.timestamp() * 1000
+    for line in raw:
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            continue
+        ts = ev.get('ts') or 0
+        items.append({
+            'id': f"{ev.get('type', 'evt')}_{ts}",
+            'type': ev.get('type'),
+            'title': ev.get('title'),
+            'message': ev.get('message'),
+            'created_at': datetime.fromtimestamp(ts / 1000, tz=timezone.utc).isoformat().replace('+00:00', 'Z') if ts else None,
+            'exam_id': ev.get('exam_id'),
+            'is_read': bool(last_ms and ts <= last_ms),
+        })
+    items.sort(key=lambda x: x['created_at'] or '', reverse=True)
+    return jsonify({'notifications': items, 'count': len(items),
+                    'unread_count': sum(1 for i in items if not i['is_read'])})
+
+
 @notifications_bp.route('/api/notifications', methods=['GET'])
 @paseto_required
 def get_notifications():
@@ -30,8 +67,10 @@ def get_notifications():
     session = get_session()
     try:
         user = session.query(User).get(user_id)
-        if not user or user.role != UserRole.STUDENT:
+        if not user:
             return jsonify({'notifications': [], 'count': 0, 'unread_count': 0})
+        if user.role != UserRole.STUDENT:
+            return _staff_notifications(user)
 
         notifications = []
 

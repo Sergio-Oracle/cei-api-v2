@@ -12,7 +12,7 @@ from auth_paseto import paseto_required, get_current_user_id
 from extensions import limiter
 from helpers     import utcnow
 from models      import (
-    get_session, User, UserRole,
+    get_session, User, UserRole, utc_iso,
     StudentPaper, ExamAttempt,
 )
 import redis as _redis_lib
@@ -50,7 +50,8 @@ def get_notifications():
                 'type':         'online_exam',
                 'title':        exam.title if exam else 'Examen en ligne',
                 'message':      f'Votre copie a été corrigée — note : {att.score:.2f}/20' if att.score is not None else 'Votre copie a été corrigée',
-                'created_at':   att.corrected_at.isoformat() if att.corrected_at else None,
+                # la notification date de la publication (sinon elle paraîtrait déjà lue)
+                'created_at':   utc_iso(exam.results_published_at or att.corrected_at),
                 'attempt_id':   att.id,
             })
 
@@ -76,7 +77,7 @@ def get_notifications():
             if not last_read or not iso_str:
                 return False
             try:
-                dt = datetime.fromisoformat(iso_str)
+                dt = datetime.fromisoformat(iso_str.replace('Z', '+00:00'))
                 if dt.tzinfo is None:
                     dt = dt.replace(tzinfo=timezone.utc)
                 return dt <= last_read

@@ -718,6 +718,8 @@ class OnlineExam(Base):
     # n'a pas explicitement publié les résultats (après délibération), même
     # symétrie que GradeTranscript.is_published pour les relevés de semestre
     results_published = Column(Boolean, default=False)
+    # Date de publication des résultats (sert à dater la notification étudiant)
+    results_published_at = Column(DateTime, nullable=True)
 
     # Calculatrice scientifique intégrée à la page de composition — évite que
     # l'étudiant sorte une calculatrice physique ou son téléphone (matériel
@@ -1469,6 +1471,8 @@ def init_db():
     # statement_timeout=2s évite les blocages si la table est verrouillée par l'app active
     from sqlalchemy import text as _text
     _migrations = [
+        ("SELECT 1 FROM information_schema.columns WHERE table_name='online_exams' AND column_name='results_published_at'",
+         "ALTER TABLE online_exams ADD COLUMN results_published_at TIMESTAMP"),
         # EC : détail du TPE (semi-dirigé / non dirigé)
         ("SELECT 1 FROM information_schema.columns WHERE table_name='ecs' AND column_name='tpe_semi_dirige'",
          "ALTER TABLE ecs ADD COLUMN tpe_semi_dirige INTEGER"),

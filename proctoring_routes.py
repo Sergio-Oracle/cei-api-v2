@@ -1548,6 +1548,15 @@ def add_exam_proctor(exam_id):
             exam_title = ''
 
         session.commit()
+        # Examen déjà commencé : le nouveau surveillant reçoit sa part des
+        # étudiants qui ne sont pas encore entrés (les autres ne bougent pas).
+        if exam.status == ExamStatus.ACTIVE:
+            try:
+                from services.proctor_service import rebalance_unstarted
+                rebalance_unstarted(session, exam)
+            except Exception as _e:
+                session.rollback()
+                print(f"rebalance_unstarted exam {exam_id}: {_e}")
         # Correctif fiabilité (29/08, audit de montée en charge) : ep.to_dict()
         # accède à des colonnes ET à des relations (proctor, assigned_by) qui
         # sont toutes expirées par commit() — les calculer ICI, avant

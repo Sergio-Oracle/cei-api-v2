@@ -73,6 +73,12 @@ def sync_exam_proctors(session, exam) -> list:
     return to_notify
 
 
+def _active_unwatched(session, query) -> list:
+    """Examens ACTIVE de la requête sans aucun surveillant affecté."""
+    return [e for e in query.filter(OnlineExam.status == ExamStatus.ACTIVE).all()
+            if not session.query(ExamProctor).filter_by(exam_id=e.id).first()]
+
+
 def sync_ec_proctors(session, ec_id):
     """Recalcule les surveillants + la pré-répartition des étudiants pour
     tous les examens à venir liés à cet EC. À appeler après toute
@@ -81,6 +87,10 @@ def sync_ec_proctors(session, ec_id):
         Subject.ec_id == ec_id,
         OnlineExam.status.in_(_SYNCABLE_STATUSES),
     ).all()
+    # Examen déjà ACTIVE (créé après son heure de début, ou groupe rattaché en
+    # retard) mais que PERSONNE ne surveille : rien à perturber, on affecte.
+    exams += _active_unwatched(session, session.query(OnlineExam).join(
+        Subject, OnlineExam.subject_id == Subject.id).filter(Subject.ec_id == ec_id))
     to_notify = []
     for exam in exams:
         to_notify.extend(sync_exam_proctors(session, exam))
@@ -91,7 +101,9 @@ def sync_group(session, group_id) -> list:
     """Après un changement de membres : tous les examens à venir du groupe
     (ceux de ses EC et ceux rattachés directement)."""
     to_notify = []
-    for exam, _source in group_exams(session, group_id, statuses=_SYNCABLE_STATUSES):
+    for exam, _source in group_exams(session, group_id, statuses=_SYNCABLE_STATUSES + [ExamStatus.ACTIVE]):
+        if exam.status == ExamStatus.ACTIVE and session.query(ExamProctor).filter_by(exam_id=exam.id).first():
+            continue  # déjà surveillé : on ne touche pas à une surveillance en cours
         to_notify.extend(sync_exam_proctors(session, exam))
     return to_notify
 

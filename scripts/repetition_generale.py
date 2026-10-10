@@ -169,6 +169,9 @@ finally:
         if made['subject']:
             s.query(Subject).filter_by(id=made['subject']).delete(synchronize_session=False)
         if made['users']:
+            from models import ProctorAssignment as _PA
+            s.query(_PA).filter(_PA.student_id.in_(made['users'])).delete(synchronize_session=False)
+            s.query(ExamAttempt).filter(ExamAttempt.student_id.in_(made['users'])).delete(synchronize_session=False)
             s.query(StudentUEEnrollment).filter(StudentUEEnrollment.student_id.in_(made['users'])).delete(synchronize_session=False)
             s.query(User).filter(User.id.in_(made['users'])).delete(synchronize_session=False)
         s.commit()

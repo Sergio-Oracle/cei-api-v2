@@ -36,6 +36,24 @@ logger = logging.getLogger('cei.api')
 # ── Application Flask ─────────────────────────────────────────────────────────
 app = Flask(__name__)
 
+# Toutes les dates de la base sont en UTC « naïf » (sans fuseau). Sans « Z », le
+# navigateur les lit comme l'heure LOCALE de l'appareil : l'heure affichée et
+# les minuteurs seraient décalés pour tout utilisateur hors UTC (étudiant à
+# l'étranger, appareil réglé sur un autre fuseau). On ajoute donc « Z » à toute
+# date-heure sans fuseau dans CHAQUE réponse JSON — un seul endroit, aucune
+# route à penser. Une date seule (AAAA-MM-JJ) n'est pas touchée.
+import re as _re
+from flask.json.provider import DefaultJSONProvider as _DefaultJSONProvider
+_NAIVE_DT = _re.compile(r'"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?)"')
+
+
+class _UtcJSONProvider(_DefaultJSONProvider):
+    def dumps(self, obj, **kwargs):
+        return _NAIVE_DT.sub(r'"\1Z"', super().dumps(obj, **kwargs))
+
+
+app.json = _UtcJSONProvider(app)
+
 # Derrière nginx (proxy_pass 127.0.0.1) : sans ceci, request.remote_addr vaut
 # TOUJOURS 127.0.0.1 pour toutes les requêtes, quel que soit le vrai client —
 # ce qui fait que le rate limiter (get_remote_address, extensions.py) traite

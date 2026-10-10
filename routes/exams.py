@@ -489,7 +489,7 @@ def edit_online_exam(exam_id):
         if 'start_time' in data and data['start_time']:
             from datetime import datetime
             try:
-                exam.start_time = datetime.fromisoformat(data['start_time'])
+                exam.start_time = _parse_utc_naive(data['start_time'])
             except ValueError:
                 pass
         # Retour #6 — reprogrammation par édition : end_time peut être fourni
@@ -501,7 +501,7 @@ def edit_online_exam(exam_id):
         if 'end_time' in data and data['end_time']:
             from datetime import datetime
             try:
-                new_end = datetime.fromisoformat(data['end_time'])
+                new_end = _parse_utc_naive(data['end_time'])
                 if new_end <= exam.start_time:
                     session.close()
                     return jsonify({'error': 'La date de fin doit être après la date de début'}), 400
@@ -1735,6 +1735,16 @@ def _extract_correct_answers(rubric: str) -> dict:
         if vm:
             result[num] = {'type': 'vf', 'value': vm.group(1).capitalize()}
     return result
+
+
+def _parse_utc_naive(raw):
+    """Date-heure reçue du navigateur → UTC naïf (format de la base). Accepte « Z »,
+    un décalage (+02:00) ou une date sans fuseau (alors lue comme UTC)."""
+    raw = str(raw).strip().replace('Z', '+00:00')
+    dt = datetime.fromisoformat(raw)
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
 
 
 def _question_points_map(content: str, rubric: str = '') -> dict:

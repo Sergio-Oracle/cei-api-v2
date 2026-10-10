@@ -1968,6 +1968,9 @@ def _sweep_uncorrected(limit: int = 15):
         print(f"Filet correction : {len(ids)} copie(s) non corrigée(s) reprise(s)")
     for i in ids:
         _run_auto_correction(i)
+    # Ce que le filet n'a pas pu réparer : on prévient les humains
+    from services.exam_health import notify_anomalies
+    notify_anomalies()
 
 
 def _run_auto_correction(attempt_id: int):

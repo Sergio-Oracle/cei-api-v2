@@ -156,6 +156,26 @@ def _before_request():
     g.t0         = time.monotonic()
     g.request_id = request.headers.get('X-Request-ID', uuid.uuid4().hex[:8])
 
+# Filet « copies non corrigées / tentatives restées en cours » : déclenché par
+# n'importe quelle requête API (au plus une fois par minute et par processus,
+# puis verrou Redis de 5 min dans la fonction) — ne dépend donc plus d'un
+# enseignant qui ouvrirait la liste des examens.
+_last_sweep = [0.0]
+
+def _run_sweep():
+    try:
+        from routes.exams import _sweep_uncorrected
+        _sweep_uncorrected()
+    except Exception as exc:
+        print(f"[sweep] échec : {exc}")
+
+@app.before_request
+def _maybe_sweep():
+    if request.path.startswith('/api/') and time.monotonic() - _last_sweep[0] > 60:
+        _last_sweep[0] = time.monotonic()
+        import threading as _th
+        _th.Thread(target=_run_sweep, daemon=True).start()
+
 @app.after_request
 def _after_request(response):
     rid = g.get('request_id', '-')

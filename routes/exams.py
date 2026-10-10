@@ -1912,22 +1912,39 @@ Tu DOIS terminer ta correction par une ligne contenant EXACTEMENT : "Points obte
 
 
 def _sweep_uncorrected(limit: int = 15):
-    """Filet de sécurité : corrige les copies rendues sur un examen « IA auto »
-    qui n'ont jamais été corrigées (thread tué par un redémarrage, copie
-    soumise automatiquement à la clôture, ancienne panne...). Au plus un
-    passage toutes les 5 minutes (verrou Redis), jamais sur les copies vides."""
+    """Filet de sécurité, au plus un passage toutes les 5 minutes (verrou Redis) :
+    1. clôture les tentatives restées « en cours » alors que leur échéance
+       (fin de l'examen + temps supplémentaire accordé) est dépassée — le travail
+       déjà saisi est conservé ;
+    2. corrige les copies rendues sur un examen « IA auto » qui n'ont jamais été
+       corrigées (thread tué par un redémarrage, copie soumise automatiquement à
+       la clôture, panne passée...). Une copie sans réponse reçoit 0/20."""
     from cache import cache_set_nx
     if not cache_set_nx('cei:sweep:uncorrected', 300):
         return
     session = get_session()
     try:
-        limite = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=2)
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        stuck = (session.query(ExamAttempt)
+                 .join(OnlineExam, OnlineExam.id == ExamAttempt.exam_id)
+                 .filter(ExamAttempt.status == AttemptStatus.IN_PROGRESS,
+                         OnlineExam.end_time < now).all())
+        closed = 0
+        for att in stuck:
+            ex = att.exam
+            if now > ex.end_time + timedelta(minutes=(att.extra_minutes or 0) + 1):
+                att.status = AttemptStatus.AUTO_SUBMITTED
+                att.submitted_at = now
+                closed += 1
+        if closed:
+            session.commit()
+            print(f"Filet correction : {closed} tentative(s) restée(s) en cours clôturée(s)")
+        limite = now - timedelta(minutes=2)
         ids = [r.id for r in session.query(ExamAttempt.id)
                .join(OnlineExam, OnlineExam.id == ExamAttempt.exam_id)
                .filter(OnlineExam.auto_correct == True,
                        ExamAttempt.status.in_([AttemptStatus.SUBMITTED, AttemptStatus.AUTO_SUBMITTED]),
                        ExamAttempt.corrected_at.is_(None),
-                       ExamAttempt.answers.isnot(None), ExamAttempt.answers != '', ExamAttempt.answers != '{}',
                        ExamAttempt.submitted_at < limite)
                .order_by(ExamAttempt.submitted_at.desc()).limit(limit).all()]
     finally:
@@ -1967,7 +1984,15 @@ def _run_auto_correction(attempt_id: int):
             answers_data = {}
 
         if not answers_data:
-            print(f"Auto-correction {attempt_id} : aucune réponse, correction ignorée")
+            # Copie rendue sans aucune réponse : 0/20 explicite (au lieu de rester
+            # « Non corrigé », ambigu pour l'enseignant). Modifiable à la main.
+            attempt.score = 0.0
+            attempt.feedback = "Copie vide : aucune réponse enregistrée pour cet examen."
+            attempt.question_scores = json.dumps([])
+            attempt.corrected_at = utcnow()
+            attempt.corrected_by_id = None
+            session.commit()
+            print(f"Auto-correction {attempt_id} : copie vide, 0/20 enregistré")
             return
 
         # Notation automatique (sans IA) des questions QCM/QCM_MULTI/Vrai-Faux/

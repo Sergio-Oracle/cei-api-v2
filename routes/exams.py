@@ -2247,11 +2247,11 @@ def submit_exam_attempt(attempt_id):
 # Un étudiant qui termine et soumet en avance, alors que d'autres composent
 # encore, ne doit pas pouvoir quitter la plateforme (ou y revenir après
 # fermeture de l'onglet) pour aller aider des camarades pendant que l'examen
-# est toujours ouvert. Verrou de 15 minutes après soumission, mais jamais
+# est toujours ouvert. Verrou de 3 minutes après soumission (réduit de 15 le 2026-10-13 à la demande de l'utilisateur), mais jamais
 # au-delà de la fin réelle de l'examen (si l'examen est terminé pour tout le
 # monde, le risque n'existe plus). Vérifié côté serveur à chaque connexion —
 # fermer l'onglet et revenir ne permet pas de contourner.
-POST_SUBMIT_LOCK_MINUTES = 15
+POST_SUBMIT_LOCK_MINUTES = 3
 
 @exams_bp.route('/api/student/post_submit_lock', methods=['GET'])
 @paseto_required

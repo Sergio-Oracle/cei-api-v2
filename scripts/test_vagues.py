@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import app as A
 import cache
-from models import (get_session, User, UserRole, OnlineExam, ExamAttempt, ExamStatus, AttemptStatus, EC,
+from models import (ExamProctor, get_session, User, UserRole, OnlineExam, ExamAttempt, ExamStatus, AttemptStatus, EC,
                     ProctorGroupEC, StudentUEEnrollment, ExamWave, ExamWaveStudent, ExamAccessCode,
                     ProctorAssignment, Subject)
 from auth_paseto import create_access_token
@@ -118,15 +118,47 @@ try:
     s.add(StudentUEEnrollment(student_id=extra.id, ue_id=ec.ue_id)); s.commit()
     cache.cache_set(f'cei:biometric:verify:{extra.id}', '1', ttl=600)
     he = H(extra, 'student')
-    r = c.post(f'/api/online_exams/{eid}/start', json={}, headers=he)
-    check("étudiant inscrit après coup, sans vague : refus clair", r.status_code == 403 and (r.get_json() or {}).get('wave_missing'), r.get_data(as_text=True)[:160])
-    le = next(e for e in c.get('/api/online_exams', headers=he).get_json() if e['id'] == eid)
-    check("… et la liste le signale (wave_missing)", le.get('wave_missing') is True)
+    s.expire_all()
+    row = s.query(ExamWaveStudent).filter_by(exam_id=eid, student_id=extra.id).first()
+    check("inscrit après coup : rattaché AUTOMATIQUEMENT à une vague qui n'a pas commencé", row is not None and s.get(ExamWave, row.wave_id).position in (2, 3),
+          row and s.get(ExamWave, row.wave_id).position)
     sm = c.get(f'/api/online_exams/{eid}/waves', headers=ha).get_json()
-    check("le tableau des vagues signale l'étudiant sans vague", sm['unassigned'] >= 1, sm['unassigned'])
+    check("plus aucun étudiant sans vague", sm['unassigned'] == 0, sm['unassigned'])
+    r = c.post(f'/api/online_exams/{eid}/start', json={}, headers=he)
+    check("… il reçoit l'heure de sa vague (et non « aucune vague »)", r.status_code == 400 and (r.get_json() or {}).get('starts_at') and not (r.get_json() or {}).get('wave_missing'), r.get_data(as_text=True)[:160])
+    le = next(e for e in c.get('/api/online_exams', headers=he).get_json() if e['id'] == eid)
+    check("… et sa liste affiche sa vague", le.get('wave') and not le.get('wave_missing'))
+
+    # plusieurs inscriptions d'un coup : réparties entre les vagues à venir, vague 1 (commencée) intacte
+    before = {w.id: s.query(ExamWaveStudent).filter_by(wave_id=w.id).count() for w in waves}
+    lot = []
+    for i in range(5):
+        u = User(email=f'vagues.{tag}.l{i}@test.invalid', full_name=f'Vagues Test Lot {i}', role=UserRole.STUDENT,
+                 is_active=True, email_verified=True, has_email=True, password_hash=generate_password_hash('x'))
+        s.add(u); s.flush(); made['users'].append(u.id); lot.append(u)
+        s.add(StudentUEEnrollment(student_id=u.id, ue_id=ec.ue_id))
+    s.commit()
+    after = {w.id: s.query(ExamWaveStudent).filter_by(wave_id=w.id).count() for w in waves}
+    check("inscriptions en lot : la vague commencée ne reçoit personne", after[waves[0].id] == before[waves[0].id], (before, after))
+    check("inscriptions en lot : les 5 sont rattachés", sum(after.values()) - sum(before.values()) == 5, (before, after))
+    check("inscriptions en lot : vagues à venir équilibrées (écart ≤ 1)", abs(after[waves[1].id] - after[waves[2].id]) <= 1, after)
+
+    # filet de sécurité : un inscrit dont le rattachement aurait échappé est rattaché à son premier accès
+    s.query(ExamWaveStudent).filter_by(exam_id=eid, student_id=extra.id).delete(); s.commit()
+    le = next(e for e in c.get('/api/online_exams', headers=he).get_json() if e['id'] == eid)
+    check("filet de sécurité : rattaché à son premier accès", le.get('wave') and not le.get('wave_missing'))
+
+    # désinscrit : plus aucune vague (les non-inscrits ne sont jamais rattachés)
+    ghost = User(email=f'vagues.{tag}.g@test.invalid', full_name='Vagues Test Non inscrit', role=UserRole.STUDENT,
+                 is_active=True, email_verified=True, has_email=True, password_hash=generate_password_hash('x'))
+    s.add(ghost); s.commit(); made['users'].append(ghost.id)
+    check("un étudiant non inscrit à l'UE n'est jamais rattaché", s.query(ExamWaveStudent).filter_by(exam_id=eid, student_id=ghost.id).count() == 0)
+
     w3 = waves[2]
-    r = c.post(f'/api/online_exams/{eid}/waves/{w3.id}/students', headers=ha, json={'student_ids': [extra.id]})
-    check("rattachement manuel à une vague", r.status_code == 200 and r.get_json().get('moved') == 1, r.get_data(as_text=True)[:140])
+    cur = s.query(ExamWaveStudent).filter_by(exam_id=eid, student_id=extra.id).first()
+    target = waves[1] if cur.wave_id == w3.id else w3
+    r = c.post(f'/api/online_exams/{eid}/waves/{target.id}/students', headers=ha, json={'student_ids': [extra.id]})
+    check("rattachement manuel à une autre vague", r.status_code == 200 and r.get_json().get('moved') == 1, r.get_data(as_text=True)[:140])
     r = c.post(f'/api/online_exams/{eid}/waves/{w3.id}/students', headers=ha, json={'student_ids': [w1[0].id]})
     check("un étudiant qui a commencé ne peut plus changer de vague", r.status_code == 400, r.get_data(as_text=True)[:140])
 
@@ -135,10 +167,26 @@ try:
     check('vagues non redéfinissables après un démarrage', r.status_code == 400)
     r = c.delete(f'/api/online_exams/{eid}/waves', headers=ha)
     check('vagues non supprimables après un démarrage', r.status_code == 400)
-    r = c.post(f'/api/online_exams/{eid}/extend', headers=ha, json={'extra_minutes': 10})
-    check("prolongation globale refusée (examen par vagues)", r.status_code == 400)
     r = c.put(f'/api/admin/online_exams/{eid}', headers=ha, json={'start_time': Z(now), 'duration_minutes': 30})
-    check("changement de fenêtre refusé via l'édition classique", r.status_code in (400, 403), r.status_code)
+    check("reprogrammation refusée une fois l'examen démarré", r.status_code == 400, r.status_code)
+
+    print('\n== Prolongation ==')
+    s.expire_all()
+    w1_end0, w2_end0, w3_end0 = (s.get(ExamWave, w.id).end_time for w in waves)
+    r = c.post(f'/api/online_exams/{eid}/extend', headers=ha, json={'extra_minutes': 0})
+    check("prolongation de 0 minute refusée", r.status_code == 400)
+    r = c.post(f'/api/online_exams/{eid}/extend', headers=ha, json={'extra_minutes': 10})
+    check("prolongation sans précision : la vague EN COURS", r.status_code == 200, r.get_data(as_text=True)[:140])
+    s.expire_all()
+    check("… sa fin avance de 10 min", s.get(ExamWave, waves[0].id).end_time == w1_end0 + timedelta(minutes=10))
+    check("… les vagues à venir ne bougent pas", s.get(ExamWave, waves[1].id).end_time == w2_end0 and s.get(ExamWave, waves[2].id).end_time == w3_end0)
+    check("… l'étudiant qui compose reçoit 10 min en plus", s.get(ExamAttempt, att1).extra_minutes == 10)
+    r = c.post(f'/api/online_exams/{eid}/extend', headers=ha, json={'extra_minutes': 5, 'wave_id': waves[2].id})
+    check("prolongation d'une vague désignée", r.status_code == 200)
+    s.expire_all()
+    check("… seule cette vague avance", s.get(ExamWave, waves[2].id).end_time == w3_end0 + timedelta(minutes=5) and s.get(ExamWave, waves[1].id).end_time == w2_end0)
+    check("l'enveloppe suit la dernière vague", s.get(OnlineExam, eid).end_time == s.get(ExamWave, waves[2].id).end_time)
+    s.get(ExamAttempt, att1).extra_minutes = 0; s.commit()
     s.expire_all(); ex = s.get(OnlineExam, eid)
     check("l'enveloppe n'a pas bougé", ex.start_time == waves[0].start_time and ex.end_time == waves[-1].end_time)
 
@@ -189,6 +237,55 @@ try:
     eid3 = (r.get_json().get('exam') or r.get_json()).get('id'); made['exams'].append(eid3)
     r = c.post(f'/api/online_exams/{eid3}/waves/plan', headers=ha, json={'count': 2, 'first_start': Z(now + timedelta(minutes=300)), 'order': 'aleatoire'})
     check('plan aléatoire créé', r.status_code == 201, r.get_data(as_text=True)[:140])
+    print('\n== Surveillants : répartition vague par vague ==')
+    from models import ExamProctor
+    procs = []
+    for i in range(2):
+        pu = User(email=f'vagues.{tag}.p{i}@test.invalid', full_name=f'Vagues Test Surveillant {i}', role=UserRole.SURVEILLANT,
+                  is_active=True, email_verified=True, has_email=True, password_hash=generate_password_hash('x'))
+        s.add(pu); s.flush(); procs.append(pu); made['users'].append(pu.id)
+    s.commit()
+    r = c.post('/api/online_exams', headers=ha, json={
+        'subject_id': made['subject'], 'title': f'Surv {tag}',
+        'start_time': Z(now + timedelta(minutes=600)), 'end_time': Z(now + timedelta(minutes=660))})
+    eid4 = (r.get_json().get('exam') or r.get_json()).get('id'); made['exams'].append(eid4)
+    for pu in procs:
+        s.add(ExamProctor(exam_id=eid4, proctor_id=pu.id, assigned_by_id=admin.id))
+    s.commit()
+    r = c.post(f'/api/online_exams/{eid4}/waves/plan', headers=ha, json={'count': 3, 'first_start': Z(now + timedelta(minutes=600)), 'order': 'aleatoire'})
+    check('examen par vagues avec 2 surveillants', r.status_code == 201, r.get_data(as_text=True)[:140])
+    s.expire_all()
+    pos = {sid: p for sid, p in s.query(ExamWaveStudent.student_id, ExamWave.position).join(ExamWave, ExamWave.id == ExamWaveStudent.wave_id).filter(ExamWaveStudent.exam_id == eid4)}
+    pa = s.query(ProctorAssignment).filter_by(exam_id=eid4).all()
+    check('chaque étudiant a un surveillant', len(pa) == len(pos) and len(pos) >= 6, (len(pa), len(pos)))
+    ok_bal = True
+    for wv in (1, 2, 3):
+        per = [sum(1 for a in pa if a.proctor_id == pu.id and pos.get(a.student_id) == wv) for pu in procs]
+        ok_bal = ok_bal and max(per) - min(per) <= 1
+    check('dans CHAQUE vague, les deux surveillants ont la même charge (écart ≤ 1)', ok_bal)
+
+    print('\n== Reprogrammation avant le début ==')
+    s.expire_all()
+    w3a = s.query(ExamWave).filter_by(exam_id=eid3).order_by(ExamWave.position).all()
+    d0 = [(w.start_time, w.end_time) for w in w3a]
+    shift = timedelta(minutes=45)
+    r = c.put(f'/api/admin/online_exams/{eid3}', headers=ha, json={'start_time': Z(w3a[0].start_time + shift), 'end_time': Z(w3a[-1].end_time + shift)})
+    check("décaler la date de début décale TOUTES les vagues", r.status_code == 200, r.get_data(as_text=True)[:160])
+    s.expire_all()
+    w3b = s.query(ExamWave).filter_by(exam_id=eid3).order_by(ExamWave.position).all()
+    check("… écarts et durées conservés", all(w3b[i].start_time == d0[i][0] + shift and w3b[i].end_time == d0[i][1] + shift for i in range(2)))
+    check("… l'enveloppe suit", s.get(OnlineExam, eid3).start_time == w3b[0].start_time and s.get(OnlineExam, eid3).end_time == w3b[-1].end_time)
+    r = c.put(f'/api/admin/online_exams/{eid3}', headers=ha, json={'end_time': Z(w3b[-1].end_time + shift)})
+    check("changer seulement la fin est refusé avec une explication", r.status_code == 400 and 'vague' in (r.get_json() or {}).get('error', ''))
+    dur0 = s.get(OnlineExam, eid3).duration_minutes
+    b_len = [(w.end_time - w.start_time) for w in w3b]; b_gap = w3b[1].start_time - w3b[0].end_time
+    r = c.put(f'/api/admin/online_exams/{eid3}', headers=ha, json={'duration_minutes': dur0 + 20})
+    check("changer la durée recale les fenêtres", r.status_code == 200, r.get_data(as_text=True)[:140])
+    s.expire_all()
+    w3c = s.query(ExamWave).filter_by(exam_id=eid3).order_by(ExamWave.position).all()
+    check("… chaque fenêtre est plus longue de 20 min, même écart entre vagues",
+          all((w3c[i].end_time - w3c[i].start_time) == b_len[i] + timedelta(minutes=20) for i in range(2))
+          and (w3c[1].start_time - w3c[0].end_time) == b_gap)
     r = c.delete(f'/api/online_exams/{eid3}/waves', headers=ha)
     check('suppression des vagues sur un examen non commencé', r.status_code == 200 and not r.get_json()['waves'])
 finally:
@@ -203,6 +300,7 @@ finally:
                 s.query(ExamActivityLog).filter(ExamActivityLog.attempt_id.in_(ids)).delete(synchronize_session=False)
                 s.query(ExamAccessCode).filter(ExamAccessCode.attempt_id.in_(ids)).delete(synchronize_session=False)
                 s.query(ExamAttempt).filter(ExamAttempt.id.in_(ids)).delete(synchronize_session=False)
+            s.query(ExamProctor).filter_by(exam_id=eid_).delete(synchronize_session=False)
             s.query(ExamWaveStudent).filter_by(exam_id=eid_).delete(synchronize_session=False)
             s.query(ExamWave).filter_by(exam_id=eid_).delete(synchronize_session=False)
             ex_ = s.get(OnlineExam, eid_)

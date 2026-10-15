@@ -27,6 +27,17 @@ def _load(session, exam_id):
     return exam, user, None
 
 
+def _rebalance_proctors(session, exam):
+    """Les surveillants se répartissent les étudiants vague par vague (voir
+    services/proctor_service.py) : à refaire dès que la composition des vagues change."""
+    try:
+        from services.proctor_service import rebalance_unstarted
+        rebalance_unstarted(session, exam, force=True)
+    except Exception as e:
+        session.rollback()
+        print(f"[vagues] répartition des surveillants non mise à jour: {e}")
+
+
 def _editable(exam):
     if exam.status not in (ExamStatus.SCHEDULED, ExamStatus.ACTIVE, ExamStatus.DRAFT):
         return jsonify({'error': "Impossible de modifier les vagues d'un examen terminé"}), 400
@@ -74,6 +85,7 @@ def plan_exam_waves(exam_id):
             session.rollback()
             return jsonify({'error': str(e)}), 400
         session.commit()
+        _rebalance_proctors(session, exam)
         try:
             from services.moodle_calendar import schedule_sync
             schedule_sync(exam.id)
@@ -151,6 +163,7 @@ def move_wave_students(exam_id, wave_id):
             session.rollback()
             return jsonify({'error': str(e)}), 400
         session.commit()
+        _rebalance_proctors(session, exam)
         return jsonify({'success': True, 'moved': moved, **W.summary(session, exam)})
     finally:
         session.close()
@@ -171,6 +184,7 @@ def delete_exam_waves(exam_id):
             session.rollback()
             return jsonify({'error': str(e)}), 400
         session.commit()
+        _rebalance_proctors(session, exam)
         return jsonify({'success': True, **W.summary(session, exam)})
     finally:
         session.close()

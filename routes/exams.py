@@ -152,6 +152,12 @@ def get_online_exams():
             if user.role == UserRole.STUDENT and exam.id in exams_with_waves:
                 from services.exam_waves import wave_dict, _iso
                 w = wave_by_exam.get(exam.id)
+                if w is None:
+                    # Inscrit mais sans vague (inscription qui a échappé au rattachement automatique) :
+                    # on le rattache maintenant, à la vague non commencée la moins remplie.
+                    w = _W.auto_assign_student(session, exam, user_id)
+                    if w is not None:
+                        session.commit()
                 if w:
                     # L'étudiant ne voit que SON créneau : tout le reste de l'interface
                     # (tableau de bord, planning, page d'examen) lit déjà start/end_time.
@@ -435,11 +441,25 @@ def extend_online_exam(exam_id):
             session.close()
             return jsonify({'error': 'Impossible de modifier un examen terminé'}), 400
         data = request.json or {}
-        from services.exam_waves import exam_has_waves as _has_waves
-        if _has_waves(session, exam_id):
+        from services import exam_waves as _W
+        if _W.exam_has_waves(session, exam_id):
+            # Par vagues : on prolonge les vagues EN COURS (ou celle désignée par wave_id),
+            # jamais les vagues à venir ; les étudiants qui composent reçoivent le même temps.
+            try:
+                minutes = int(data.get('extra_minutes', 0))
+                wid = data.get('wave_id')
+                done = _W.extend_waves(session, exam, minutes, int(wid) if wid else None)
+            except (TypeError, ValueError) as e:
+                session.rollback(); session.close()
+                return jsonify({'error': str(e) if isinstance(e, _W.WaveError) else 'Durée invalide (1–300 minutes)'}), 400
+            session.commit()
+            names = ', '.join(w.name for w in done)
+            exam_dict = exam.to_dict()
             session.close()
-            return jsonify({'error': "Cet examen est organisé par vagues : prolongez le créneau d'une vague depuis la gestion des vagues, "
-                                     "ou accordez du temps supplémentaire à un étudiant."}), 400
+            from services.moodle_calendar import schedule_sync; schedule_sync(exam_id)
+            return jsonify({'success': True, 'message': f'{names} : +{minutes} minutes',
+                            'new_end_time': exam_dict.get('end_time'),
+                            'new_duration_minutes': exam_dict.get('duration_minutes')})
         extra_minutes = int(data.get('extra_minutes', 0))
         if extra_minutes <= 0 or extra_minutes > 300:
             session.close()
@@ -544,8 +564,20 @@ def edit_online_exam(exam_id):
         from services.exam_waves import exam_has_waves as _has_waves
         _by_waves = _has_waves(session, exam_id)
         if _by_waves and any(data.get(k) for k in ('start_time', 'end_time', 'duration_minutes')):
-            session.close()
-            return jsonify({'error': "Cet examen est organisé par vagues : modifiez les créneaux depuis la gestion des vagues."}), 400
+            # Par vagues : la date de début décale TOUTES les vagues ensemble (écarts conservés),
+            # une nouvelle durée recale les fenêtres. Avant le premier démarrage seulement.
+            from services import exam_waves as _W
+            try:
+                new_start = _parse_utc_naive(data['start_time']) if data.get('start_time') else None
+                if data.get('end_time') and not data.get('start_time') and not data.get('duration_minutes'):
+                    raise _W.WaveError("Cet examen est organisé par vagues : changez la date de début (toutes les vagues se "
+                                       "décalent) ou modifiez le créneau d'une vague depuis la gestion des vagues.")
+                _W.reschedule_waves(session, exam, new_start=new_start,
+                                    new_duration=data.get('duration_minutes') or None)
+            except (ValueError, TypeError) as e:
+                session.rollback(); session.close()
+                return jsonify({'error': str(e)}), 400
+            data = {k: v for k, v in data.items() if k not in ('start_time', 'end_time', 'duration_minutes')}
         if 'title' in data and data['title']:
             exam.title = data['title'].strip()
         if 'start_time' in data and data['start_time'] and not _by_waves:
@@ -728,7 +760,7 @@ def get_online_exam_details(exam_id):
             # Étudiants : seulement les examens actifs dans la plage horaire
             now = utcnow()
             from services.exam_waves import window_for as _window_for, wave_dict as _wave_dict, _iso as _wiso
-            w_start, w_end, _wave, _missing = _window_for(session, exam, user_id)
+            w_start, w_end, _wave, _missing = _window_for(session, exam, user_id, ensure=True)
             if _missing:
                 session.close()
                 return jsonify({'error': "Aucune vague d'examen ne vous est attribuée. Contactez votre enseignant."}), 403
@@ -847,7 +879,7 @@ def start_exam_attempt(exam_id):
         # Fenêtre applicable à CET étudiant : celle de sa vague si l'examen est par
         # vagues, sinon celle de l'examen. Un étudiant sans vague n'entre pas.
         from services.exam_waves import window_for as _window_for
-        w_start, w_end, _wave, _missing = _window_for(session, exam, user_id)
+        w_start, w_end, _wave, _missing = _window_for(session, exam, user_id, ensure=True)
         if _missing:
             session.close()
             return jsonify({'error': "Aucune vague d'examen ne vous est attribuée. Contactez votre enseignant.",

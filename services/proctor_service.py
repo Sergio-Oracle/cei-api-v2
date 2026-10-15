@@ -40,6 +40,17 @@ def exam_groups(session, exam) -> list:
     return session.query(ProctorGroup).filter(ProctorGroup.id.in_(ids)).all() if ids else []
 
 
+def _wave_positions(session, exam_id) -> dict:
+    """{student_id: rang de sa vague} pour un examen par vagues, {} sinon. Sert à équilibrer
+    la charge de chaque surveillant VAGUE PAR VAGUE : seuls les étudiants d'une même vague
+    composent en même temps, c'est donc dans chaque vague que la répartition doit être juste."""
+    from models import ExamWave, ExamWaveStudent
+    rows = (session.query(ExamWaveStudent.student_id, ExamWave.position)
+            .join(ExamWave, ExamWave.id == ExamWaveStudent.wave_id)
+            .filter(ExamWaveStudent.exam_id == exam_id).all())
+    return {sid: pos for sid, pos in rows}
+
+
 def _extend_active_exam(session, exam, target_ids) -> list:
     """Examen DÉJÀ COMMENCÉ : on peut y AJOUTER des surveillants à tout moment
     (nouveau membre du groupe, groupe rattaché en retard...), jamais en
@@ -74,19 +85,23 @@ def rebalance_unstarted(session, exam, force=True):
         _redistribute_students(session, exam, all_ids)
         return
     started = {sid for (sid,) in session.query(ExamAttempt.student_id).filter_by(exam_id=exam.id)}
-    counts = {pid: 0 for pid in all_ids}
+    wave_pos = _wave_positions(session, exam.id)           # {} si l'examen n'est pas par vagues
+    counts_by_wave = {}                                     # rang de vague -> {surveillant: charge}
     free = []
     for pa in assignments:
         if pa.attempt_id or pa.student_id in started:
-            if pa.proctor_id in counts:
-                counts[pa.proctor_id] += 1
+            c = counts_by_wave.setdefault(wave_pos.get(pa.student_id, 0), {pid: 0 for pid in all_ids})
+            if pa.proctor_id in c:
+                c[pa.proctor_id] += 1
         else:
             free.append(pa)
-    if force or any(pa.proctor_id not in counts for pa in free):
+    known = {pid for pid in all_ids}
+    if force or any(pa.proctor_id not in known for pa in free):
         for pa in free:
-            pid = min(counts, key=counts.get)
+            c = counts_by_wave.setdefault(wave_pos.get(pa.student_id, 0), {pid: 0 for pid in all_ids})
+            pid = min(c, key=c.get)
             pa.proctor_id = pid
-            counts[pid] += 1
+            c[pid] += 1
         session.commit()
 
 
@@ -266,6 +281,12 @@ def _redistribute_students(session, exam, proctor_ids):
         User.role == UserRole.STUDENT,
     ).order_by(User.full_name).all()
 
+    # Examen par vagues : round-robin vague après vague (chaque vague reçoit une part
+    # égale de chaque surveillant, puisque ce sont ses étudiants qui composent ensemble).
+    wave_pos = _wave_positions(session, exam.id)
+    if wave_pos:
+        students.sort(key=lambda u: (wave_pos.get(u.id, 10_000), (u.full_name or '').lower(), u.id))
+
     nb = len(proctor_ids)
     for i, student in enumerate(students):
         pid = proctor_ids[i % nb]
@@ -297,7 +318,12 @@ def assign_single_attempt(session, exam_id, student_id, attempt_id):
         return
 
     counts = {pid: 0 for pid in proctor_ids}
+    wave_pos = _wave_positions(session, exam_id)
+    mine = wave_pos.get(student_id, 0)
     for pa in session.query(ProctorAssignment).filter_by(exam_id=exam_id).all():
+        # par vagues : on ne compte que la charge de la MÊME vague (celle qui compose en ce moment)
+        if wave_pos and wave_pos.get(pa.student_id, 0) != mine:
+            continue
         if pa.proctor_id in counts:
             counts[pa.proctor_id] += 1
 

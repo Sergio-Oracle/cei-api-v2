@@ -4186,16 +4186,18 @@ OPENAPI_SPEC = {
 
         "/api/online_exams/{exam_id}/extend": {"post": {
             "tags": ["Examens en ligne"], "summary": "Prolonger la durée d'un examen actif",
+            "description": "Examen par vagues : prolonge les vagues EN COURS (ou celle désignée par wave_id) ; les étudiants qui composent reçoivent le même temps en plus ; les vagues à venir ne bougent pas. Erreur 400 si aucune vague n'est en cours et qu'aucun wave_id n'est fourni.",
             "parameters": [{"name": "exam_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
             "requestBody": {"required": True, "content": {"application/json": {"schema": {
-                "type": "object", "required": ["minutes"],
-                "properties": {"minutes": {"type": "integer", "example": 15, "description": "Minutes supplémentaires"}}
+                "type": "object", "required": ["extra_minutes"],
+                "properties": {"extra_minutes": {"type": "integer", "example": 15, "description": "Minutes supplémentaires (1–300)"},
+                               "wave_id": {"type": "integer", "description": "Examen par vagues uniquement : vague à prolonger (par défaut, les vagues en cours)"}}
             }}}},
             "responses": {"200": {"description": "Durée prolongée"}, "400": {"description": "Examen non actif"}}
         }},
         "/api/admin/online_exams/{exam_id}": {"put": {
             "tags": ["Examens en ligne"], "summary": "Reprogrammer un examen DRAFT/SCHEDULED (titre, horaires, durée)",
-            "description": "end_time est prioritaire sur duration_minutes si les deux sont fournis (la durée est recalculée à partir de lui) ; sinon end_time est dérivé de start_time + duration_minutes. Rejette si end_time <= start_time. Réservé aux examens DRAFT ou SCHEDULED.",
+            "description": "end_time est prioritaire sur duration_minutes si les deux sont fournis (la durée est recalculée à partir de lui) ; sinon end_time est dérivé de start_time + duration_minutes. Rejette si end_time <= start_time. Réservé aux examens DRAFT ou SCHEDULED. Examen par vagues : start_time décale TOUTES les vagues ensemble (écarts conservés), duration_minutes recale chaque fenêtre ; end_time seul est refusé ; refusé dès qu'une tentative existe.",
             "parameters": [{"name": "exam_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
             "requestBody": {"content": {"application/json": {"schema": {
                 "type": "object",

@@ -23,7 +23,7 @@ from models      import (
     CameraLog, ExamStatus, AttemptStatus, ExamProctor, ProctorAssignment,
     QuestionBank, EC, ECAssignment, StudentUEEnrollment,
     SubjectMedia, IncidentDismissal, ExamAccessCode,
-    ProctorGroup, ProctorGroupEC, ProctorGroupExam, BiometricEnrollment, utc_iso,
+    ProctorGroup, ProctorGroupEC, ProctorGroupExam, BiometricEnrollment, utc_iso, ExamWaveStudent,
 )
 from werkzeug.utils import secure_filename
 from werkzeug.exceptions import RequestEntityTooLarge
@@ -373,7 +373,14 @@ def activate_online_exam(exam_id):
             return jsonify({'error': 'Vous ne pouvez activer que vos propres examens'}), 403
         
         # Passer en statut ACTIVE
+        was_draft = exam.status == ExamStatus.DRAFT
         exam.status = ExamStatus.ACTIVE
+        if was_draft:
+            # Examen par vagues créé en brouillon : les étudiants n'ont encore rien reçu, on leur
+            # indique maintenant leur créneau (notification + e-mail, après le commit).
+            from services import exam_waves as _WA
+            if _WA.exam_has_waves(session, exam.id):
+                _WA.queue_notices(session, exam.id, [sid for (sid,) in session.query(ExamWaveStudent.student_id).filter_by(exam_id=exam.id)], 'assigned')
         session.commit()
         
         exam_dict = exam.to_dict()
@@ -574,6 +581,7 @@ def edit_online_exam(exam_id):
                                        "décalent) ou modifiez le créneau d'une vague depuis la gestion des vagues.")
                 _W.reschedule_waves(session, exam, new_start=new_start,
                                     new_duration=data.get('duration_minutes') or None)
+                _W.queue_notices(session, exam.id, [sid for (sid,) in session.query(ExamWaveStudent.student_id).filter_by(exam_id=exam.id)], 'changed')
             except (ValueError, TypeError) as e:
                 session.rollback(); session.close()
                 return jsonify({'error': str(e)}), 400
@@ -2776,6 +2784,10 @@ def agent_due_corrections():
             OnlineExam.scheduled_correction_at <= now,
             OnlineExam.correction_triggered_at.is_(None),
         ).all()
+        # Examen par vagues : la correction planifiée attend la fin de la DERNIÈRE vague,
+        # sinon les copies des vagues suivantes ne seraient jamais corrigées (déclenchement unique).
+        from services.exam_waves import waves_all_over as _over
+        exams = [e for e in exams if _over(session, e)]
         return jsonify({'exams': [{'id': e.id, 'title': e.title} for e in exams]})
     finally:
         session.close()
@@ -2798,6 +2810,12 @@ def agent_run_scheduled_correction(exam_id):
     session = get_session()
     try:
         now = utcnow()
+        _ex = session.query(OnlineExam).filter_by(id=exam_id).first()
+        if _ex is not None:
+            from services.exam_waves import waves_all_over as _over
+            if not _over(session, _ex):
+                # Pas de « claim » : l'agent repassera une fois la dernière vague terminée.
+                return jsonify({'success': True, 'waiting_for_waves': True, 'corrected': 0, 'failed': 0}), 200
         claim = session.execute(
             sql_update(OnlineExam)
             .where(OnlineExam.id == exam_id, OnlineExam.correction_triggered_at.is_(None))
@@ -3171,6 +3189,12 @@ def publish_exam_results(exam_id):
             return jsonify({'error': 'Accès non autorisé'}), 403
         data = request.get_json(silent=True) or {}
         was_published = bool(exam.results_published)
+        if bool(data.get('published', True)) and not was_published:
+            from services.exam_waves import waves_all_over as _over
+            if not _over(session, exam):
+                session.close()
+                return jsonify({'error': "Toutes les vagues ne sont pas terminées : publier maintenant révélerait notes et "
+                                         "corrections aux étudiants des vagues suivantes. Publiez après la dernière vague."}), 400
         exam.results_published = bool(data.get('published', True))
         if exam.results_published and not was_published:
             exam.results_published_at = utcnow()

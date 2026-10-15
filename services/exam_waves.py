@@ -307,6 +307,7 @@ def auto_assign_student(session, exam, student_id: int, now: datetime = None, co
         wave_id=target.id, exam_id=exam.id, student_id=student_id
     ).on_conflict_do_nothing(index_elements=['exam_id', 'student_id']))
     counts[target.id] = counts.get(target.id, 0) + 1
+    queue_notices(session, exam.id, [student_id], 'assigned')      # il saura quand se connecter
     return target
 
 
@@ -413,3 +414,105 @@ def _assign_new_enrollments(session, flush_context):
                 auto_assign_enrollment(session, sid, ue_id, cache)
     except Exception as e:                           # ne jamais faire échouer une inscription
         print(f"[vagues] rattachement automatique ignoré: {e}")
+
+
+# ── Prévenir les étudiants de leur créneau ──────────────────────────────────
+
+_JOURS = ['lundi', 'mardi', 'mercredi', 'jeudi', 'vendredi', 'samedi', 'dimanche']
+_MOIS = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août',
+         'septembre', 'octobre', 'novembre', 'décembre']
+
+
+def slot_label(start: datetime, end: datetime) -> str:
+    """« mardi 27 octobre 2026, de 08h00 à 11h00 (heure de Dakar) ». Dakar = UTC toute l'année,
+    les dates stockées (UTC naïf) s'affichent donc telles quelles."""
+    return (f"{_JOURS[start.weekday()]} {start.day} {_MOIS[start.month - 1]} {start.year}, "
+            f"de {start:%Hh%M} à {end:%Hh%M} (heure de Dakar)")
+
+
+def queue_notices(session, exam_id: int, student_ids, kind: str = 'assigned') -> None:
+    """Mémorise « prévenir ces étudiants de leur créneau » ; l'envoi a lieu APRÈS le commit de
+    la transaction en cours (jamais pour une transaction annulée). kind : assigned | changed."""
+    ids = [int(i) for i in student_ids]
+    if ids:
+        session.info.setdefault('_wave_notices', []).append((exam_id, ids, kind))
+
+
+def _build_notices(session, items) -> list:
+    """Données complètes à envoyer (sessions fermées ensuite : le fil d'envoi n'y touche plus)."""
+    out = []
+    for exam_id, ids, kind in items:
+        exam = session.get(OnlineExam, exam_id)
+        if exam is None or exam.status not in (ExamStatus.SCHEDULED, ExamStatus.ACTIVE):
+            continue        # brouillon : les étudiants ne le voient pas, l'activation les préviendra
+        rows = (session.query(ExamWaveStudent.student_id, ExamWave)
+                .join(ExamWave, ExamWave.id == ExamWaveStudent.wave_id)
+                .filter(ExamWaveStudent.exam_id == exam_id, ExamWaveStudent.student_id.in_(ids)).all())
+        users = {u.id: u for u in session.query(User).filter(User.id.in_([r[0] for r in rows])).all()} if rows else {}
+        for sid, w in rows:
+            u = users.get(sid)
+            if u is None or not u.is_active:
+                continue
+            out.append({'student_id': sid, 'email': u.email if u.has_email else None, 'name': u.full_name,
+                        'exam_id': exam_id, 'title': exam.title, 'duration': exam.duration_minutes,
+                        'wave_name': w.name, 'slot': slot_label(w.start_time, w.end_time), 'changed': kind == 'changed'})
+    return out
+
+
+def _send_notices(notices) -> None:
+    import os
+    from notif_bus import notify_user
+    from utils import send_exam_wave_email
+    app_url = os.getenv('APP_URL', 'https://dev-cei.ddns.net').rstrip('/')
+    for n in notices:
+        try:
+            title = 'Créneau d\'examen modifié' if n['changed'] else 'Votre créneau d\'examen'
+            notify_user(n['student_id'], 'exam_wave_slot', title,
+                        f"{n['title']} — {n['wave_name']} : {n['slot']}. Connectez-vous à l'heure de votre créneau.",
+                        priority='high', tags=['calendar'], extra={'exam_id': n['exam_id']})
+        except Exception as e:
+            print(f"[vagues] notification {n['student_id']}: {e}")
+        if n['email']:
+            try:
+                send_exam_wave_email(n['email'], n['name'], n['title'], n['wave_name'], n['slot'], n['duration'],
+                                     f"{app_url}/exam/{n['exam_id']}", changed=n['changed'])
+            except Exception as e:
+                print(f"[vagues] e-mail {n['email']}: {e}")
+
+
+@event.listens_for(Session, 'after_commit')
+def _dispatch_notices(session):
+    items = session.info.pop('_wave_notices', None)
+    if not items:
+        return
+    import threading
+
+    def run():
+        from models import get_session
+        s2 = get_session()
+        try:
+            notices = _build_notices(s2, items)
+        except Exception as e:
+            print(f"[vagues] préparation des notifications: {e}")
+            notices = []
+        finally:
+            s2.close()
+        _send_notices(notices)
+
+    threading.Thread(target=run, daemon=True, name='wave-notices').start()
+
+
+@event.listens_for(Session, 'after_rollback')
+def _drop_notices(session):
+    session.info.pop('_wave_notices', None)
+
+
+def waves_all_over(session, exam, now: datetime = None) -> bool:
+    """Toutes les vagues sont terminées et plus personne ne compose (vrai aussi sans vague)."""
+    waves = waves_of(session, exam.id)
+    if not waves:
+        return True
+    now = now or _utcnow()
+    if any(w.end_time > now for w in waves):
+        return False
+    return session.query(ExamAttempt.id).filter_by(exam_id=exam.id, status=AttemptStatus.IN_PROGRESS).first() is None

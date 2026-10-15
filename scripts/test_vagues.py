@@ -23,6 +23,15 @@ import services.exam_health as _health
 _health.notify_anomalies = lambda: None
 import services.moodle_sync as _ms
 _ms.is_enabled = lambda: False      # le test ne doit rien publier dans un vrai calendrier Moodle
+import services.exam_waves as _ew
+SENT = []                            # le test ne doit envoyer ni e-mail ni notification à de vrais comptes
+_ew._send_notices = lambda notices: SENT.extend(notices)
+import time
+def attendre_envois(n_min=1, delai=5):
+    t = time.time()
+    while time.time() - t < delai and len(SENT) < n_min:
+        time.sleep(0.1)
+    time.sleep(0.3)
 
 RESULTS = []
 def check(nom, ok, detail=''):
@@ -84,6 +93,11 @@ try:
     eligible = {sid for (sid,) in s.query(ExamWaveStudent.student_id).filter_by(exam_id=eid)}
     check('tous les inscrits ont une vague, une seule', len(eligible) == s.query(ExamWaveStudent).filter_by(exam_id=eid).count() and mine <= eligible)
     check('répartition équilibrée (écart ≤ 1)', sizes and max(sizes) - min(sizes) <= 1, sizes)
+    attendre_envois(len(eligible))
+    mine_n = [n for n in SENT if n['student_id'] in mine]
+    check("chaque étudiant est prévenu de son créneau à la création des vagues", len({n['student_id'] for n in mine_n}) == len(mine), (len(mine_n), len(mine)))
+    check("le message contient la vague, le jour et l'heure", all(n['wave_name'].startswith('Vague') and 'de ' in n['slot'] and 'heure de Dakar' in n['slot'] for n in mine_n), mine_n[:1])
+    check("… et indique « créneau d'origine », pas « modifié »", all(not n['changed'] for n in mine_n))
     waves = s.query(ExamWave).filter_by(exam_id=eid).order_by(ExamWave.position).all()
     ex = s.get(OnlineExam, eid)
     check("l'enveloppe de l'examen couvre toutes les vagues", ex.start_time == waves[0].start_time and ex.end_time == waves[-1].end_time)
@@ -99,6 +113,9 @@ try:
     ea = next(e for e in la if e['id'] == eid); eb = next(e for e in lb if e['id'] == eid)
     check('chaque étudiant voit le créneau de SA vague', ea['start_time'] != eb['start_time'] and ea['wave']['position'] == 1 and eb['wave']['position'] == 2,
           (ea['start_time'], eb['start_time']))
+    nl = c.get('/api/notifications', headers=hs[w2[0].id]).get_json()
+    mine_n = [n for n in nl['notifications'] if n['type'] == 'exam_wave' and n.get('exam_id') == eid]
+    check("la page Notifications de l'étudiant affiche son créneau", len(mine_n) == 1 and 'Vague 2' in mine_n[0]['message'] and 'heure de Dakar' in mine_n[0]['message'], mine_n)
     check('la liste du professeur garde la fenêtre complète', next(e for e in c.get('/api/online_exams', headers=ha).get_json() if e['id'] == eid).get('wave') is None)
 
     print('\n== Accès ==')
@@ -124,6 +141,8 @@ try:
     row = s.query(ExamWaveStudent).filter_by(exam_id=eid, student_id=extra.id).first()
     check("inscrit après coup : rattaché AUTOMATIQUEMENT à une vague qui n'a pas commencé", row is not None and s.get(ExamWave, row.wave_id).position in (2, 3),
           row and s.get(ExamWave, row.wave_id).position)
+    attendre_envois(1)
+    check("le nouvel inscrit reçoit aussi son créneau", any(n['student_id'] == extra.id for n in SENT))
     sm = c.get(f'/api/online_exams/{eid}/waves', headers=ha).get_json()
     check("plus aucun étudiant sans vague", sm['unassigned'] == 0, sm['unassigned'])
     r = c.post(f'/api/online_exams/{eid}/start', json={}, headers=he)
@@ -160,6 +179,8 @@ try:
     cur = s.query(ExamWaveStudent).filter_by(exam_id=eid, student_id=extra.id).first()
     target = waves[1] if cur.wave_id == w3.id else w3
     r = c.post(f'/api/online_exams/{eid}/waves/{target.id}/students', headers=ha, json={'student_ids': [extra.id]})
+    attendre_envois(1)
+    check("déplacé de vague : prévenu de son nouveau créneau", any(n['student_id'] == extra.id and n['changed'] for n in SENT[-5:]))
     check("rattachement manuel à une autre vague", r.status_code == 200 and r.get_json().get('moved') == 1, r.get_data(as_text=True)[:140])
     r = c.post(f'/api/online_exams/{eid}/waves/{w3.id}/students', headers=ha, json={'student_ids': [w1[0].id]})
     check("un étudiant qui a commencé ne peut plus changer de vague", r.status_code == 400, r.get_data(as_text=True)[:140])
@@ -265,6 +286,55 @@ try:
         per = [sum(1 for a in pa if a.proctor_id == pu.id and pos.get(a.student_id) == wv) for pu in procs]
         ok_bal = ok_bal and max(per) - min(per) <= 1
     check('dans CHAQUE vague, les deux surveillants ont la même charge (écart ≤ 1)', ok_bal)
+
+    print('\n== Brouillon : activation, déplacement de créneau ==')
+    r = c.post('/api/online_exams', headers=ha, json={
+        'subject_id': made['subject'], 'title': f'Brouillon {tag}',
+        'start_time': Z(now + timedelta(minutes=900)), 'end_time': Z(now + timedelta(minutes=960))})
+    eid5 = (r.get_json().get('exam') or r.get_json()).get('id'); made['exams'].append(eid5)
+    s.expire_all(); s.get(OnlineExam, eid5).status = ExamStatus.DRAFT; s.commit()
+    SENT.clear()
+    r = c.post(f'/api/online_exams/{eid5}/waves/plan', headers=ha, json={'count': 2, 'first_start': Z(now + timedelta(minutes=900))})
+    check('vagues sur un brouillon', r.status_code == 201)
+    attendre_envois(1, 1.5)
+    check("brouillon : personne n'est prévenu (l'examen leur est invisible)", len(SENT) == 0, len(SENT))
+    r = c.post(f'/api/online_exams/{eid5}/activate', headers=ha)
+    check("activation", r.status_code == 200, r.get_data(as_text=True)[:140])
+    nb_wave = s.query(ExamWaveStudent).filter_by(exam_id=eid5).count()
+    attendre_envois(nb_wave)
+    check("à l'activation, chaque étudiant reçoit son créneau", len({n['student_id'] for n in SENT}) == nb_wave, (len(SENT), nb_wave))
+    SENT.clear()
+    wv = s.query(ExamWave).filter_by(exam_id=eid5, position=2).first()
+    n_wv = s.query(ExamWaveStudent).filter_by(wave_id=wv.id).count()
+    r = c.put(f'/api/online_exams/{eid5}/waves/{wv.id}', headers=ha, json={'start_time': Z(wv.start_time + timedelta(minutes=30)), 'end_time': Z(wv.end_time + timedelta(minutes=30))})
+    check("créneau d'une vague décalé", r.status_code == 200, r.get_data(as_text=True)[:140])
+    attendre_envois(n_wv)
+    check("seuls les étudiants de cette vague sont prévenus, avec « modifié »", len(SENT) == n_wv and all(n['changed'] for n in SENT), (len(SENT), n_wv))
+    SENT.clear()
+    r = c.put(f'/api/online_exams/{eid5}/waves/{wv.id}', headers=ha, json={'name': 'Vague B'})
+    attendre_envois(1, 1.0)
+    check("renommer une vague ne prévient personne", len(SENT) == 0)
+
+    print('\n== Correction et publication ==')
+    AG = {'X-Agent-Secret': os.getenv('AGENT_SECRET_KEY', 'changeme-agent-secret-key')}
+    s.expire_all(); ex5 = s.get(OnlineExam, eid5)
+    ex5.scheduled_correction_at = now - timedelta(minutes=5); ex5.correction_triggered_at = None; s.commit()
+    due = [e['id'] for e in c.get('/api/agent/due_corrections', headers=AG).get_json()['exams']]
+    check("correction planifiée : attend la fin de la dernière vague", eid5 not in due)
+    r = c.post(f'/api/agent/run_scheduled_correction/{eid5}', headers=AG)
+    s.expire_all()
+    check("… et ne se déclenche pas trop tôt (rien n'est « réclamé »)", r.status_code == 200 and (r.get_json() or {}).get('waiting_for_waves') and s.get(OnlineExam, eid5).correction_triggered_at is None, r.get_data(as_text=True)[:140])
+    r = c.put(f'/api/online_exams/{eid5}/publish-results', headers=ha, json={'published': True})
+    check("publication des notes refusée tant que des vagues restent à passer", r.status_code == 400 and 'vague' in (r.get_json() or {}).get('error', ''), r.get_data(as_text=True)[:140])
+    for w_ in s.query(ExamWave).filter_by(exam_id=eid5).all():
+        w_.start_time -= timedelta(days=1); w_.end_time -= timedelta(days=1)
+    s.get(OnlineExam, eid5).end_time = now - timedelta(hours=20); s.commit()
+    due = [e['id'] for e in c.get('/api/agent/due_corrections', headers=AG).get_json()['exams']]
+    check("dernière vague terminée : la correction planifiée est due", eid5 in due)
+    r = c.put(f'/api/online_exams/{eid5}/publish-results', headers=ha, json={'published': True})
+    check("… et la publication des notes est possible", r.status_code == 200, r.get_data(as_text=True)[:140])
+    r = c.put(f'/api/online_exams/{eid5}/publish-results', headers=ha, json={'published': False})
+    check("… et la dépublication reste toujours possible", r.status_code == 200)
 
     print('\n== Reprogrammation avant le début ==')
     s.expire_all()

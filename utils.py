@@ -1092,6 +1092,66 @@ Accéder à l'examen : {exam_url}
     return send_email(student_email, subject, html_body, text_body=text_body)
 
 
+def send_exam_wave_email(student_email, student_name, exam_title, wave_name, slot_str, duration_minutes,
+                         exam_url, changed=False):
+    """Email à l'étudiant : à quelle heure il doit se connecter pour composer (examen par vagues)."""
+    smtp_cfg  = _smtp_config()
+    app_url   = smtp_cfg.get('app_url', 'https://dev-cei.ddns.net')
+    from_name = smtp_cfg.get('from_name', "CEI — Centre d'Examen Intelligent")
+    subject   = (f"Créneau modifié : {exam_title}" if changed else f"Votre créneau d'examen : {exam_title}")
+    headline  = "Votre créneau a changé" if changed else "Votre créneau d'examen"
+    intro = ("L'horaire de votre passage a été modifié. Voici votre nouveau créneau :" if changed else
+             "Cet examen est organisé en plusieurs vagues. Voici le créneau qui vous est attribué :")
+    html_body = f"""<!DOCTYPE html>
+<html lang="fr"><head><meta charset="UTF-8"></head>
+<body style="font-family:Arial,Helvetica,sans-serif;background:#f8fafc;margin:0;padding:24px;">
+<div style="max-width:520px;margin:0 auto;background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,0.08);">
+  <div style="background:#1d4ed8;padding:32px;text-align:center;">
+    <h1 style="color:#fff;font-size:21px;font-weight:800;margin:0 0 6px;">{headline}</h1>
+    <p style="color:#dbeafe;font-size:14px;margin:0;">{exam_title}</p>
+  </div>
+  <div style="padding:32px;">
+    <p style="font-size:15px;color:#0f172a;margin:0 0 14px;">Bonjour <strong>{student_name}</strong>,</p>
+    <p style="font-size:14px;color:#475569;line-height:1.7;margin:0 0 20px;">{intro}</p>
+    <div style="background:#eff6ff;border:1px solid #93c5fd;border-radius:10px;padding:16px 18px;margin-bottom:20px;">
+      <p style="margin:0 0 6px;font-size:13px;color:#1e40af;"><strong>{wave_name}</strong></p>
+      <p style="margin:0;font-size:16px;color:#0f172a;line-height:1.6;"><strong>{slot_str}</strong></p>
+      <p style="margin:6px 0 0;font-size:13px;color:#475569;">Durée de l'épreuve : {duration_minutes} minutes</p>
+    </div>
+    <p style="font-size:13px;color:#475569;line-height:1.7;margin:0 0 24px;">
+      Connectez-vous <strong>à l'heure de votre créneau</strong>, pas avant : l'examen n'est ouvert qu'à ce moment-là
+      pour vous. Une connexion filaire ou un Wi-Fi stable, la caméra et le partage d'écran activés sont nécessaires.
+    </p>
+    <div style="text-align:center;">
+      <a href="{exam_url}" style="display:inline-block;padding:14px 32px;background:#1d4ed8;color:#fff;text-decoration:none;border-radius:9px;font-size:15px;font-weight:700;">
+        Voir mon examen
+      </a>
+    </div>
+  </div>
+  <div style="background:#f8fafc;border-top:1px solid #e2e8f0;padding:16px 32px;text-align:center;">
+    <p style="margin:0;font-size:12px;color:#94a3b8;">{from_name} &nbsp;·&nbsp; <a href="{app_url}" style="color:#94a3b8;">{app_url}</a></p>
+  </div>
+</div>
+</body></html>"""
+    text_body = f"""{headline} : {exam_title}
+
+Bonjour {student_name},
+
+{intro}
+
+{wave_name} — {slot_str}
+Durée de l'épreuve : {duration_minutes} minutes
+
+Connectez-vous à l'heure de votre créneau, pas avant.
+Voir mon examen : {exam_url}
+
+---
+{from_name}
+{app_url}
+"""
+    return send_email(student_email, subject, html_body, text_body=text_body)
+
+
 def send_password_changed_email(user_email, user_name, reset_url):
     """Email de sécurité envoyé après un changement de mot de passe réussi."""
     smtp_cfg  = _smtp_config()

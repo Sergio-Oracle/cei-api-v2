@@ -108,6 +108,28 @@ def get_notifications():
                 'paper_id':     p.id,
             })
 
+        # Examens par vagues à venir ou en cours : le créneau de l'étudiant (jour, heures) reste
+        # consultable ici même si la notification poussée a été manquée.
+        try:
+            from models import ExamWave, ExamWaveStudent, OnlineExam, ExamStatus
+            from services.exam_waves import slot_label
+            now_naive = datetime.now(timezone.utc).replace(tzinfo=None)
+            for w, ex in session.query(ExamWave, OnlineExam).join(
+                    ExamWaveStudent, ExamWaveStudent.wave_id == ExamWave.id).join(
+                    OnlineExam, OnlineExam.id == ExamWave.exam_id).filter(
+                    ExamWaveStudent.student_id == user_id, ExamWave.end_time > now_naive,
+                    OnlineExam.status.in_([ExamStatus.SCHEDULED, ExamStatus.ACTIVE])).all():
+                notifications.append({
+                    'id':         f'wave_{w.id}',
+                    'type':       'exam_wave',
+                    'title':      ex.title,
+                    'message':    f'Votre créneau : {w.name} — {slot_label(w.start_time, w.end_time)}. Connectez-vous à l\'heure de votre créneau.',
+                    'created_at': utc_iso(w.created_at),
+                    'exam_id':    ex.id,
+                })
+        except Exception as e:
+            print(f"[vagues] notifications étudiant: {e}")
+
         last_read = user.notifications_last_read
         if last_read and last_read.tzinfo is None:
             last_read = last_read.replace(tzinfo=timezone.utc)

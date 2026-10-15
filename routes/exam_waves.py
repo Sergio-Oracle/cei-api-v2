@@ -76,6 +76,7 @@ def plan_exam_waves(exam_id):
             first_start = _parse_utc_naive(data.get('first_start'))
         except (TypeError, ValueError):
             return jsonify({'error': "Nombre de vagues et heure de début de la première vague requis."}), 400
+        had_waves = W.exam_has_waves(session, exam_id)
         try:
             W.plan_waves(session, exam, count, first_start,
                          window_minutes=data.get('window_minutes'),
@@ -84,6 +85,10 @@ def plan_exam_waves(exam_id):
         except W.WaveError as e:
             session.rollback()
             return jsonify({'error': str(e)}), 400
+        # Chaque étudiant est prévenu de son créneau (notification + e-mail) dès que l'examen
+        # lui est visible ; pour un brouillon, c'est l'activation qui les préviendra.
+        W.queue_notices(session, exam.id, [sid for (sid,) in session.query(ExamWaveStudent.student_id).filter_by(exam_id=exam.id)],
+                        'changed' if had_waves else 'assigned')
         session.commit()
         _rebalance_proctors(session, exam)
         try:
@@ -116,6 +121,7 @@ def update_exam_wave(exam_id, wave_id):
         if not wave:
             return jsonify({'error': 'Vague non trouvée'}), 404
         data = request.get_json(silent=True) or {}
+        old_slot = (wave.start_time, wave.end_time)
         try:
             W.update_wave(session, exam, wave,
                           name=data.get('name'),
@@ -124,6 +130,8 @@ def update_exam_wave(exam_id, wave_id):
         except (W.WaveError, ValueError) as e:
             session.rollback()
             return jsonify({'error': str(e)}), 400
+        if (wave.start_time, wave.end_time) != old_slot:      # créneau déplacé : les étudiants de cette vague sont prévenus
+            W.queue_notices(session, exam.id, [sid for (sid,) in session.query(ExamWaveStudent.student_id).filter_by(wave_id=wave.id)], 'changed')
         session.commit()
         try:
             from services.moodle_calendar import schedule_sync
@@ -157,11 +165,15 @@ def move_wave_students(exam_id, wave_id):
         unknown = [i for i in ids if int(i) not in eligible]
         if unknown:
             return jsonify({'error': f"{len(unknown)} étudiant(s) ne sont pas inscrits à cet examen."}), 400
+        before = {sid: wid for sid, wid in session.query(ExamWaveStudent.student_id, ExamWaveStudent.wave_id).filter(
+            ExamWaveStudent.exam_id == exam_id, ExamWaveStudent.student_id.in_([int(i) for i in ids]))}
         try:
             moved = W.move_students(session, exam, wave, ids)
         except W.WaveError as e:
             session.rollback()
             return jsonify({'error': str(e)}), 400
+        W.queue_notices(session, exam.id, [int(i) for i in ids if before.get(int(i)) != wave.id],
+                        'assigned' if not before else 'changed')
         session.commit()
         _rebalance_proctors(session, exam)
         return jsonify({'success': True, 'moved': moved, **W.summary(session, exam)})

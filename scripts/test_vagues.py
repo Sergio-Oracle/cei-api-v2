@@ -21,6 +21,8 @@ from helpers import utcnow
 from werkzeug.security import generate_password_hash
 import services.exam_health as _health
 _health.notify_anomalies = lambda: None
+import services.moodle_sync as _ms
+_ms.is_enabled = lambda: False      # le test ne doit rien publier dans un vrai calendrier Moodle
 
 RESULTS = []
 def check(nom, ok, detail=''):

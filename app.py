@@ -131,6 +131,7 @@ from routes.reclamations   import reclamations_bp;    app.register_blueprint(rec
 from routes.professor      import professor_bp;       app.register_blueprint(professor_bp)
 from routes.question_bank  import question_bank_bp;   app.register_blueprint(question_bank_bp)
 from routes.exams          import exams_bp;           app.register_blueprint(exams_bp)
+from routes.exam_waves     import exam_waves_bp;      app.register_blueprint(exam_waves_bp)
 from routes.transcripts    import transcripts_bp;     app.register_blueprint(transcripts_bp)
 from routes.superviseur    import superviseur_bp;     app.register_blueprint(superviseur_bp)
 from routes.restitution    import restitution_bp;     app.register_blueprint(restitution_bp)

@@ -4450,6 +4450,53 @@ OPENAPI_SPEC = {
                 "404": {"description": "Tentative introuvable"}
             }
         }},
+        "/api/online_exams/{exam_id}/waves": {
+            "get": {
+                "tags": ["Examens en ligne"], "summary": "État des vagues d'un examen (professeur créateur / admin)",
+                "description": "Liste les vagues (créneau, effectif, tentatives démarrées), le nombre d'étudiants éligibles et ceux qui n'ont aucune vague.",
+                "parameters": [{"name": "exam_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+                "responses": {"200": {"description": "État des vagues"}, "403": {"description": "Non autorisé"}, "404": {"description": "Examen introuvable"}}
+            },
+            "delete": {
+                "tags": ["Examens en ligne"], "summary": "Supprimer toutes les vagues d'un examen",
+                "description": "Retour à une fenêtre unique. Refusé dès qu'un étudiant a commencé l'examen. Sans effet si l'examen n'a pas de vagues.",
+                "parameters": [{"name": "exam_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+                "responses": {"200": {"description": "Vagues supprimées"}, "400": {"description": "Des étudiants ont déjà commencé"}}
+            }
+        },
+        "/api/online_exams/{exam_id}/waves/plan": {"post": {
+            "tags": ["Examens en ligne"], "summary": "Organiser un examen par vagues",
+            "description": "Crée N vagues consécutives et répartit équitablement les étudiants inscrits à l'UE de l'EC du sujet. La fenêtre de l'examen devient l'enveloppe de toutes les vagues. Chaque étudiant ne peut démarrer que pendant le créneau de sa vague ; sa tentative est clôturée à la fin de sa vague (temps supplémentaire individuel respecté). Refusé dès qu'une tentative existe.",
+            "parameters": [{"name": "exam_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+            "requestBody": {"required": True, "content": {"application/json": {"schema": {
+                "type": "object", "required": ["count", "first_start"],
+                "properties": {
+                    "count": {"type": "integer", "minimum": 2, "maximum": 40, "description": "Nombre de vagues"},
+                    "first_start": {"type": "string", "format": "date-time", "description": "Début de la première vague (UTC)"},
+                    "window_minutes": {"type": "integer", "description": "Durée de la fenêtre d'une vague (défaut : durée de l'examen ; jamais plus courte)"},
+                    "gap_minutes": {"type": "integer", "default": 15, "description": "Écart entre deux vagues"},
+                    "order": {"type": "string", "enum": ["alphabetique", "aleatoire"], "default": "alphabetique"}
+                }
+            }}}},
+            "responses": {"201": {"description": "Vagues créées"}, "400": {"description": "Paramètres invalides ou examen déjà commencé"}}
+        }},
+        "/api/online_exams/{exam_id}/waves/{wave_id}": {"put": {
+            "tags": ["Examens en ligne"], "summary": "Renommer une vague ou changer son créneau",
+            "parameters": [{"name": "exam_id", "in": "path", "required": True, "schema": {"type": "integer"}},
+                           {"name": "wave_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+            "requestBody": {"content": {"application/json": {"schema": {"type": "object", "properties": {
+                "name": {"type": "string"}, "start_time": {"type": "string", "format": "date-time"}, "end_time": {"type": "string", "format": "date-time"}}}}}},
+            "responses": {"200": {"description": "Vague mise à jour"}, "400": {"description": "Créneau invalide (plus court que la durée de l'examen, fin avant début)"}, "404": {"description": "Vague introuvable"}}
+        }},
+        "/api/online_exams/{exam_id}/waves/{wave_id}/students": {"post": {
+            "tags": ["Examens en ligne"], "summary": "Rattacher des étudiants à une vague",
+            "description": "Déplace des étudiants inscrits vers cette vague (ou rattache ceux qui n'en ont pas). Refusé pour un étudiant qui a déjà commencé l'examen.",
+            "parameters": [{"name": "exam_id", "in": "path", "required": True, "schema": {"type": "integer"}},
+                           {"name": "wave_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+            "requestBody": {"required": True, "content": {"application/json": {"schema": {"type": "object", "required": ["student_ids"],
+                "properties": {"student_ids": {"type": "array", "items": {"type": "integer"}}}}}}},
+            "responses": {"200": {"description": "Étudiants rattachés"}, "400": {"description": "Étudiant non inscrit ou déjà commencé"}}
+        }},
         "/api/exam_attempts/{attempt_id}/proctor-note": {"post": {
             "tags": ["Surveillant"], "summary": "Ajouter une note de surveillance sur une tentative (surveillant\/prof)",
             "parameters": [{"name": "attempt_id", "in": "path", "required": True, "schema": {"type": "integer"}}],

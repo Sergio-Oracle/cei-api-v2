@@ -1324,6 +1324,42 @@ class ProctorAssignment(Base):
         }
 
 
+class ExamWave(Base):
+    """Vague d'un examen : un même examen (même sujet, mêmes règles) passé par
+    groupes d'étudiants à des créneaux différents, pour étaler la charge réseau.
+
+    La fenêtre de l'examen (start_time/end_time) reste l'enveloppe qui couvre
+    toutes les vagues : surveillance, planning des groupes et calendrier Moodle
+    continuent de la lire telle quelle. Seul l'accès de l'étudiant (début, fin,
+    échéance de sa tentative) se règle sur sa vague."""
+    __tablename__ = 'exam_waves'
+
+    id = Column(Integer, primary_key=True)
+    exam_id = Column(Integer, ForeignKey('online_exams.id', ondelete='CASCADE'), nullable=False, index=True)
+    position = Column(Integer, nullable=False, default=1)
+    name = Column(String(80), nullable=False)
+    start_time = Column(DateTime, nullable=False)
+    end_time = Column(DateTime, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    students = relationship('ExamWaveStudent', back_populates='wave', cascade='all, delete-orphan')
+
+
+class ExamWaveStudent(Base):
+    """Rattachement d'un étudiant à une vague (un seul par examen)."""
+    __tablename__ = 'exam_wave_students'
+
+    id = Column(Integer, primary_key=True)
+    wave_id = Column(Integer, ForeignKey('exam_waves.id', ondelete='CASCADE'), nullable=False, index=True)
+    exam_id = Column(Integer, ForeignKey('online_exams.id', ondelete='CASCADE'), nullable=False)
+    student_id = Column(Integer, ForeignKey('users.id'), nullable=False, index=True)
+
+    __table_args__ = (UniqueConstraint('exam_id', 'student_id', name='unique_exam_wave_student'),)
+
+    wave = relationship('ExamWave', back_populates='students')
+    student = relationship('User', foreign_keys=[student_id])
+
+
 class TokenBlocklist(Base):
     """Refresh tokens révoqués (déconnexion, rotation, compromission)."""
     __tablename__ = 'token_blocklist'

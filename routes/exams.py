@@ -101,6 +101,7 @@ def get_online_exams():
         # automatiquement dès que l'heure de fin d'origine était dépassée.
         now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
         needs_commit = False
+        from services import exam_waves as _W
         for exam in exams:
             if exam.status == ExamStatus.ACTIVE and exam.end_time and exam.end_time < now_utc:
                 exam.status = ExamStatus.CLOSED
@@ -108,13 +109,22 @@ def get_online_exams():
                     exam_id=exam.id, status=AttemptStatus.IN_PROGRESS
                 ).all()
                 for att in in_progress:
-                    own_deadline = exam.end_time + timedelta(minutes=att.extra_minutes or 0)
+                    own_deadline = _W.attempt_deadline(session, exam, att)
                     if now_utc <= own_deadline:
                         continue  # temps supplémentaire encore valide — ne pas soumettre
                     att.status = AttemptStatus.AUTO_SUBMITTED
                     att.submitted_at = now_utc
                 needs_commit = True
                 print(f"Auto-close examen #{exam.id} '{exam.title}' (end_time dépassé)")
+            elif exam.status == ExamStatus.ACTIVE and _W.exam_has_waves(session, exam.id):
+                # Examen par vagues encore ouvert : les tentatives d'une vague terminée
+                # sont soumises à l'échéance de LEUR vague, sans attendre la dernière.
+                for att in session.query(ExamAttempt).filter_by(
+                        exam_id=exam.id, status=AttemptStatus.IN_PROGRESS).all():
+                    if now_utc > _W.attempt_deadline(session, exam, att):
+                        att.status = AttemptStatus.AUTO_SUBMITTED
+                        att.submitted_at = now_utc
+                        needs_commit = True
         if needs_commit:
             session.commit()
             # Recharger les tentatives après commit
@@ -126,8 +136,30 @@ def get_online_exams():
             threading.Thread(target=_sweep_uncorrected, daemon=True).start()
 
         exams_list = []
+        # Vagues : une seule requête pour tous les examens de la liste
+        wave_by_exam, exams_with_waves = {}, set()
+        if user.role == UserRole.STUDENT and exams:
+            from models import ExamWave, ExamWaveStudent
+            ids = [e.id for e in exams]
+            exams_with_waves = {r[0] for r in session.query(ExamWave.exam_id).filter(ExamWave.exam_id.in_(ids)).distinct()}
+            if exams_with_waves:
+                for w in session.query(ExamWave).join(
+                        ExamWaveStudent, ExamWaveStudent.wave_id == ExamWave.id
+                ).filter(ExamWaveStudent.student_id == user_id, ExamWave.exam_id.in_(ids)).all():
+                    wave_by_exam[w.exam_id] = w
         for exam in exams:
             d = exam.to_dict()
+            if user.role == UserRole.STUDENT and exam.id in exams_with_waves:
+                from services.exam_waves import wave_dict, _iso
+                w = wave_by_exam.get(exam.id)
+                if w:
+                    # L'étudiant ne voit que SON créneau : tout le reste de l'interface
+                    # (tableau de bord, planning, page d'examen) lit déjà start/end_time.
+                    d['start_time'], d['end_time'] = _iso(w.start_time), _iso(w.end_time)
+                    d['wave'] = wave_dict(w)
+                else:
+                    d['wave'] = None
+                    d['wave_missing'] = True
             if user.role == UserRole.STUDENT:
                 attempt = attempts_by_exam.get(exam.id)
                 if attempt:
@@ -354,18 +386,25 @@ def activate_online_exam(exam_id):
             ec = session.query(ECModel).filter_by(id=exam.ec_id).first() if hasattr(exam, 'ec_id') and exam.ec_id else None
             if ec and ec.ue:
                 enrollments = session.query(StudentUEEnrollment).filter_by(ue_id=ec.ue_id).all()
+                from services.exam_waves import waves_of as _waves_of, wave_of as _wave_of
+                _waves = _waves_of(session, exam.id)
                 for enr in enrollments:
                     student = enr.student
                     if student and student.email and student.is_active:
-                        student_contacts.append((student.email, student.full_name))
+                        end_for = end_str
+                        if _waves:
+                            w = _wave_of(session, exam.id, student.id)
+                            if w:
+                                end_for = f"{w.name} : {w.start_time.strftime('%d/%m/%Y de %H:%M')} à {w.end_time.strftime('%H:%M')} (UTC)"
+                        student_contacts.append((student.email, student.full_name, end_for))
         except Exception:
             pass
 
         session.close()
 
-        for email, full_name in student_contacts:
+        for email, full_name, end_for in student_contacts:
             try:
-                send_exam_started_email(email, full_name, exam.title, exam_url, end_str)
+                send_exam_started_email(email, full_name, exam.title, exam_url, end_for)
             except Exception:
                 pass
         return jsonify({'success': True, 'exam': exam_dict})
@@ -396,6 +435,11 @@ def extend_online_exam(exam_id):
             session.close()
             return jsonify({'error': 'Impossible de modifier un examen terminé'}), 400
         data = request.json or {}
+        from services.exam_waves import exam_has_waves as _has_waves
+        if _has_waves(session, exam_id):
+            session.close()
+            return jsonify({'error': "Cet examen est organisé par vagues : prolongez le créneau d'une vague depuis la gestion des vagues, "
+                                     "ou accordez du temps supplémentaire à un étudiant."}), 400
         extra_minutes = int(data.get('extra_minutes', 0))
         if extra_minutes <= 0 or extra_minutes > 300:
             session.close()
@@ -497,9 +541,14 @@ def edit_online_exam(exam_id):
             session.close()
             return jsonify({'error': 'Seuls les examens en brouillon ou planifiés peuvent être modifiés'}), 400
         data = request.get_json() or {}
+        from services.exam_waves import exam_has_waves as _has_waves
+        _by_waves = _has_waves(session, exam_id)
+        if _by_waves and any(data.get(k) for k in ('start_time', 'end_time', 'duration_minutes')):
+            session.close()
+            return jsonify({'error': "Cet examen est organisé par vagues : modifiez les créneaux depuis la gestion des vagues."}), 400
         if 'title' in data and data['title']:
             exam.title = data['title'].strip()
-        if 'start_time' in data and data['start_time']:
+        if 'start_time' in data and data['start_time'] and not _by_waves:
             from datetime import datetime
             try:
                 exam.start_time = _parse_utc_naive(data['start_time'])
@@ -510,8 +559,8 @@ def edit_online_exam(exam_id):
         # de duration_minutes comme avant — jamais désynchronisé de la
         # nouvelle date/durée, sinon l'examen reste accessible sur la
         # mauvaise fenêtre horaire.
-        end_time_set = False
-        if 'end_time' in data and data['end_time']:
+        end_time_set = _by_waves   # par vagues : l'enveloppe est gérée par les vagues, jamais recalculée ici
+        if 'end_time' in data and data['end_time'] and not _by_waves:
             from datetime import datetime
             try:
                 new_end = _parse_utc_naive(data['end_time'])
@@ -638,6 +687,9 @@ def delete_online_exam(exam_id):
 
         session.query(ExamProctor).filter_by(exam_id=exam_id).delete(synchronize_session=False)
         session.query(ProctorGroupExam).filter_by(exam_id=exam_id).delete(synchronize_session=False)
+        from models import ExamWave, ExamWaveStudent
+        session.query(ExamWaveStudent).filter_by(exam_id=exam_id).delete(synchronize_session=False)
+        session.query(ExamWave).filter_by(exam_id=exam_id).delete(synchronize_session=False)
         session.delete(exam)
         session.commit()
         session.close()
@@ -675,8 +727,13 @@ def get_online_exam_details(exam_id):
         if user.role == UserRole.STUDENT:
             # Étudiants : seulement les examens actifs dans la plage horaire
             now = utcnow()
-            start_time = exam.start_time if exam.start_time.tzinfo else exam.start_time.replace(tzinfo=timezone.utc)
-            end_time = exam.end_time if exam.end_time.tzinfo else exam.end_time.replace(tzinfo=timezone.utc)
+            from services.exam_waves import window_for as _window_for, wave_dict as _wave_dict, _iso as _wiso
+            w_start, w_end, _wave, _missing = _window_for(session, exam, user_id)
+            if _missing:
+                session.close()
+                return jsonify({'error': "Aucune vague d'examen ne vous est attribuée. Contactez votre enseignant."}), 403
+            start_time = w_start if w_start.tzinfo else w_start.replace(tzinfo=timezone.utc)
+            end_time = w_end if w_end.tzinfo else w_end.replace(tzinfo=timezone.utc)
 
             # Un étudiant avec une tentative en cours et du temps supplémentaire
             # accordé doit rester joignable après l'échéance globale de l'examen
@@ -699,6 +756,9 @@ def get_online_exam_details(exam_id):
         
         # Préparer la réponse avec les détails complets
         exam_dict = exam.to_dict()
+        if user.role == UserRole.STUDENT and _wave:
+            exam_dict['start_time'], exam_dict['end_time'] = _wiso(_wave.start_time), _wiso(_wave.end_time)
+            exam_dict['wave'] = _wave_dict(_wave)
         
         # Ajouter le contenu du sujet (sans le barème pour les étudiants)
         if exam.subject:
@@ -784,9 +844,18 @@ def start_exam_attempt(exam_id):
 
         now = utcnow()
 
+        # Fenêtre applicable à CET étudiant : celle de sa vague si l'examen est par
+        # vagues, sinon celle de l'examen. Un étudiant sans vague n'entre pas.
+        from services.exam_waves import window_for as _window_for
+        w_start, w_end, _wave, _missing = _window_for(session, exam, user_id)
+        if _missing:
+            session.close()
+            return jsonify({'error': "Aucune vague d'examen ne vous est attribuée. Contactez votre enseignant.",
+                            'wave_missing': True}), 403
+
         # S'assurer que les datetime sont timezone-aware pour la comparaison
-        start_time = exam.start_time if exam.start_time.tzinfo else exam.start_time.replace(tzinfo=timezone.utc)
-        end_time = exam.end_time if exam.end_time.tzinfo else exam.end_time.replace(tzinfo=timezone.utc)
+        start_time = w_start if w_start.tzinfo else w_start.replace(tzinfo=timezone.utc)
+        end_time = w_end if w_end.tzinfo else w_end.replace(tzinfo=timezone.utc)
 
         # Vérifier la plage horaire d'abord
         if now < start_time:
@@ -1940,14 +2009,16 @@ def _sweep_uncorrected(limit: int = 15):
     session = get_session()
     try:
         now = datetime.now(timezone.utc).replace(tzinfo=None)
+        from models import ExamWave as _EW
+        from services.exam_waves import attempt_deadline as _deadline
         stuck = (session.query(ExamAttempt)
                  .join(OnlineExam, OnlineExam.id == ExamAttempt.exam_id)
                  .filter(ExamAttempt.status == AttemptStatus.IN_PROGRESS,
-                         OnlineExam.end_time < now).all())
+                         (OnlineExam.end_time < now) | OnlineExam.id.in_(session.query(_EW.exam_id))).all())
         closed = 0
         for att in stuck:
             ex = att.exam
-            if now > ex.end_time + timedelta(minutes=(att.extra_minutes or 0) + 1):
+            if now > _deadline(session, ex, att) + timedelta(minutes=1):
                 att.status = AttemptStatus.AUTO_SUBMITTED
                 att.submitted_at = now
                 closed += 1
@@ -2276,7 +2347,9 @@ def get_post_submit_lock():
             if not exam:
                 continue
             submitted_at = attempt.submitted_at if attempt.submitted_at.tzinfo else attempt.submitted_at.replace(tzinfo=timezone.utc)
-            exam_end = exam.end_time if exam.end_time.tzinfo else exam.end_time.replace(tzinfo=timezone.utc)
+            from services.exam_waves import window_for as _window_for
+            _e = _window_for(session, exam, user_id)[1]
+            exam_end = _e if _e.tzinfo else _e.replace(tzinfo=timezone.utc)
             lock_until = min(submitted_at + timedelta(minutes=POST_SUBMIT_LOCK_MINUTES), exam_end)
             if now < lock_until:
                 return jsonify({

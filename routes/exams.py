@@ -272,9 +272,8 @@ def create_online_exam():
         raw_sched_corr = data.get('scheduled_correction_at')
         if raw_sched_corr:
             try:
-                if '+' not in raw_sched_corr and raw_sched_corr[-6:] != '+00:00':
-                    raw_sched_corr += '+00:00'
-                scheduled_correction_at = datetime.fromisoformat(raw_sched_corr).astimezone(timezone.utc).replace(tzinfo=None)
+                # « Z » du navigateur accepté (fromisoformat < 3.11 le refuse, d'où l'ancien « Z+00:00 » invalide)
+                scheduled_correction_at = _parse_utc_naive(raw_sched_corr)
             except ValueError:
                 session.close()
                 return jsonify({'error': 'Format de date de correction planifiée invalide'}), 400
@@ -654,9 +653,8 @@ def edit_online_exam(exam_id):
                 exam.correction_triggered_at = None
             else:
                 try:
-                    if '+' not in raw_sched_corr and raw_sched_corr[-6:] != '+00:00':
-                        raw_sched_corr += '+00:00'
-                    new_sched = datetime.fromisoformat(raw_sched_corr).astimezone(timezone.utc).replace(tzinfo=None)
+                    # « Z » du navigateur accepté (fromisoformat < 3.11 le refuse, d'où l'ancien « Z+00:00 » invalide)
+                    new_sched = _parse_utc_naive(raw_sched_corr)
                     # Une nouvelle heure planifiée relance l'éligibilité même si
                     # une correction avait déjà été déclenchée précédemment.
                     if new_sched != exam.scheduled_correction_at:

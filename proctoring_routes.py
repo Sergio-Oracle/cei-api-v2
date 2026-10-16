@@ -1121,6 +1121,33 @@ def get_active_proctoring(exam_id):
         session.close()
 
 
+def _parse_since(raw):
+    """Instant `since` envoyé par les clients (ex. '2026-10-16T15:07:56.539846Z') -> datetime UTC naïf, ou None.
+
+    Les réponses JSON portent un « Z » (voir app.py) et les clients renvoient tel quel le dernier
+    horodatage reçu. Python < 3.11 refuse ce « Z » dans fromisoformat() : l'ancien code ignorait alors
+    SILENCIEUSEMENT le filtre et renvoyait tout l'historique à chaque interrogation — d'où des appels et
+    des avertissements rejoués en boucle chez l'étudiant."""
+    if not raw:
+        return None
+    try:
+        txt = raw.strip()
+        if txt.endswith(('Z', 'z')):
+            txt = txt[:-1] + '+00:00'
+        dt = datetime.fromisoformat(txt)
+        if dt.tzinfo is not None:
+            dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+        return dt
+    except (ValueError, TypeError):
+        return None
+
+
+# Un appel privé non terminé n'est plus proposé à l'étudiant au-delà de ce délai : le surveillant a renoncé.
+CALL_RING_SECONDS = 90
+# Sans point de repère (premier appel, rechargement de la page), on ne rejoue que les derniers instants.
+FIRST_POLL_WINDOW_SECONDS = 120
+
+
 # ============================================================================
 # API : MESSAGES PROF EN ATTENTE (polling côté étudiant)
 # ============================================================================
@@ -1141,24 +1168,35 @@ def get_pending_messages(attempt_id):
             return jsonify({'error': 'Tentative introuvable'}), 404
 
         # Lire les messages depuis les logs (depuis un timestamp donné)
-        since_str = request.args.get('since')
-        query = session.query(ExamActivityLog).filter(
+        now = datetime.utcnow()
+        since = _parse_since(request.args.get('since'))
+        if since is None:
+            # Premier appel (ou repère illisible) : jamais tout l'historique de l'examen.
+            since = now - timedelta(seconds=FIRST_POLL_WINDOW_SECONDS)
+        logs = session.query(ExamActivityLog).filter(
             ExamActivityLog.attempt_id == attempt_id,
-            ExamActivityLog.event_type.in_(['teacher_warning', 'teacher_message', 'teacher_ban', 'teacher_private_call', 'teacher_end_call', 'teacher_identity_cleared'])
-        )
-        if since_str:
-            try:
-                since = datetime.fromisoformat(since_str)
-                query = query.filter(ExamActivityLog.timestamp > since)
-            except ValueError:
-                pass
+            ExamActivityLog.event_type.in_(['teacher_warning', 'teacher_message', 'teacher_ban', 'teacher_private_call', 'teacher_end_call', 'teacher_identity_cleared']),
+            ExamActivityLog.timestamp > since,
+        ).order_by(ExamActivityLog.timestamp.asc(), ExamActivityLog.id.asc()).all()
 
-        logs = query.order_by(ExamActivityLog.timestamp.asc()).all()
+        # État réel de l'appel : un appel TERMINÉ (ou abandonné) ne doit plus jamais sonner chez l'étudiant,
+        # qu'il l'ait accepté, refusé ou raté. On regarde le dernier événement d'appel de la tentative.
+        last_call = session.query(ExamActivityLog).filter(
+            ExamActivityLog.attempt_id == attempt_id,
+            ExamActivityLog.event_type.in_(['teacher_private_call', 'teacher_end_call']),
+        ).order_by(ExamActivityLog.timestamp.desc(), ExamActivityLog.id.desc()).first()
+        call_open = bool(
+            last_call and last_call.event_type == 'teacher_private_call'
+            and last_call.timestamp and (now - last_call.timestamp).total_seconds() <= CALL_RING_SECONDS
+        )
         messages = []
         for log in logs:
+            if log.event_type == 'teacher_private_call' and not (call_open and log.id == last_call.id):
+                continue          # appel terminé, remplacé par un autre ou resté sans réponse trop longtemps
             try:
                 data = json.loads(log.event_data)
                 messages.append({
+                    'id': log.id,
                     'type': log.event_type.replace('teacher_', ''),
                     'message': data.get('message', ''),
                     'timestamp': log.timestamp.isoformat() if log.timestamp else None
@@ -1258,12 +1296,9 @@ def get_student_messages(exam_id):
                 return jsonify({'success': True, 'messages': []})
             query = query.filter(ExamActivityLog.attempt_id.in_(attempt_ids_direct))
 
-        if since_str:
-            try:
-                since = datetime.fromisoformat(since_str)
-                query = query.filter(ExamActivityLog.timestamp > since)
-            except ValueError:
-                pass
+        since = _parse_since(since_str)
+        if since is not None:
+            query = query.filter(ExamActivityLog.timestamp > since)
 
         logs = query.order_by(ExamActivityLog.timestamp.desc()).limit(50).all()
         messages = []

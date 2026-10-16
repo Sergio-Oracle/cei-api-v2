@@ -5,6 +5,7 @@ from flask import Blueprint, request, jsonify
 from auth_paseto import paseto_required, get_current_user_id
 from models import get_session, User, UserRole, OnlineExam, ExamWave, ExamWaveStudent, ExamStatus
 from services import exam_waves as W
+from services.ec_rights import can_manage_exam, can_view_exam
 
 exam_waves_bp = Blueprint('exam_waves', __name__)
 
@@ -22,7 +23,7 @@ def _load(session, exam_id):
         return None, user, (jsonify({'error': 'Examen non trouvé'}), 404)
     if not user or user.role not in (UserRole.PROFESSOR, UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN):
         return None, user, (jsonify({'error': 'Accès non autorisé'}), 403)
-    if user.role == UserRole.PROFESSOR and exam.created_by_id != user.id:
+    if user.role == UserRole.PROFESSOR and not can_manage_exam(session, exam, user.id):
         return None, user, (jsonify({'error': 'Vous ne pouvez gérer que les vagues de vos propres examens'}), 403)
     return exam, user, None
 

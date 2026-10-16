@@ -14,6 +14,7 @@ Routes :
 Migré depuis app.py — logique identique.
 """
 import re
+from services.ec_rights import can_view_exam, visible_exam_filter
 from datetime import timedelta, timezone
 from flask import Blueprint, request, jsonify
 from sqlalchemy.orm import joinedload
@@ -152,7 +153,7 @@ def get_reclamations():
             online_ids = [r.id for r in session.query(Reclamation)
                           .join(ExamAttempt, Reclamation.attempt_id == ExamAttempt.id)
                           .join(OnlineExam, ExamAttempt.exam_id == OnlineExam.id)
-                          .filter(OnlineExam.created_by_id == user_id).all()]
+                          .filter(visible_exam_filter(user_id)).all()]
             visible = list(set(paper_ids + online_ids))
             recs = query.filter(Reclamation.id.in_(visible)).order_by(desc(Reclamation.created_at)).all() if visible else []
         else:
@@ -586,7 +587,13 @@ def _can_manage_reclamation(user, rec: Reclamation) -> bool:
     owner_id = (rec.paper.subject.creator_id if rec.paper and rec.paper.subject
                 else rec.attempt.exam.created_by_id if rec.attempt and rec.attempt.exam
                 else None)
-    return owner_id == user.id
+    if owner_id == user.id:
+        return True
+    # examen en ligne d'un EC où l'enseignant est affecté (créé par le responsable d'examen ou l'admin)
+    if not (rec.paper and rec.paper.subject) and rec.attempt and rec.attempt.exam:
+        from sqlalchemy.orm import object_session
+        return can_view_exam(object_session(rec), rec.attempt.exam, user.id)
+    return False
 
 
 # ── DELETE suppression unitaire ────────────────────────────────────────────────

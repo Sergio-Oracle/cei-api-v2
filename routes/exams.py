@@ -39,6 +39,7 @@ from services.ai_service import (
 )
 from s3_client import upload_subject_media, get_snapshot_url
 from routes.question_bank import _similarity, DUPLICATE_THRESHOLD
+from services.ec_rights import can_manage_exam, can_view_exam, visible_exam_filter
 
 exams_bp = Blueprint('exams', __name__)
 
@@ -80,8 +81,9 @@ def get_online_exams():
             ).all() if all_closed_ids else []
             exams = active_exams + closed_exams
         elif user.role == UserRole.PROFESSOR:
-            # Professeurs : leurs propres examens
-            exams = query.filter_by(created_by_id=user_id).all()
+            # Professeurs : leurs examens ET ceux des EC auxquels ils sont affectés (un examen créé à
+            # leur place par le responsable d'examen ou l'administrateur doit leur apparaître)
+            exams = query.filter(visible_exam_filter(user_id)).all()
         else:
             # Admin : tous
             exams = query.all()
@@ -225,11 +227,14 @@ def create_online_exam():
         if not subject:
             session.close()
             return jsonify({'error': 'Le sujet sélectionné n\'existe pas'}), 404
-        if user.role == UserRole.PROFESSOR and subject.ec_id:
-            from services.ec_rights import assignment_kind, TUTOR_MESSAGE
-            if assignment_kind(session, subject.ec_id, user.id) == 'tuteur':
-                session.close()
-                return jsonify({'error': TUTOR_MESSAGE, 'tutor': True}), 403
+        # Un enseignant ne crée d'examen que sur un EC dont il est responsable (ni tuteur, ni non affecté)
+        from services.ec_rights import require_exam_author, assignment_kind
+        try:
+            require_exam_author(session, subject, user)
+        except PermissionError as _pe:
+            _tutor = user.role == UserRole.PROFESSOR and assignment_kind(session, subject.ec_id, user.id) == 'tuteur'
+            session.close()
+            return jsonify({'error': str(_pe), **({'tutor': True} if _tutor else {})}), 403
 
         # Le frontend envoie la valeur brute du datetime-local + "Z"
         # (ex: "2026-03-30T18:05:00Z"). Dakar = UTC+0, donc la valeur
@@ -368,7 +373,7 @@ def activate_online_exam(exam_id):
             return jsonify({'error': 'Examen non trouvé'}), 404
         
         # Vérifier propriété (prof) ou admin
-        if user.role == UserRole.PROFESSOR and exam.created_by_id != user_id:
+        if user.role == UserRole.PROFESSOR and not can_manage_exam(session, exam, user_id):
             session.close()
             return jsonify({'error': 'Vous ne pouvez activer que vos propres examens'}), 403
         
@@ -441,7 +446,7 @@ def extend_online_exam(exam_id):
         if not exam:
             session.close()
             return jsonify({'error': 'Examen non trouvé'}), 404
-        if user.role == UserRole.PROFESSOR and exam.created_by_id != user_id:
+        if user.role == UserRole.PROFESSOR and not can_manage_exam(session, exam, user_id):
             session.close()
             return jsonify({'error': 'Vous ne pouvez modifier que vos propres examens'}), 403
         if exam.status not in [ExamStatus.ACTIVE, ExamStatus.SCHEDULED]:
@@ -508,7 +513,7 @@ def close_online_exam(exam_id):
             session.close()
             return jsonify({'error': 'Examen non trouvé'}), 404
         
-        if user.role == UserRole.PROFESSOR and exam.created_by_id != user_id:
+        if user.role == UserRole.PROFESSOR and not can_manage_exam(session, exam, user_id):
             session.close()
             return jsonify({'error': 'Accès non autorisé'}), 403
         
@@ -561,7 +566,7 @@ def edit_online_exam(exam_id):
         if not exam:
             session.close()
             return jsonify({'error': 'Examen non trouvé'}), 404
-        if user.role == UserRole.PROFESSOR and exam.created_by_id != user_id:
+        if user.role == UserRole.PROFESSOR and not can_manage_exam(session, exam, user_id):
             session.close()
             return jsonify({'error': 'Vous ne pouvez modifier que vos propres examens'}), 403
         if exam.status not in [ExamStatus.DRAFT, ExamStatus.SCHEDULED]:
@@ -695,7 +700,7 @@ def delete_online_exam(exam_id):
             return jsonify({'error': 'Examen non trouvé'}), 404
         
         # Vérifier propriété (prof) ou admin
-        if user.role == UserRole.PROFESSOR and exam.created_by_id != user_id:
+        if user.role == UserRole.PROFESSOR and not can_manage_exam(session, exam, user_id):
             session.close()
             return jsonify({'error': 'Vous ne pouvez supprimer que vos propres examens'}), 403
 
@@ -789,8 +794,8 @@ def get_online_exam_details(exam_id):
                 return jsonify({'error': 'Examen non disponible actuellement'}), 403
         
         elif user.role == UserRole.PROFESSOR:
-            # Professeurs : seulement leurs propres examens
-            if exam.created_by_id != user_id:
+            # Professeurs : leurs examens et ceux de leurs EC
+            if not can_view_exam(session, exam, user_id):
                 session.close()
                 return jsonify({'error': 'Accès non autorisé'}), 403
         
@@ -2428,7 +2433,7 @@ def unban_exam_attempt(attempt_id):
             session.close()
             return jsonify({'error': 'Tentative introuvable'}), 404
 
-        if user.role == UserRole.PROFESSOR and attempt.exam.created_by_id != user_id:
+        if user.role == UserRole.PROFESSOR and not can_view_exam(session, attempt.exam, user_id):
             session.close()
             return jsonify({'error': 'Vous ne pouvez lever que les bannissements de vos propres examens'}), 403
 
@@ -2484,7 +2489,7 @@ def export_exam_results_csv(exam_id):
             session.close()
             return jsonify({'error': 'Examen introuvable'}), 404
 
-        if user.role == UserRole.PROFESSOR and exam.created_by_id != user_id:
+        if user.role == UserRole.PROFESSOR and not can_view_exam(session, exam, user_id):
             session.close()
             return jsonify({'error': 'Accès réservé au professeur propriétaire de cet examen'}), 403
 
@@ -2724,7 +2729,7 @@ def correct_exam_attempt(attempt_id):
             return jsonify({'error': 'Cette tentative n\'est pas encore soumise'}), 400
 
         # Vérifier que le professeur est propriétaire de l'examen
-        if user.role == UserRole.PROFESSOR and attempt.exam.created_by_id != user_id:
+        if user.role == UserRole.PROFESSOR and not can_view_exam(session, attempt.exam, user_id):
             session.close()
             return jsonify({'error': 'Vous ne pouvez corriger que vos propres examens'}), 403
 
@@ -2922,7 +2927,7 @@ def get_exam_attempts(exam_id):
             return jsonify({'error': 'Examen non trouvé'}), 404
 
         # Vérifier propriété pour professeur
-        if user.role == UserRole.PROFESSOR and exam.created_by_id != user_id:
+        if user.role == UserRole.PROFESSOR and not can_view_exam(session, exam, user_id):
             session.close()
             return jsonify({'error': 'Accès non autorisé'}), 403
 
@@ -3006,7 +3011,7 @@ def export_exam_csv(exam_id):
         if not exam:
             session.close()
             return jsonify({'error': 'Examen non trouvé'}), 404
-        if user.role == UserRole.PROFESSOR and exam.created_by_id != user_id:
+        if user.role == UserRole.PROFESSOR and not can_view_exam(session, exam, user_id):
             session.close()
             return jsonify({'error': 'Accès non autorisé'}), 403
         attempts = session.query(ExamAttempt).options(
@@ -3070,7 +3075,7 @@ def import_exam_grades(exam_id):
         if not exam:
             session.close()
             return jsonify({'error': 'Examen non trouvé'}), 404
-        if user.role == UserRole.PROFESSOR and exam.created_by_id != user_id:
+        if user.role == UserRole.PROFESSOR and not can_manage_exam(session, exam, user_id):
             session.close()
             return jsonify({'error': 'Accès non autorisé'}), 403
 
@@ -3184,7 +3189,7 @@ def publish_exam_results(exam_id):
         if not exam:
             session.close()
             return jsonify({'error': 'Examen non trouvé'}), 404
-        if user.role == UserRole.PROFESSOR and exam.created_by_id != user_id:
+        if user.role == UserRole.PROFESSOR and not can_manage_exam(session, exam, user_id):
             session.close()
             return jsonify({'error': 'Accès non autorisé'}), 403
         data = request.get_json(silent=True) or {}
@@ -3288,7 +3293,7 @@ def get_exam_stats(exam_id):
         if not exam:
             session.close()
             return jsonify({'error': 'Examen non trouvé'}), 404
-        if user.role == UserRole.PROFESSOR and exam.created_by_id != user_id:
+        if user.role == UserRole.PROFESSOR and not can_view_exam(session, exam, user_id):
             session.close()
             return jsonify({'error': 'Accès non autorisé'}), 403
         attempts = session.query(ExamAttempt).filter_by(exam_id=exam_id).all()
@@ -3349,7 +3354,7 @@ def get_exam_bilan(exam_id):
         if not exam:
             session.close()
             return jsonify({'error': 'Examen non trouvé'}), 404
-        if user.role == UserRole.PROFESSOR and exam.created_by_id != user_id:
+        if user.role == UserRole.PROFESSOR and not can_view_exam(session, exam, user_id):
             session.close()
             return jsonify({'error': 'Accès non autorisé'}), 403
 
@@ -3428,7 +3433,7 @@ def get_exam_bilan_pdf(exam_id):
         if not exam:
             session.close()
             return jsonify({'error': 'Examen non trouvé'}), 404
-        if user.role == UserRole.PROFESSOR and exam.created_by_id != user_id:
+        if user.role == UserRole.PROFESSOR and not can_view_exam(session, exam, user_id):
             session.close()
             return jsonify({'error': 'Accès non autorisé'}), 403
 
@@ -3547,7 +3552,7 @@ def get_exam_security_report_pdf(exam_id):
         if not exam:
             session.close()
             return jsonify({'error': 'Examen non trouvé'}), 404
-        if user.role == UserRole.PROFESSOR and exam.created_by_id != user_id:
+        if user.role == UserRole.PROFESSOR and not can_view_exam(session, exam, user_id):
             session.close()
             return jsonify({'error': 'Accès non autorisé'}), 403
 
@@ -3661,7 +3666,7 @@ def manual_grade_attempt(attempt_id):
         if not attempt:
             session.close()
             return jsonify({'error': 'Tentative non trouvée'}), 404
-        if user.role == UserRole.PROFESSOR and attempt.exam.created_by_id != user_id:
+        if user.role == UserRole.PROFESSOR and not can_view_exam(session, attempt.exam, user_id):
             session.close()
             return jsonify({'error': 'Accès non autorisé'}), 403
         data   = request.get_json(silent=True) or {}
@@ -3720,7 +3725,7 @@ def update_question_grades(attempt_id):
         if not attempt:
             session.close()
             return jsonify({'error': 'Tentative non trouvée'}), 404
-        if user.role == UserRole.PROFESSOR and attempt.exam.created_by_id != user_id:
+        if user.role == UserRole.PROFESSOR and not can_view_exam(session, attempt.exam, user_id):
             session.close()
             return jsonify({'error': 'Accès non autorisé'}), 403
 
@@ -3927,7 +3932,7 @@ def list_face_references():
 
         # Récupérer les tentatives concernées
         if user.role == UserRole.PROFESSOR:
-            exam_ids = [e.id for e in session.query(OnlineExam).filter_by(created_by_id=user_id).all()]
+            exam_ids = [e.id for e in session.query(OnlineExam).filter(visible_exam_filter(user_id)).all()]
             if not exam_ids:
                 session.close()
                 return jsonify({'references': []})
@@ -4020,7 +4025,7 @@ def get_face_reference_photo(attempt_id):
         # Vérification accès prof
         if user.role == UserRole.PROFESSOR:
             exam = session.query(OnlineExam).filter_by(id=attempt.exam_id).first()
-            if not exam or exam.created_by_id != user_id:
+            if not exam or not can_view_exam(session, exam, user_id):
                 session.close()
                 return jsonify({'error': 'Accès non autorisé à cet examen'}), 403
 
@@ -4247,7 +4252,7 @@ def download_exam_security_report(exam_id):
         if not exam:
             session.close()
             return jsonify({'error': 'Examen non trouvé'}), 404
-        if user.role == UserRole.PROFESSOR and exam.created_by_id != user_id:
+        if user.role == UserRole.PROFESSOR and not can_view_exam(session, exam, user_id):
             session.close()
             return jsonify({'error': 'Accès non autorisé'}), 403
 
@@ -4367,7 +4372,7 @@ def get_exam_incidents(exam_id):
             session.close()
             return jsonify({'error': 'Examen non trouvé'}), 404
 
-        if user.role == UserRole.PROFESSOR and exam.created_by_id != user_id:
+        if user.role == UserRole.PROFESSOR and not can_view_exam(session, exam, user_id):
             session.close()
             return jsonify({'error': 'Accès non autorisé'}), 403
 
@@ -4700,7 +4705,7 @@ def professor_corrected_papers():
         )
 
         if user.role == UserRole.PROFESSOR:
-            attempt_query = attempt_query.filter(OnlineExam.created_by_id == user_id)
+            attempt_query = attempt_query.filter(visible_exam_filter(user_id))
 
         attempts = attempt_query.order_by(ExamAttempt.corrected_at.desc()).limit(100).all()
 
@@ -6257,7 +6262,7 @@ def admin_security_report():
         prof_exam_ids = None
         if user.role == UserRole.PROFESSOR:
             prof_exam_ids = [
-                e.id for e in session.query(OnlineExam).filter_by(created_by_id=user_id).all()
+                e.id for e in session.query(OnlineExam).filter(visible_exam_filter(user_id)).all()
             ]
             if not prof_exam_ids:
                 session.close()
@@ -6498,7 +6503,7 @@ def grant_extra_time(attempt_id):
         if not attempt:
             session.close()
             return jsonify({'error': 'Tentative non trouvée'}), 404
-        if role == 'professor' and attempt.exam.created_by_id != user_id:
+        if role == 'professor' and not can_view_exam(session, attempt.exam, user_id):
             session.close()
             return jsonify({'error': 'Vous ne pouvez accorder du temps que sur vos propres examens'}), 403
         if role == 'surveillant':
@@ -6672,7 +6677,7 @@ def add_proctor_note(attempt_id):
         if not attempt:
             session.close()
             return jsonify({'error': 'Tentative non trouvée'}), 404
-        if role == 'professor' and attempt.exam.created_by_id != user_id:
+        if role == 'professor' and not can_view_exam(session, attempt.exam, user_id):
             session.close()
             return jsonify({'error': 'Vous ne pouvez noter que vos propres examens'}), 403
         if role == 'surveillant':
@@ -7017,7 +7022,7 @@ def get_attempt_review(attempt_id):
             session.close()
             return jsonify({'error': 'Tentative non trouvée'}), 404
 
-        if user.role == UserRole.PROFESSOR and attempt.exam.created_by_id != user_id:
+        if user.role == UserRole.PROFESSOR and not can_view_exam(session, attempt.exam, user_id):
             session.close()
             return jsonify({'error': 'Accès non autorisé'}), 403
 
@@ -7126,7 +7131,7 @@ def get_professor_analytics():
         if user.role in (UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN):
             exams = session.query(OnlineExam).options(joinedload(OnlineExam.subject).joinedload(Subject.ec)).all()
         else:
-            exams = session.query(OnlineExam).options(joinedload(OnlineExam.subject).joinedload(Subject.ec)).filter_by(created_by_id=user_id).all()
+            exams = session.query(OnlineExam).options(joinedload(OnlineExam.subject).joinedload(Subject.ec)).filter(visible_exam_filter(user_id)).all()
 
         exam_ids = [e.id for e in exams]
 
@@ -7285,7 +7290,7 @@ def download_attempt_report_pdf(attempt_id):
             session.close()
             return jsonify({'error': 'Tentative non trouvée'}), 404
 
-        if user.role == UserRole.PROFESSOR and attempt.exam.created_by_id != user_id:
+        if user.role == UserRole.PROFESSOR and not can_view_exam(session, attempt.exam, user_id):
             session.close()
             return jsonify({'error': 'Accès non autorisé'}), 403
 

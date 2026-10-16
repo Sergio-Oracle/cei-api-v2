@@ -27,6 +27,7 @@ from models import (
     ExamAccessCode, ProctorGroupSupervisor,
 )
 from cache import cache_get, cache_set, cache_set_nx, cache_pop, cache_delete
+from services.ec_rights import can_manage_exam, can_view_exam
 
 proctoring_bp = Blueprint('proctoring', __name__)
 
@@ -343,7 +344,7 @@ def get_teacher_proctor_token(exam_id):
         if not exam:
             return jsonify({'error': 'Examen introuvable'}), 404
 
-        if role == 'professor' and exam.created_by_id != user_id:
+        if role == 'professor' and not can_view_exam(session, exam, user_id):
             return jsonify({'error': 'Vous ne pouvez surveiller que vos propres examens'}), 403
 
         if role == 'surveillant':
@@ -732,7 +733,7 @@ def send_proctoring_warning(attempt_id):
         if not attempt:
             return jsonify({'error': 'Tentative introuvable'}), 404
 
-        if role == 'professor' and attempt.exam.created_by_id != user_id:
+        if role == 'professor' and not can_view_exam(session, attempt.exam, user_id):
             return jsonify({'error': 'Vous ne pouvez agir que sur vos propres examens'}), 403
 
         if role == 'surveillant':
@@ -796,7 +797,7 @@ def proctor_ban_student(attempt_id):
         if not attempt:
             return jsonify({'error': 'Tentative introuvable'}), 404
 
-        if role == 'professor' and attempt.exam.created_by_id != user_id:
+        if role == 'professor' and not can_view_exam(session, attempt.exam, user_id):
             return jsonify({'error': 'Vous ne pouvez agir que sur vos propres examens'}), 403
 
         if role == 'surveillant':
@@ -908,7 +909,7 @@ def identity_manual_verify(attempt_id):
         if not attempt:
             return jsonify({'error': 'Tentative introuvable'}), 404
 
-        if role == 'professor' and attempt.exam.created_by_id != user_id:
+        if role == 'professor' and not can_view_exam(session, attempt.exam, user_id):
             return jsonify({'error': 'Vous ne pouvez agir que sur vos propres examens'}), 403
 
         if role == 'surveillant':
@@ -1514,7 +1515,7 @@ def add_exam_proctor(exam_id):
         exam = session.query(OnlineExam).filter_by(id=exam_id).first()
         if not exam:
             return jsonify({'error': 'Examen introuvable'}), 404
-        if role == 'professor' and exam.created_by_id != user_id:
+        if role == 'professor' and not can_manage_exam(session, exam, user_id):
             return jsonify({'error': 'Vous ne pouvez affecter des surveillants qu\'à vos propres examens'}), 403
 
         data = request.get_json() or {}
@@ -1899,7 +1900,7 @@ def distribute_proctors(exam_id):
         exam = session.query(OnlineExam).filter_by(id=exam_id).first()
         if not exam:
             return jsonify({'error': 'Examen introuvable'}), 404
-        if role == 'professor' and exam.created_by_id != user_id:
+        if role == 'professor' and not can_manage_exam(session, exam, user_id):
             return jsonify({'error': 'Vous ne pouvez répartir les surveillants que sur vos propres examens'}), 403
 
         proctors = session.query(ExamProctor).filter_by(exam_id=exam_id).all()
@@ -2101,7 +2102,7 @@ def toggle_recording(attempt_id):
         if not attempt:
             return jsonify({'error': 'Tentative introuvable'}), 404
 
-        if role == 'professor' and attempt.exam.created_by_id != user_id:
+        if role == 'professor' and not can_view_exam(session, attempt.exam, user_id):
             return jsonify({'error': 'Vous ne pouvez agir que sur vos propres examens'}), 403
 
         if role == 'surveillant':
@@ -2891,7 +2892,7 @@ def get_local_snapshot(key):
         if not exam:
             return jsonify({'error': 'Examen non trouvé'}), 404
 
-        if role == 'professor' and exam.created_by_id != user_id:
+        if role == 'professor' and not can_view_exam(session, exam, user_id):
             return jsonify({'error': 'Accès non autorisé'}), 403
 
         if role == 'surveillant':
@@ -3123,7 +3124,7 @@ def get_video_recordings(exam_id):
             session.close()
             return jsonify({'error': 'Examen non trouvé'}), 404
 
-        if user.role == UserRole.PROFESSOR and exam.created_by_id != user_id:
+        if user.role == UserRole.PROFESSOR and not can_view_exam(session, exam, user_id):
             session.close()
             return jsonify({'error': 'Accès non autorisé'}), 403
 

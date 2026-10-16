@@ -175,6 +175,21 @@ class SubjectService:
         return SubjectRepository.find_all(user_id, role)
 
     @staticmethod
+    def _check_author(creator_id: int, ec_id: Optional[int]) -> None:
+        """Créer un sujet : administrateur/responsable d'examen partout ; enseignant seulement sur un
+        EC dont il est responsable (voir services.ec_rights.require_author)."""
+        from models import User
+        from services.ec_rights import require_author
+        session = get_session()
+        try:
+            user = session.get(User, creator_id)
+            if user is None:
+                raise PermissionError('Accès non autorisé')
+            require_author(session, ec_id, user)
+        finally:
+            session.close()
+
+    @staticmethod
     def get_detail(subject_id: int, user_id: int, role: UserRole) -> dict:
         subj = SubjectRepository.find_by_id_dict(subject_id)
         if not subj:
@@ -182,7 +197,13 @@ class SubjectService:
         if role == UserRole.STUDENT and not subj.get('is_active'):
             raise PermissionError('Sujet non accessible')
         if role == UserRole.PROFESSOR and subj.get('creator_id') != user_id:
-            raise PermissionError('Accès non autorisé')
+            from services.ec_rights import assignment_kind
+            session = get_session()
+            try:
+                if assignment_kind(session, subj.get('ec_id'), user_id) is None:
+                    raise PermissionError('Accès non autorisé')
+            finally:
+                session.close()
         return subj
 
     # ── Create manual (sans fichier) ─────────────────────────────────────────
@@ -198,6 +219,7 @@ class SubjectService:
     ) -> dict:
         if role not in (UserRole.PROFESSOR, UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN):
             raise PermissionError('Accès non autorisé')
+        SubjectService._check_author(creator_id, ec_id)
         return SubjectRepository.create(
             title=title,
             content=content,
@@ -240,22 +262,15 @@ class SubjectService:
             if not allowed_file(f.filename):
                 raise ValueError(f"Type de fichier non autorisé ({f.filename}). Utilisez PDF, DOCX ou TXT")
 
-        # EC access check for professors
-        if ec_id and role == UserRole.PROFESSOR:
-            session = get_session()
+        # Droit de créer sur cet EC (responsable de l'EC, ou administrateur / responsable d'examen)
+        SubjectService._check_author(creator_id, ec_id)
+        if ec_id:
+            _s = get_session()
             try:
-                asgn = session.query(ECAssignment).filter_by(
-                    ec_id=ec_id, professor_id=creator_id).first()
-                if not asgn:
-                    raise PermissionError("Vous n'êtes pas responsable de cet EC")
-                if (asgn.kind or 'responsable') == 'tuteur':
-                    from services.ec_rights import TUTOR_MESSAGE
-                    raise PermissionError(TUTOR_MESSAGE)
-                ec = session.query(EC).filter_by(id=ec_id).first()
-                if not ec:
+                if not _s.query(EC).filter_by(id=ec_id).first():
                     raise LookupError('EC non trouvé')
             finally:
-                session.close()
+                _s.close()
 
         # Save + extract text for each file, concatenated with clear separators
         # so l'IA distingue les sources sans qu'un professeur ait besoin de
@@ -357,8 +372,14 @@ class SubjectService:
         subj = SubjectRepository.find_by_id(subject_id)
         if not subj:
             raise LookupError('Sujet non trouvé')
-        if role == UserRole.PROFESSOR and subj.creator_id != user_id:
-            raise PermissionError('Vous ne pouvez modifier que vos propres sujets')
+        if role == UserRole.PROFESSOR:
+            from services.ec_rights import can_edit_subject
+            _s = get_session()
+            try:
+                if not can_edit_subject(_s, subj, user_id):
+                    raise PermissionError("Vous ne pouvez modifier que vos propres sujets ou ceux des EC dont vous êtes responsable")
+            finally:
+                _s.close()
         if SubjectRepository.has_locked_exam(subject_id):
             raise PermissionError(
                 "Ce sujet est lié à un examen déjà actif, clôturé ou ayant reçu des "

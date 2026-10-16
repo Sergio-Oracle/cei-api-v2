@@ -12,6 +12,7 @@ Routes :
   DELETE /api/restitution_examples/<id>
 """
 import re
+from services.ec_rights import can_view_exam
 from flask import Blueprint, request, jsonify
 from sqlalchemy.orm import joinedload
 from sqlalchemy import desc
@@ -125,7 +126,7 @@ def create_restitution_example():
             if not attempt: session.close(); return jsonify({'error': 'Tentative non trouvée'}), 404
             exam = attempt.exam
             subject = exam.subject if exam else None
-            if user.role == UserRole.PROFESSOR and (not exam or exam.created_by_id != user_id):
+            if user.role == UserRole.PROFESSOR and (not exam or not can_view_exam(session, exam, user_id)):
                 session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
             if attempt.score is None:
                 session.close(); return jsonify({'error': 'Copie non encore corrigée'}), 400

@@ -137,7 +137,8 @@ def notify_user(
 def _exam_staff_ids(exam_id: int) -> set:
     """Ensemble des identifiants du personnel couvrant un examen :
     surveillants assignés (ExamProctor) + superviseur(s) du/des groupe(s)
-    rattaché(s) à l'EC + professeur créateur. Best-effort, session isolée."""
+    rattaché(s) à l'EC + professeur créateur + enseignants affectés à l'EC +
+    responsables d'examen. Best-effort, session isolée."""
     ids: set = set()
     try:
         from models import (
@@ -162,6 +163,19 @@ def _exam_staff_ids(exam_id: int) -> set:
 
             if exam.created_by_id:
                 ids.add(exam.created_by_id)
+
+            # Enseignants de l'EC (responsable ou tuteur) : l'examen peut avoir été créé à leur place
+            # par le responsable d'examen ou l'administrateur — ils doivent en suivre les alertes.
+            from models import ECAssignment, User, UserRole
+            ec_id = exam.subject.ec_id if exam.subject else None
+            if ec_id:
+                for (pid,) in session.query(ECAssignment.professor_id).filter_by(ec_id=ec_id):
+                    if pid:
+                        ids.add(pid)
+            # Responsables d'examen : présents d'office dans tous les EC, donc sur tous les examens.
+            for (uid,) in session.query(User.id).filter(User.role == UserRole.RESPONSABLE_EXAMEN,
+                                                         User.is_active == True):
+                ids.add(uid)
         finally:
             session.close()
     except Exception as exc:

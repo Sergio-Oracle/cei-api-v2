@@ -211,14 +211,9 @@ def get_proctor_users():
 def get_all_users():
     try:
         session = get_session()
-        caller = _require_admin_like(session)
-        if not caller:
-            session.close()
-            return jsonify({'error': 'Accès non autorisé'}), 403
-        # Le responsable d'examen consulte les enseignants/surveillants/superviseurs pour les
-        # affectations et les groupes ; la gestion des comptes (et la liste des étudiants) reste
-        # à l'administrateur.
-        if caller.role != UserRole.ADMIN and request.args.get('role', '').strip().lower() in ('', 'student'):
+        # Lecture ouverte au responsable d'examen (listes d'utilisateurs, étudiants compris) ;
+        # créer, modifier ou supprimer un compte reste réservé à l'administrateur.
+        if not _require_admin_like(session):
             session.close()
             return jsonify({'error': 'Accès non autorisé'}), 403
 
@@ -298,7 +293,7 @@ def get_all_users():
 def get_user_role_counts():
     try:
         session = get_session()
-        if not _require_admin(session):
+        if not _require_admin_like(session):
             session.close()
             return jsonify({'error': 'Accès non autorisé'}), 403
 

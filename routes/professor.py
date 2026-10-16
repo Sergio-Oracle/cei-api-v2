@@ -18,6 +18,8 @@ from models      import (
     ECAssignment, ProctorGroupEC, ProctorGroupMember,
 )
 
+from services.ec_rights import visible_exam_filter
+
 professor_bp = Blueprint('professor', __name__)
 
 
@@ -40,7 +42,7 @@ def professor_dashboard():
         online_corrected  = session.query(ExamAttempt).join(
             OnlineExam, ExamAttempt.exam_id == OnlineExam.id
         ).filter(
-            OnlineExam.created_by_id == user_id,
+            visible_exam_filter(user_id),
             ExamAttempt.score.isnot(None),
         ).count()
 

@@ -59,16 +59,18 @@ try:
     prof = mk(UserRole.PROFESSOR, 'prof'); hp = H(prof)
     hm = H(mgr)
     stud = mk(UserRole.STUDENT, 'etu')
+    other = mk(UserRole.PROFESSOR, 'autre')
+    tut = mk(UserRole.PROFESSOR, 'tuteur')
 
     print('\n== Gestion des utilisateurs : refusée ==')
     r = c.get('/api/admin/users?role=professor', headers=hm)
     check("liste des enseignants (lecture, pour les affectations)", r.status_code == 200, r.status_code)
-    check("liste sans filtre de rôle refusée", c.get('/api/admin/users', headers=hm).status_code == 403)
-    check("liste des étudiants refusée", c.get('/api/admin/users?role=student', headers=hm).status_code == 403)
+    check("liste complète des comptes (sans filtre) en lecture", c.get('/api/admin/users', headers=hm).status_code == 200)
+    check("liste des étudiants en lecture", c.get('/api/admin/users?role=student', headers=hm).status_code == 200)
     check("création de compte refusée", c.post('/api/admin/users', headers=hm, json={'email': f'x.{tag}@test.invalid', 'full_name': 'X', 'password': 'MotDePasse-Test-1', 'role': 'student'}).status_code == 403)
     check("modification de compte refusée", c.put(f'/api/admin/users/{stud.id}', headers=hm, json={'role': 'admin'}).status_code == 403)
     check("suppression de compte refusée", c.delete(f'/api/admin/users/{stud.id}', headers=hm).status_code == 403)
-    check("compteurs par rôle refusés", c.get('/api/admin/users/role-counts', headers=hm).status_code == 403)
+    check("compteurs par rôle en lecture", c.get('/api/admin/users/role-counts', headers=hm).status_code == 200)
     check("import de comptes refusé", c.post('/api/admin/users/import-csv', headers=hm).status_code == 403)
     check("modèle d'import de comptes refusé", c.get('/api/admin/users/csv-template', headers=hm).status_code == 403)
     check("création d'étudiant sans e-mail refusée", c.post('/api/admin/users/student-no-email', headers=hm, json={}).status_code == 403)
@@ -95,19 +97,33 @@ try:
     rubric = '=== BARÈME DE NOTATION ===\n' + '\n\n'.join(f"Question {n} (4 pts) :\n  Bonne réponse : B)" for n in range(1, 3)) + '\n\nTOTAL : 8 pts'
     r = c.post('/api/subjects', json={'title': f'Resp {tag}', 'content': content, 'rubric': rubric, 'ec_id': ec.id}, headers=hm)
     check("il crée un sujet sur un EC où personne n'est affecté", r.status_code == 201, r.get_data(as_text=True)[:160])
-    if r.status_code == 201: made['subjects'].append(r.get_json()['subject']['id'])
-    # sujet et examen créés par le professeur (affecté), pour que le responsable agisse dessus
-    s.add(ECAssignment(ec_id=ec.id, professor_id=prof.id)); s.commit()
-    r = c.post('/api/subjects', json={'title': f'Prof {tag}', 'content': content, 'rubric': rubric, 'ec_id': ec.id}, headers=hp)
-    check("le professeur affecté crée son sujet", r.status_code == 201, r.get_data(as_text=True)[:160])
+    sid_mgr = r.get_json()['subject']['id'] if r.status_code == 201 else None
+    if sid_mgr: made['subjects'].append(sid_mgr)
+    # Création : un enseignant ne crée que sur un EC dont il est RESPONSABLE
+    body = {'title': f'Prof {tag}', 'content': content, 'rubric': rubric, 'ec_id': ec.id}
+    r = c.post('/api/subjects', json=body, headers=hp)
+    check("enseignant NON affecté : création de sujet refusée", r.status_code == 403, r.get_data(as_text=True)[:140])
+    r = c.post('/api/subjects', json={**body, 'ec_id': None}, headers=hp)
+    check("enseignant : sujet sans EC refusé", r.status_code in (403, 422), r.status_code)
+    s.add(ECAssignment(ec_id=ec.id, professor_id=tut.id, kind='tuteur')); s.commit()
+    r = c.post('/api/subjects', json=body, headers=H(tut))
+    check("tuteur : création de sujet refusée", r.status_code == 403, r.get_data(as_text=True)[:140])
+    s.add(ECAssignment(ec_id=ec.id, professor_id=prof.id, kind='responsable')); s.commit()
+    r = c.post('/api/subjects', json=body, headers=hp)
+    check("responsable de l'EC : création de sujet acceptée", r.status_code == 201, r.get_data(as_text=True)[:160])
     sid_prof = r.get_json()['subject']['id']; made['subjects'].append(sid_prof)
     now = utcnow().replace(tzinfo=None)
-    r = c.post('/api/online_exams', headers=hp, json={'subject_id': sid_prof, 'title': f'Examen prof {tag}',
-               'start_time': Z(now + timedelta(minutes=30)), 'end_time': Z(now + timedelta(minutes=90))})
+    ex_body = {'subject_id': sid_prof, 'title': f'Examen prof {tag}',
+               'start_time': Z(now + timedelta(minutes=30)), 'end_time': Z(now + timedelta(minutes=90))}
+    r = c.post('/api/online_exams', headers=H(other), json=ex_body)
+    check("enseignant non affecté : création d'examen refusée", r.status_code == 403, r.get_data(as_text=True)[:140])
+    r = c.post('/api/online_exams', headers=H(tut), json=ex_body)
+    check("tuteur : création d'examen refusée", r.status_code == 403 and (r.get_json() or {}).get('tutor'), r.get_data(as_text=True)[:140])
+    r = c.post('/api/online_exams', headers=hp, json=ex_body)
     eid = (r.get_json().get('exam') or r.get_json()).get('id'); made['exams'].append(eid)
-    check("examen créé par le professeur", r.status_code in (200, 201))
-    check("le responsable voit les sujets de tous", any(x['id'] == sid_prof for x in c.get('/api/subjects', headers=hm).get_json()))
-    check("le responsable voit l'examen du professeur", any(e['id'] == eid for e in c.get('/api/online_exams', headers=hm).get_json()))
+    check("responsable de l'EC : examen créé", r.status_code in (200, 201), r.get_data(as_text=True)[:140])
+    check("le responsable d'examen voit les sujets de tous", any(x['id'] == sid_prof for x in c.get('/api/subjects', headers=hm).get_json()))
+    check("le responsable d'examen voit l'examen du professeur", any(e['id'] == eid for e in c.get('/api/online_exams', headers=hm).get_json()))
     r = c.put(f'/api/admin/online_exams/{eid}', headers=hm, json={'title': f'Examen prof {tag} (modifié)'})
     check("il modifie l'examen du professeur", r.status_code == 200, r.get_data(as_text=True)[:140])
     r = c.post(f'/api/online_exams/{eid}/waves/plan', headers=hm, json={'count': 2, 'first_start': Z(now + timedelta(minutes=30))})
@@ -125,12 +141,28 @@ try:
     check("il publie les résultats", r.status_code == 200, r.get_data(as_text=True)[:140])
 
     # examen créé par le responsable : un autre professeur ne peut pas y toucher
-    r = c.post('/api/online_exams', headers=hm, json={'subject_id': sid_prof, 'title': f'Examen resp {tag}',
+    r = c.post('/api/online_exams', headers=hm, json={'subject_id': sid_mgr, 'title': f'Examen resp {tag}',
                'start_time': Z(now + timedelta(minutes=300)), 'end_time': Z(now + timedelta(minutes=360))})
     eid2 = (r.get_json().get('exam') or r.get_json()).get('id'); made['exams'].append(eid2)
     check("il crée un examen", r.status_code in (200, 201), r.get_data(as_text=True)[:140])
-    other = mk(UserRole.PROFESSOR, 'autre')
-    check("un professeur étranger à cet examen reste refusé", c.post(f'/api/online_exams/{eid2}/activate', headers=H(other)).status_code == 403)
+    check("un professeur d'un autre EC ne voit pas cet examen", not any(e['id'] == eid2 for e in c.get('/api/online_exams', headers=H(other)).get_json()))
+    check("… et ne peut pas l'ouvrir", c.get(f'/api/online_exams/{eid2}/details', headers=H(other)).status_code == 403)
+    check("… ni l'activer", c.post(f'/api/online_exams/{eid2}/activate', headers=H(other)).status_code == 403)
+    check("le professeur de l'EC voit l'examen créé par le responsable", any(e['id'] == eid2 for e in c.get('/api/online_exams', headers=hp).get_json()))
+    check("… peut l'ouvrir", c.get(f'/api/online_exams/{eid2}/details', headers=hp).status_code == 200)
+    check("… et voit le sujet créé à sa place", any(x['id'] == sid_mgr for x in c.get('/api/subjects', headers=hp).get_json()))
+    check("le tuteur de l'EC voit aussi l'examen", any(e['id'] == eid2 for e in c.get('/api/online_exams', headers=H(tut)).get_json()))
+    check("… mais ne peut pas l'activer", c.post(f'/api/online_exams/{eid2}/activate', headers=H(tut)).status_code == 403)
+    check("… ni publier les résultats", c.put(f'/api/online_exams/{eid2}/publish-results', headers=H(tut), json={'published': True}).status_code == 403)
+    check("le responsable de l'EC peut modifier l'examen du responsable d'examen", c.put(f'/api/admin/online_exams/{eid2}', headers=hp, json={'title': f'Examen resp {tag} (relu)'}).status_code == 200)
+    check("… et l'activer", c.post(f'/api/online_exams/{eid2}/activate', headers=hp).status_code == 200)
+
+    print('\n== Notifications examen par examen ==')
+    from notif_bus import _exam_staff_ids
+    staff = _exam_staff_ids(eid2)
+    check("le responsable d'examen est prévenu", mgr.id in staff)
+    check("le professeur et le tuteur de l'EC sont prévenus", prof.id in staff and tut.id in staff)
+    check("un professeur d'un autre EC ne l'est pas", other.id not in staff)
 
     print('\n== Administrateur : aucune régression ==')
     check("tableau de bord", c.get('/api/admin/dashboard', headers=ha).status_code == 200)

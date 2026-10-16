@@ -110,6 +110,11 @@ def external_professor_create_exam():
             return jsonify({'error': "Le sujet sélectionné n'existe pas"}), 404
         if subject.creator_id != user_id:
             return jsonify({'error': 'Vous ne pouvez utiliser que vos propres sujets'}), 403
+        from services.ec_rights import require_exam_author
+        try:
+            require_exam_author(session, subject, session.get(User, user_id))
+        except PermissionError as _pe:
+            return jsonify({'error': str(_pe)}), 403
 
         try:
             raw_start = data['start_time'].strip().replace('Z', '+00:00')

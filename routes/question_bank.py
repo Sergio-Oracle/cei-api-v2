@@ -401,6 +401,11 @@ def assemble_from_bank():
         student_level  = data.get('student_level', 'Licence')
         ec_id          = data.get('ec_id') or None
         exam_type_hint = data.get('exam_type', '')
+        from services.ec_rights import require_author
+        try:
+            require_author(session, int(ec_id) if ec_id else None, user)
+        except PermissionError as _pe:
+            session.close(); return jsonify({'error': str(_pe)}), 403
 
         if not question_ids:
             session.close(); return jsonify({'error': 'Aucune question sélectionnée'}), 400

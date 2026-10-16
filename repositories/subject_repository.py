@@ -29,7 +29,12 @@ class SubjectRepository:
             if role == UserRole.STUDENT:
                 subjects = query.filter_by(is_active=True).order_by(desc(Subject.created_at)).all()
             elif role == UserRole.PROFESSOR:
-                subjects = query.filter(Subject.creator_id == user_id).order_by(desc(Subject.created_at)).all()
+                # ses sujets ET ceux des EC où il est affecté (créés à sa place par le responsable d'examen)
+                from sqlalchemy import or_, select
+                from models import ECAssignment
+                my_ecs = select(ECAssignment.ec_id).where(ECAssignment.professor_id == user_id)
+                subjects = query.filter(or_(Subject.creator_id == user_id, Subject.ec_id.in_(my_ecs))
+                                        ).order_by(desc(Subject.created_at)).all()
             else:
                 subjects = query.order_by(desc(Subject.created_at)).all()
 

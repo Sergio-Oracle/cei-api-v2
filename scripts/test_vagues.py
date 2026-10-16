@@ -47,7 +47,10 @@ def H(u, role): return {'Authorization': 'Bearer ' + create_access_token(u.id, r
 
 try:
     print('\n== Préparation ==')
-    admin = s.query(User).filter_by(role=UserRole.ADMIN, is_active=True).order_by(User.id).first()
+    # Administrateur TEMPORAIRE (jamais un vrai compte : ses actions laissent des traces dans le journal d'activité)
+    admin = User(email=f'smoke.{tag}.adm@test.invalid', full_name='Smoke Test Admin', role=UserRole.ADMIN, is_active=True,
+                 email_verified=True, has_email=True, password_hash=generate_password_hash('x'))
+    s.add(admin); s.commit(); made['users'].append(admin.id)
     ha = H(admin, 'admin')
     ec = (s.query(EC).filter(EC.ue_id.isnot(None), ~EC.id.in_(s.query(ProctorGroupEC.ec_id)),
                              ~EC.ue_id.in_(s.query(StudentUEEnrollment.ue_id)))      # UE sans aucun inscrit : seuls nos comptes de test
@@ -389,6 +392,8 @@ finally:
             u = s.get(User, uid)
             if u: s.delete(u)
         s.commit()
+        from models import StaffAuditLog as _SAL
+        s.query(_SAL).filter(_SAL.user_email.like('%@test.invalid')).delete(synchronize_session=False); s.commit()   # traces d'audit des comptes de test
         print('\n(nettoyage terminé)')
     except Exception as e:
         s.rollback(); print('Nettoyage incomplet :', e)

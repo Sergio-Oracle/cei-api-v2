@@ -119,6 +119,8 @@ finally:
     if 'sub' in ids: s.query(Subject).filter_by(id=ids['sub']).delete()
     s.commit()
     for u in ids.get('users', []): s.query(User).filter_by(id=u).delete()
+    from models import StaffAuditLog as _SAL
+    s.query(_SAL).filter(_SAL.user_email.like('%@test.invalid')).delete(synchronize_session=False); s.commit()   # traces d'audit des comptes de test
     s.commit(); print('\n(nettoyage terminé)')
 
 ok = sum(1 for _, r in RESULTS if r)

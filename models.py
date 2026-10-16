@@ -14,6 +14,7 @@ from sqlalchemy import (
     DateTime, Boolean, ForeignKey, Enum as SQLEnum, UniqueConstraint
 )
 from datetime import timedelta, timezone, datetime
+from sqlalchemy import Index
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
 import enum
@@ -1365,6 +1366,35 @@ class ExamWaveStudent(Base):
 
     wave = relationship('ExamWave', back_populates='students')
     student = relationship('User', foreign_keys=[student_id])
+
+
+class StaffAuditLog(Base):
+    """Journal d'activité des comptes à privilèges (administrateurs et responsables d'examen) : qui a fait
+    quoi, quand, d'où. Alimenté automatiquement pour chaque requête de ces comptes (services/audit.py) ;
+    consultable uniquement par le compte « propriétaire » (routes/audit.py). Ajout seul : aucune route ne
+    modifie ni ne supprime ces lignes."""
+    __tablename__ = 'staff_audit_log'
+
+    id           = Column(Integer, primary_key=True)
+    created_at   = Column(DateTime, default=datetime.utcnow, index=True)
+    user_id      = Column(Integer, index=True)           # pas de clé étrangère : la trace survit à la suppression du compte
+    user_name    = Column(String(150))
+    user_email   = Column(String(200))
+    role         = Column(String(30))
+    kind         = Column(String(20), index=True)        # create | update | delete | read | login | login_failed | logout | other
+    method       = Column(String(8))
+    path         = Column(String(400))
+    rule         = Column(String(200))
+    status_code  = Column(Integer)
+    label        = Column(String(300))                   # « Activation de l'examen »
+    target_type  = Column(String(30))                    # exam | subject | user | attempt | ...
+    target_id    = Column(Integer)
+    target_label = Column(String(300))                   # titre/nom au moment de l'action (survit à la suppression)
+    ip           = Column(String(64))
+    user_agent   = Column(String(300))
+    details      = Column(Text)                          # JSON : champs envoyés (sans secrets)
+
+    __table_args__ = (Index('ix_staff_audit_user_time', 'user_id', 'created_at'),)
 
 
 class TokenBlocklist(Base):

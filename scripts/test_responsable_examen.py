@@ -43,7 +43,10 @@ def mk(role, name):
 
 try:
     print('\n== Création du compte ==')
-    admin = s.query(User).filter_by(role=UserRole.ADMIN, is_active=True).order_by(User.id).first()
+    # Administrateur TEMPORAIRE (jamais un vrai compte : ses actions laissent des traces dans le journal d'activité)
+    admin = User(email=f'smoke.{tag}.adm@test.invalid', full_name='Smoke Test Admin', role=UserRole.ADMIN, is_active=True,
+                 email_verified=True, has_email=True, password_hash=generate_password_hash('x'))
+    s.add(admin); s.commit(); made['users'].append(admin.id)
     ha = H(admin)
     r = c.post('/api/admin/users', headers=ha, json={'email': f'resp.{tag}.mgr@test.invalid', 'full_name': 'Resp Test mgr',
                'name': 'Resp Test mgr', 'password': 'MotDePasse-Test-1', 'role': 'responsable_examen'})
@@ -190,6 +193,8 @@ finally:
             u = s.get(User, uid)
             if u: s.delete(u)
         s.commit()
+        from models import StaffAuditLog as _SAL
+        s.query(_SAL).filter(_SAL.user_email.like('%@test.invalid')).delete(synchronize_session=False); s.commit()   # traces d'audit des comptes de test
         print('\n(nettoyage terminé)')
     except Exception as e:
         s.rollback(); print('Nettoyage incomplet :', e)

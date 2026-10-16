@@ -179,6 +179,8 @@ finally:
         for uid in made['users']:
             r_.delete(f'cei:biometric:verify:{uid}', f'cei:notif:user:{uid}', f'cei:notif:history:{uid}', f'cei:session:active:{uid}')
         r_.delete('cei:sweep:uncorrected')
+        from models import StaffAuditLog as _SAL
+        s.query(_SAL).filter(_SAL.user_email.like('%@test.invalid')).delete(synchronize_session=False); s.commit()
         print('  données de test supprimées')
     except Exception as e:
         print('  ⚠ nettoyage incomplet :', e)

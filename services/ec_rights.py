@@ -20,7 +20,7 @@ def assignment_kind(session, ec_id, user_id):
     a = session.query(ECAssignment).filter_by(ec_id=ec_id, professor_id=user_id).first()
     if not a:
         return None
-    return a.kind or 'responsable'
+    return getattr(a, 'kind', None) or 'responsable'   # base sans colonne `kind` (production) : tout est « responsable »
 
 
 def can_author(session, ec_id, user) -> bool:

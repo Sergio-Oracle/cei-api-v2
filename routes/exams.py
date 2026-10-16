@@ -468,7 +468,10 @@ def extend_online_exam(exam_id):
             names = ', '.join(w.name for w in done)
             exam_dict = exam.to_dict()
             session.close()
-            from services.moodle_calendar import schedule_sync; schedule_sync(exam_id)
+            try:
+                from services.moodle_calendar import schedule_sync; schedule_sync(exam_id)
+            except Exception:
+                pass                        # pas de synchro Moodle sur cette installation
             return jsonify({'success': True, 'message': f'{names} : +{minutes} minutes',
                             'new_end_time': exam_dict.get('end_time'),
                             'new_duration_minutes': exam_dict.get('duration_minutes')})

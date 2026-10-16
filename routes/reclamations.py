@@ -236,7 +236,7 @@ def respond_reclamation(rid):
         session = get_session()
         user    = session.query(User).filter_by(id=user_id).first()
 
-        if user.role not in [UserRole.PROFESSOR, UserRole.ADMIN]:
+        if user.role not in [UserRole.PROFESSOR, UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN]:
             session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
 
         rec = session.query(Reclamation).options(
@@ -245,7 +245,7 @@ def respond_reclamation(rid):
         ).filter_by(id=rid).first()
         if not rec: session.close(); return jsonify({'error': 'Réclamation non trouvée'}), 404
 
-        if user.role != UserRole.ADMIN:
+        if user.role not in (UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN):
             owner_id = (rec.paper.subject.creator_id if rec.paper and rec.paper.subject
                         else rec.attempt.exam.created_by_id if rec.attempt and rec.attempt.exam
                         else None)
@@ -322,7 +322,7 @@ def process_reclamation_ia(rid):
         session = get_session()
         user    = session.query(User).filter_by(id=user_id).first()
 
-        if user.role not in [UserRole.PROFESSOR, UserRole.ADMIN]:
+        if user.role not in [UserRole.PROFESSOR, UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN]:
             session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
 
         rec = session.query(Reclamation).filter_by(id=rid).first()
@@ -344,7 +344,7 @@ def process_reclamation_ia(rid):
             # de sécurité, pas le chemin attendu.
             session.close(); return jsonify({'error': "Réclamation sans copie — impossible d'analyser."}), 400
 
-        if user.role != UserRole.ADMIN:
+        if user.role not in (UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN):
             owner_id = (paper.subject.creator_id if paper and paper.subject
                         else attempt.exam.created_by_id if attempt and attempt.exam
                         else None)
@@ -486,7 +486,7 @@ def apply_ai_proposal(rid):
             return jsonify({'error': "Répondez manuellement pour les réclamations d'examens en ligne."}), 400
 
         subject = paper.subject
-        if user.role != UserRole.ADMIN and not (
+        if user.role not in (UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN) and not (
             user.role == UserRole.PROFESSOR and subject and subject.creator_id == user_id
         ):
             session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
@@ -546,7 +546,7 @@ def reject_ai_proposal(rid):
             return jsonify({'error': "Répondez manuellement pour les réclamations d'examens en ligne."}), 400
 
         subject = paper.subject
-        if user.role != UserRole.ADMIN and not (
+        if user.role not in (UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN) and not (
             user.role == UserRole.PROFESSOR and subject and subject.creator_id == user_id
         ):
             session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
@@ -579,7 +579,7 @@ def _can_manage_reclamation(user, rec: Reclamation) -> bool:
     copie ni tentative liée — cas des enregistrements dont la copie
     d'origine a été supprimée) n'a pas de propriétaire identifiable et
     n'est donc gérable que par un admin."""
-    if user.role == UserRole.ADMIN:
+    if user.role in (UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN):
         return True
     if user.role != UserRole.PROFESSOR:
         return False
@@ -597,7 +597,7 @@ def delete_reclamation(rid):
         user_id = get_current_user_id()
         session = get_session()
         user    = session.query(User).filter_by(id=user_id).first()
-        if not user or user.role not in [UserRole.PROFESSOR, UserRole.ADMIN]:
+        if not user or user.role not in [UserRole.PROFESSOR, UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN]:
             session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
 
         rec = session.query(Reclamation).options(
@@ -628,7 +628,7 @@ def bulk_delete_reclamations():
         user_id = get_current_user_id()
         session = get_session()
         user    = session.query(User).filter_by(id=user_id).first()
-        if not user or user.role not in [UserRole.PROFESSOR, UserRole.ADMIN]:
+        if not user or user.role not in [UserRole.PROFESSOR, UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN]:
             session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
 
         data = request.get_json() or {}

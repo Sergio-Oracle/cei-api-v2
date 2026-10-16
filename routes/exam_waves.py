@@ -20,7 +20,7 @@ def _load(session, exam_id):
     exam = session.query(OnlineExam).filter_by(id=exam_id).first()
     if not exam:
         return None, user, (jsonify({'error': 'Examen non trouvé'}), 404)
-    if not user or user.role not in (UserRole.PROFESSOR, UserRole.ADMIN):
+    if not user or user.role not in (UserRole.PROFESSOR, UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN):
         return None, user, (jsonify({'error': 'Accès non autorisé'}), 403)
     if user.role == UserRole.PROFESSOR and exam.created_by_id != user.id:
         return None, user, (jsonify({'error': 'Vous ne pouvez gérer que les vagues de vos propres examens'}), 403)

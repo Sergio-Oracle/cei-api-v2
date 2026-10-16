@@ -196,7 +196,7 @@ class SubjectService:
         role: UserRole,
         ec_id: Optional[int] = None,
     ) -> dict:
-        if role not in (UserRole.PROFESSOR, UserRole.ADMIN):
+        if role not in (UserRole.PROFESSOR, UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN):
             raise PermissionError('Accès non autorisé')
         return SubjectRepository.create(
             title=title,
@@ -221,7 +221,7 @@ class SubjectService:
         total_points: int = 20,
     ) -> dict:
         # Authorization check
-        if role not in (UserRole.PROFESSOR, UserRole.ADMIN):
+        if role not in (UserRole.PROFESSOR, UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN):
             raise PermissionError('Accès non autorisé')
 
         # Total du barème librement choisi par le professeur (20, 30, 40, 60,
@@ -352,7 +352,7 @@ class SubjectService:
                rubric: Optional[str] = None) -> dict:
         """Édite un sujet déjà validé — bloqué si un examen lié est déjà
         actif/clôturé ou a reçu des tentatives (contenu déjà vu/corrigé)."""
-        if role not in (UserRole.ADMIN, UserRole.PROFESSOR):
+        if role not in (UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN, UserRole.PROFESSOR):
             raise PermissionError('Non autorisé')
         subj = SubjectRepository.find_by_id(subject_id)
         if not subj:
@@ -369,7 +369,7 @@ class SubjectService:
 
     @staticmethod
     def delete(subject_id: int, user_id: int, role: UserRole) -> None:
-        if role not in (UserRole.ADMIN, UserRole.PROFESSOR):
+        if role not in (UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN, UserRole.PROFESSOR):
             raise PermissionError('Non autorisé')
         subj = SubjectRepository.find_by_id(subject_id)
         if not subj:
@@ -382,7 +382,7 @@ class SubjectService:
 
     @staticmethod
     def upload_image(subject_id: int, img: FileStorage, user_id: int, role: UserRole) -> str:
-        if role not in (UserRole.PROFESSOR, UserRole.ADMIN):
+        if role not in (UserRole.PROFESSOR, UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN):
             raise PermissionError('Accès non autorisé')
         subj = SubjectRepository.find_by_id(subject_id)
         if not subj:

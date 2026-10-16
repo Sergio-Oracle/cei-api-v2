@@ -207,7 +207,7 @@ def create_online_exam():
         session = get_session()
 
         user = session.query(User).filter_by(id=user_id).first()
-        if user.role not in [UserRole.PROFESSOR, UserRole.ADMIN]:
+        if user.role not in [UserRole.PROFESSOR, UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN]:
             session.close()
             return jsonify({'error': 'Accès réservé aux professeurs et administrateurs'}), 403
 
@@ -358,7 +358,7 @@ def activate_online_exam(exam_id):
         session = get_session()
         
         user = session.query(User).filter_by(id=user_id).first()
-        if user.role not in [UserRole.PROFESSOR, UserRole.ADMIN]:
+        if user.role not in [UserRole.PROFESSOR, UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN]:
             session.close()
             return jsonify({'error': 'Accès non autorisé'}), 403
         
@@ -434,7 +434,7 @@ def extend_online_exam(exam_id):
         user_id = get_current_user_id()
         session = get_session()
         user = session.query(User).filter_by(id=user_id).first()
-        if user.role not in [UserRole.PROFESSOR, UserRole.ADMIN]:
+        if user.role not in [UserRole.PROFESSOR, UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN]:
             session.close()
             return jsonify({'error': 'Accès non autorisé'}), 403
         exam = session.query(OnlineExam).filter_by(id=exam_id).first()
@@ -499,7 +499,7 @@ def close_online_exam(exam_id):
         session = get_session()
         
         user = session.query(User).filter_by(id=user_id).first()
-        if user.role not in [UserRole.PROFESSOR, UserRole.ADMIN]:
+        if user.role not in [UserRole.PROFESSOR, UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN]:
             session.close()
             return jsonify({'error': 'Accès non autorisé'}), 403
         
@@ -554,7 +554,7 @@ def edit_online_exam(exam_id):
         user_id = get_current_user_id()
         session = get_session()
         user = session.query(User).filter_by(id=user_id).first()
-        if user.role not in [UserRole.PROFESSOR, UserRole.ADMIN]:
+        if user.role not in [UserRole.PROFESSOR, UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN]:
             session.close()
             return jsonify({'error': 'Accès non autorisé'}), 403
         exam = session.query(OnlineExam).filter_by(id=exam_id).first()
@@ -685,7 +685,7 @@ def delete_online_exam(exam_id):
         session = get_session()
         
         user = session.query(User).filter_by(id=user_id).first()
-        if user.role not in [UserRole.PROFESSOR, UserRole.ADMIN]:
+        if user.role not in [UserRole.PROFESSOR, UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN]:
             session.close()
             return jsonify({'error': 'Accès non autorisé'}), 403
         
@@ -812,7 +812,7 @@ def get_online_exam_details(exam_id):
                 'content': content,
             }
             # Barème (contient les réponses) réservé aux professeurs/admins
-            if user.role in [UserRole.PROFESSOR, UserRole.ADMIN]:
+            if user.role in [UserRole.PROFESSOR, UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN]:
                 subject_content['rubric'] = exam.subject.rubric
             exam_dict['subject_content'] = subject_content
         
@@ -2419,7 +2419,7 @@ def unban_exam_attempt(attempt_id):
         session = get_session()
         user = session.query(User).filter_by(id=user_id).first()
 
-        if user.role not in [UserRole.ADMIN, UserRole.PROFESSOR]:
+        if user.role not in [UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN, UserRole.PROFESSOR]:
             session.close()
             return jsonify({'error': 'Accès non autorisé'}), 403
 
@@ -2475,7 +2475,7 @@ def export_exam_results_csv(exam_id):
         session = get_session()
         user = session.query(User).filter_by(id=user_id).first()
 
-        if user.role not in [UserRole.ADMIN, UserRole.PROFESSOR]:
+        if user.role not in [UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN, UserRole.PROFESSOR]:
             session.close()
             return jsonify({'error': 'Accès non autorisé'}), 403
 
@@ -2704,7 +2704,7 @@ def correct_exam_attempt(attempt_id):
         session = get_session()
 
         user = session.query(User).filter_by(id=user_id).first()
-        if user.role not in [UserRole.PROFESSOR, UserRole.ADMIN]:
+        if user.role not in [UserRole.PROFESSOR, UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN]:
             session.close()
             return jsonify({'error': 'Accès non autorisé'}), 403
 
@@ -2912,7 +2912,7 @@ def get_exam_attempts(exam_id):
         session = get_session()
 
         user = session.query(User).filter_by(id=user_id).first()
-        if user.role not in [UserRole.PROFESSOR, UserRole.ADMIN]:
+        if user.role not in [UserRole.PROFESSOR, UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN]:
             session.close()
             return jsonify({'error': 'Accès non autorisé'}), 403
 
@@ -2999,7 +2999,7 @@ def export_exam_csv(exam_id):
         user_id = get_current_user_id()
         session = get_session()
         user = session.query(User).filter_by(id=user_id).first()
-        if user.role not in [UserRole.PROFESSOR, UserRole.ADMIN]:
+        if user.role not in [UserRole.PROFESSOR, UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN]:
             session.close()
             return jsonify({'error': 'Accès non autorisé'}), 403
         exam = session.query(OnlineExam).filter_by(id=exam_id).first()
@@ -3063,7 +3063,7 @@ def import_exam_grades(exam_id):
         user_id = get_current_user_id()
         session = get_session()
         user = session.query(User).filter_by(id=user_id).first()
-        if user.role not in [UserRole.PROFESSOR, UserRole.ADMIN]:
+        if user.role not in [UserRole.PROFESSOR, UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN]:
             session.close()
             return jsonify({'error': 'Accès non autorisé'}), 403
         exam = session.query(OnlineExam).filter_by(id=exam_id).first()
@@ -3177,7 +3177,7 @@ def publish_exam_results(exam_id):
         user_id = get_current_user_id()
         session = get_session()
         user = session.query(User).filter_by(id=user_id).first()
-        if user.role not in [UserRole.PROFESSOR, UserRole.ADMIN]:
+        if user.role not in [UserRole.PROFESSOR, UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN]:
             session.close()
             return jsonify({'error': 'Accès non autorisé'}), 403
         exam = session.query(OnlineExam).filter_by(id=exam_id).first()
@@ -3281,7 +3281,7 @@ def get_exam_stats(exam_id):
         user_id = get_current_user_id()
         session = get_session()
         user = session.query(User).filter_by(id=user_id).first()
-        if user.role not in [UserRole.PROFESSOR, UserRole.ADMIN]:
+        if user.role not in [UserRole.PROFESSOR, UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN]:
             session.close()
             return jsonify({'error': 'Accès non autorisé'}), 403
         exam = session.query(OnlineExam).filter_by(id=exam_id).first()
@@ -3342,7 +3342,7 @@ def get_exam_bilan(exam_id):
         user_id = get_current_user_id()
         session = get_session()
         user = session.query(User).filter_by(id=user_id).first()
-        if not user or user.role not in [UserRole.PROFESSOR, UserRole.ADMIN]:
+        if not user or user.role not in [UserRole.PROFESSOR, UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN]:
             session.close()
             return jsonify({'error': 'Accès non autorisé'}), 403
         exam = session.query(OnlineExam).filter_by(id=exam_id).first()
@@ -3421,7 +3421,7 @@ def get_exam_bilan_pdf(exam_id):
         user_id = get_current_user_id()
         session = get_session()
         user = session.query(User).filter_by(id=user_id).first()
-        if not user or user.role not in [UserRole.PROFESSOR, UserRole.ADMIN]:
+        if not user or user.role not in [UserRole.PROFESSOR, UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN]:
             session.close()
             return jsonify({'error': 'Accès non autorisé'}), 403
         exam = session.query(OnlineExam).filter_by(id=exam_id).first()
@@ -3540,7 +3540,7 @@ def get_exam_security_report_pdf(exam_id):
         user_id = get_current_user_id()
         session = get_session()
         user = session.query(User).filter_by(id=user_id).first()
-        if not user or user.role not in [UserRole.PROFESSOR, UserRole.ADMIN]:
+        if not user or user.role not in [UserRole.PROFESSOR, UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN]:
             session.close()
             return jsonify({'error': 'Accès non autorisé'}), 403
         exam = session.query(OnlineExam).filter_by(id=exam_id).first()
@@ -3654,7 +3654,7 @@ def manual_grade_attempt(attempt_id):
         user_id = get_current_user_id()
         session = get_session()
         user = session.query(User).filter_by(id=user_id).first()
-        if user.role not in [UserRole.PROFESSOR, UserRole.ADMIN]:
+        if user.role not in [UserRole.PROFESSOR, UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN]:
             session.close()
             return jsonify({'error': 'Accès non autorisé'}), 403
         attempt = session.query(ExamAttempt).filter_by(id=attempt_id).first()
@@ -3713,7 +3713,7 @@ def update_question_grades(attempt_id):
         user_id = get_current_user_id()
         session = get_session()
         user = session.query(User).filter_by(id=user_id).first()
-        if user.role not in [UserRole.PROFESSOR, UserRole.ADMIN]:
+        if user.role not in [UserRole.PROFESSOR, UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN]:
             session.close()
             return jsonify({'error': 'Accès non autorisé'}), 403
         attempt = session.query(ExamAttempt).options(joinedload(ExamAttempt.exam)).filter_by(id=attempt_id).first()
@@ -3840,7 +3840,7 @@ def plagiarism_check(exam_id):
         user_id = get_current_user_id()
         session = get_session()
         user = session.query(User).filter_by(id=user_id).first()
-        if user.role not in [UserRole.PROFESSOR, UserRole.ADMIN]:
+        if user.role not in [UserRole.PROFESSOR, UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN]:
             session.close()
             return jsonify({'error': 'Accès non autorisé'}), 403
         exam = session.query(OnlineExam).filter_by(id=exam_id).first()
@@ -3921,7 +3921,7 @@ def list_face_references():
     session = get_session()
     try:
         user = session.query(User).filter_by(id=user_id).first()
-        if not user or user.role not in [UserRole.ADMIN, UserRole.PROFESSOR]:
+        if not user or user.role not in [UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN, UserRole.PROFESSOR]:
             session.close()
             return jsonify({'error': 'Accès non autorisé'}), 403
 
@@ -4008,7 +4008,7 @@ def get_face_reference_photo(attempt_id):
     session = get_session()
     try:
         user = session.query(User).filter_by(id=user_id).first()
-        if not user or user.role not in [UserRole.ADMIN, UserRole.PROFESSOR]:
+        if not user or user.role not in [UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN, UserRole.PROFESSOR]:
             session.close()
             return jsonify({'error': 'Accès non autorisé'}), 403
 
@@ -4085,7 +4085,7 @@ def download_integrity_report(attempt_id):
         user_id = get_current_user_id()
         session = get_session()
         user = session.query(User).filter_by(id=user_id).first()
-        if user.role not in [UserRole.PROFESSOR, UserRole.ADMIN]:
+        if user.role not in [UserRole.PROFESSOR, UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN]:
             session.close()
             return jsonify({'error': 'Accès non autorisé'}), 403
         attempt = session.query(ExamAttempt).options(
@@ -4240,7 +4240,7 @@ def download_exam_security_report(exam_id):
         user_id = get_current_user_id()
         session = get_session()
         user = session.query(User).filter_by(id=user_id).first()
-        if user.role not in [UserRole.PROFESSOR, UserRole.ADMIN]:
+        if user.role not in [UserRole.PROFESSOR, UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN]:
             session.close()
             return jsonify({'error': 'Accès non autorisé'}), 403
         exam = session.query(OnlineExam).filter_by(id=exam_id).first()
@@ -4358,7 +4358,7 @@ def get_exam_incidents(exam_id):
         session = get_session()
         
         user = session.query(User).filter_by(id=user_id).first()
-        if user.role not in [UserRole.PROFESSOR, UserRole.ADMIN, UserRole.SURVEILLANT]:
+        if user.role not in [UserRole.PROFESSOR, UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN, UserRole.SURVEILLANT]:
             session.close()
             return jsonify({'error': 'Accès non autorisé'}), 403
 
@@ -4594,7 +4594,7 @@ def get_exams_history():
         session = get_session()
         
         user = session.query(User).filter_by(id=user_id).first()
-        if user.role != UserRole.ADMIN:
+        if user.role not in (UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN):
             session.close()
             return jsonify({'error': 'Accès réservé aux administrateurs'}), 403
         
@@ -4661,7 +4661,7 @@ def professor_corrected_papers():
         session = get_session()
 
         user = session.query(User).filter_by(id=user_id).first()
-        if user.role not in [UserRole.PROFESSOR, UserRole.ADMIN]:
+        if user.role not in [UserRole.PROFESSOR, UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN]:
             session.close()
             return jsonify({'error': 'Accès non autorisé'}), 403
 
@@ -4739,7 +4739,7 @@ def generate_exam_suggestions():
     
     user = session.query(User).filter_by(id=int(current_user_id)).first()
     
-    if not user or user.role not in [UserRole.PROFESSOR, UserRole.ADMIN]:
+    if not user or user.role not in [UserRole.PROFESSOR, UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN]:
         session.close()
         return jsonify({'success': False, 'error': 'Accès non autorisé'}), 403
     
@@ -5160,7 +5160,7 @@ def generate_full_exam_from_suggestion():
     user = session.query(User).filter_by(id=int(user_id)).first()
     session.close()
 
-    if not user or user.role not in [UserRole.PROFESSOR, UserRole.ADMIN]:
+    if not user or user.role not in [UserRole.PROFESSOR, UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN]:
         return jsonify({'error': 'Accès non autorisé'}), 403
 
     data = request.get_json()
@@ -5778,7 +5778,7 @@ def generate_more_questions():
     user = session.query(User).filter_by(id=int(user_id)).first()
     session.close()
 
-    if not user or user.role not in [UserRole.PROFESSOR, UserRole.ADMIN]:
+    if not user or user.role not in [UserRole.PROFESSOR, UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN]:
         return jsonify({'error': 'Accès non autorisé'}), 403
 
     data = request.get_json() or {}
@@ -5933,7 +5933,7 @@ def suggest_question_count():
     session = get_session()
     user = session.query(User).filter_by(id=int(user_id)).first()
     session.close()
-    if not user or user.role not in [UserRole.PROFESSOR, UserRole.ADMIN]:
+    if not user or user.role not in [UserRole.PROFESSOR, UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN]:
         return jsonify({'error': 'Accès non autorisé'}), 403
 
     data = request.get_json(silent=True) or {}
@@ -6012,7 +6012,7 @@ def create_subject_from_suggestion():
     session = get_session()
 
     user = session.query(User).filter_by(id=int(current_user_id)).first()
-    if not user or user.role not in [UserRole.PROFESSOR, UserRole.ADMIN]:
+    if not user or user.role not in [UserRole.PROFESSOR, UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN]:
         session.close()
         return jsonify({'success': False, 'error': 'Accès non autorisé'}), 403
 
@@ -6120,7 +6120,7 @@ def upload_subject_media_route():
         user_id = get_current_user_id()
         session = get_session()
         user = session.query(User).filter_by(id=user_id).first()
-        if not user or user.role not in [UserRole.PROFESSOR, UserRole.ADMIN]:
+        if not user or user.role not in [UserRole.PROFESSOR, UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN]:
             session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
 
         media_type = (request.form.get('media_type') or '').strip()
@@ -6247,7 +6247,7 @@ def admin_security_report():
     session = get_session()
     try:
         user = session.query(User).filter_by(id=user_id).first()
-        if not user or user.role not in [UserRole.ADMIN, UserRole.PROFESSOR]:
+        if not user or user.role not in [UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN, UserRole.PROFESSOR]:
             session.close()
             return jsonify({'error': 'Accès non autorisé'}), 403
 
@@ -6491,7 +6491,7 @@ def grant_extra_time(attempt_id):
         user_id = get_current_user_id()
         session = get_session()
         role = get_current_user_role()
-        if role not in ['professor', 'admin', 'surveillant']:
+        if role not in ['professor', 'admin', 'responsable_examen', 'surveillant']:
             session.close()
             return jsonify({'error': 'Accès non autorisé'}), 403
         attempt = session.query(ExamAttempt).filter_by(id=attempt_id).first()
@@ -6665,7 +6665,7 @@ def add_proctor_note(attempt_id):
         user_id = get_current_user_id()
         session = get_session()
         role = get_current_user_role()
-        if role not in ['professor', 'admin', 'surveillant']:
+        if role not in ['professor', 'admin', 'responsable_examen', 'surveillant']:
             session.close()
             return jsonify({'error': 'Accès non autorisé'}), 403
         attempt = session.query(ExamAttempt).filter_by(id=attempt_id).first()
@@ -6717,7 +6717,7 @@ def get_proctor_notes(attempt_id):
         user_id = get_current_user_id()
         session = get_session()
         role = get_current_user_role()
-        if role not in ['professor', 'admin', 'surveillant']:
+        if role not in ['professor', 'admin', 'responsable_examen', 'surveillant']:
             session.close()
             return jsonify({'error': 'Accès non autorisé'}), 403
         logs = session.query(ExamActivityLog).filter_by(
@@ -6756,7 +6756,7 @@ def get_exam_qrcode(exam_id):
         user_id = get_current_user_id()
         session = get_session()
         role = get_current_user_role()
-        if role not in ['professor', 'admin']:
+        if role not in ['professor', 'admin', 'responsable_examen']:
             session.close()
             return jsonify({'error': 'Accès non autorisé'}), 403
         exam = session.query(OnlineExam).filter_by(id=exam_id).first()
@@ -6853,7 +6853,7 @@ def download_corrections_zip(exam_id):
         user_id = get_current_user_id()
         session = get_session()
         user = session.query(User).filter_by(id=user_id).first()
-        if user.role not in [UserRole.PROFESSOR, UserRole.ADMIN]:
+        if user.role not in [UserRole.PROFESSOR, UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN]:
             session.close()
             return jsonify({'error': 'Accès non autorisé'}), 403
         exam = session.query(OnlineExam).filter_by(id=exam_id).first()
@@ -7119,11 +7119,11 @@ def get_professor_analytics():
         user_id = get_current_user_id()
         session = get_session()
         user = session.query(User).filter_by(id=user_id).first()
-        if user.role not in [UserRole.PROFESSOR, UserRole.ADMIN]:
+        if user.role not in [UserRole.PROFESSOR, UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN]:
             session.close()
             return jsonify({'error': 'Accès non autorisé'}), 403
 
-        if user.role == UserRole.ADMIN:
+        if user.role in (UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN):
             exams = session.query(OnlineExam).options(joinedload(OnlineExam.subject).joinedload(Subject.ec)).all()
         else:
             exams = session.query(OnlineExam).options(joinedload(OnlineExam.subject).joinedload(Subject.ec)).filter_by(created_by_id=user_id).all()
@@ -7271,7 +7271,7 @@ def download_attempt_report_pdf(attempt_id):
         user_id = get_current_user_id()
         session = get_session()
         user = session.query(User).filter_by(id=user_id).first()
-        if user.role not in [UserRole.PROFESSOR, UserRole.ADMIN]:
+        if user.role not in [UserRole.PROFESSOR, UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN]:
             session.close()
             return jsonify({'error': 'Accès non autorisé'}), 403
 
@@ -7453,7 +7453,7 @@ def download_attempt_report_pdf(attempt_id):
 def _preview_allowed(session, user, exam) -> bool:
     if not user or not exam:
         return False
-    if user.role == UserRole.ADMIN:
+    if user.role in (UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN):
         return True
     if user.role != UserRole.PROFESSOR:
         return False

@@ -31,7 +31,7 @@ _VALID_LABELS = {'best', 'improve'}
 
 
 def _can_manage_example(user, ex: RestitutionExample) -> bool:
-    if user.role == UserRole.ADMIN:
+    if user.role in (UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN):
         return True
     if user.role != UserRole.PROFESSOR:
         return False
@@ -89,7 +89,7 @@ def create_restitution_example():
         user_id = get_current_user_id()
         session = get_session()
         user    = session.query(User).filter_by(id=user_id).first()
-        if not user or user.role not in [UserRole.PROFESSOR, UserRole.ADMIN]:
+        if not user or user.role not in [UserRole.PROFESSOR, UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN]:
             session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
 
         data       = request.get_json() or {}
@@ -217,7 +217,7 @@ def list_restitution_examples():
             query = query.filter(RestitutionExample.is_published.is_(True))
         elif user.role == UserRole.PROFESSOR:
             query = query.filter(RestitutionExample.created_by_id == user_id)
-        elif user.role != UserRole.ADMIN:
+        elif user.role not in (UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN):
             session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
 
         examples = query.order_by(desc(RestitutionExample.created_at)).all()
@@ -239,7 +239,7 @@ def update_restitution_example(eid):
         user_id = get_current_user_id()
         session = get_session()
         user    = session.query(User).filter_by(id=user_id).first()
-        if not user or user.role not in [UserRole.PROFESSOR, UserRole.ADMIN]:
+        if not user or user.role not in [UserRole.PROFESSOR, UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN]:
             session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
 
         ex = session.query(RestitutionExample).filter_by(id=eid).first()
@@ -280,7 +280,7 @@ def publish_restitution_example(eid):
         user_id = get_current_user_id()
         session = get_session()
         user    = session.query(User).filter_by(id=user_id).first()
-        if not user or user.role not in [UserRole.PROFESSOR, UserRole.ADMIN]:
+        if not user or user.role not in [UserRole.PROFESSOR, UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN]:
             session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
 
         ex = session.query(RestitutionExample).filter_by(id=eid).first()
@@ -309,7 +309,7 @@ def delete_restitution_example(eid):
         user_id = get_current_user_id()
         session = get_session()
         user    = session.query(User).filter_by(id=user_id).first()
-        if not user or user.role not in [UserRole.PROFESSOR, UserRole.ADMIN]:
+        if not user or user.role not in [UserRole.PROFESSOR, UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN]:
             session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
 
         ex = session.query(RestitutionExample).filter_by(id=eid).first()

@@ -40,7 +40,7 @@ def generate_transcript(student_id, semester_id):
         session = get_session()
         user    = session.query(User).filter_by(id=user_id).first()
 
-        if user.role not in [UserRole.ADMIN, UserRole.PROFESSOR]:
+        if user.role not in [UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN, UserRole.PROFESSOR]:
             session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
 
         student  = session.query(User).filter_by(id=student_id, role=UserRole.STUDENT).first()
@@ -228,7 +228,7 @@ def get_all_transcripts():
         session = get_session()
         user    = session.query(User).filter_by(id=user_id).first()
 
-        if user.role not in [UserRole.ADMIN, UserRole.PROFESSOR]:
+        if user.role not in [UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN, UserRole.PROFESSOR]:
             session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
 
         query = session.query(GradeTranscript).options(
@@ -490,7 +490,7 @@ def toggle_transcript_publish(tid):
         session = get_session()
         user    = session.query(User).filter_by(id=user_id).first()
 
-        if user.role not in [UserRole.ADMIN, UserRole.PROFESSOR]:
+        if user.role not in [UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN, UserRole.PROFESSOR]:
             session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
 
         t = session.query(GradeTranscript).filter_by(id=tid).first()

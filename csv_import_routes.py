@@ -276,7 +276,7 @@ def register_csv_routes(app):
             session = get_session()
 
             user = session.query(User).filter_by(id=user_id).first()
-            if user.role != UserRole.ADMIN:
+            if user.role not in (UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN):
                 session.close()
                 return jsonify({'error': 'Accès non autorisé'}), 403
 
@@ -304,7 +304,7 @@ def register_csv_routes(app):
             user_id = get_current_user_id()
             session = get_session()
             user = session.query(User).filter_by(id=user_id).first()
-            if not user or user.role != UserRole.ADMIN:
+            if not user or user.role not in (UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN):
                 session.close()
                 return jsonify({'error': 'Accès non autorisé'}), 403
             session.close()
@@ -481,7 +481,7 @@ def register_csv_routes(app):
 
             # Vérifier admin
             user = session_db.query(User).filter_by(id=current_user_id).first()
-            if not user or user.role != UserRole.ADMIN:
+            if not user or user.role not in (UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN):
                 session_db.close()
                 return jsonify({'error': 'Accès non autorisé'}), 403
 
@@ -927,7 +927,7 @@ def register_csv_routes(app):
             current_user_id = get_current_user_id()
             session_db = get_session()
             user = session_db.query(User).filter_by(id=current_user_id).first()
-            if not user or user.role != UserRole.ADMIN:
+            if not user or user.role not in (UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN):
                 session_db.close()
                 return jsonify({'error': 'Accès non autorisé'}), 403
 
@@ -984,7 +984,7 @@ def register_csv_routes(app):
             current_user_id = get_current_user_id()
             session_db = get_session()
             user = session_db.query(User).filter_by(id=current_user_id).first()
-            if not user or user.role != UserRole.ADMIN:
+            if not user or user.role not in (UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN):
                 session_db.close()
                 return jsonify({'error': 'Accès non autorisé'}), 403
 

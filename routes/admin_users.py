@@ -35,6 +35,12 @@ from utils import send_account_created_email
 admin_users_bp = Blueprint('admin_users', __name__)
 
 
+def _require_admin_like(session):
+    """Administrateur ou responsable d'examen (hors gestion des utilisateurs)."""
+    from helpers import require_admin_like
+    return require_admin_like(session)
+
+
 def _require_admin(session):
     """Vérifie que l'utilisateur courant est admin, ferme la session et lève 403 sinon.
     Factorisé dans helpers.require_admin (aussi utilisé par routes/api_clients.py)."""
@@ -94,7 +100,7 @@ def _link_student_to_formation(session, student, formation_id):
 def admin_dashboard():
     try:
         session = get_session()
-        if not _require_admin(session):
+        if not _require_admin_like(session):
             session.close()
             return jsonify({'error': 'Accès non autorisé'}), 403
 
@@ -141,7 +147,7 @@ def admin_corrected_papers():
     try:
         from sqlalchemy.orm import joinedload
         session = get_session()
-        if not _require_admin(session):
+        if not _require_admin_like(session):
             session.close()
             return jsonify({'error': 'Accès non autorisé'}), 403
 
@@ -177,7 +183,7 @@ def admin_corrected_papers():
 def get_proctor_users():
     try:
         role = get_current_user_role()
-        if role not in ['professor', 'admin']:
+        if role not in ['professor', 'admin', 'responsable_examen']:
             return jsonify({'error': 'Accès non autorisé'}), 403
         role_param = request.args.get('role', 'surveillant')
         target_role = UserRole.SUPERVISEUR if role_param == 'superviseur' else UserRole.SURVEILLANT
@@ -205,7 +211,14 @@ def get_proctor_users():
 def get_all_users():
     try:
         session = get_session()
-        if not _require_admin(session):
+        caller = _require_admin_like(session)
+        if not caller:
+            session.close()
+            return jsonify({'error': 'Accès non autorisé'}), 403
+        # Le responsable d'examen consulte les enseignants/surveillants/superviseurs pour les
+        # affectations et les groupes ; la gestion des comptes (et la liste des étudiants) reste
+        # à l'administrateur.
+        if caller.role != UserRole.ADMIN and request.args.get('role', '').strip().lower() in ('', 'student'):
             session.close()
             return jsonify({'error': 'Accès non autorisé'}), 403
 
@@ -346,12 +359,12 @@ def create_user():
         if existing:
             labels = {'professor': 'un enseignant', 'student': 'un étudiant',
                       'admin': 'un administrateur', 'surveillant': 'un surveillant',
-                      'superviseur': 'un superviseur'}
+                      'superviseur': 'un superviseur', 'responsable_examen': "un responsable d'examen"}
             label = labels.get(existing.role.value, 'un utilisateur')
             return jsonify({'error': f"Cet email est déjà utilisé par {label} ({existing.full_name})."}), 400
 
         role_str = data.get('role', 'student').upper()
-        if role_str not in ['STUDENT', 'PROFESSOR', 'ADMIN', 'SURVEILLANT', 'SUPERVISEUR']:
+        if role_str not in ['STUDENT', 'PROFESSOR', 'ADMIN', 'SURVEILLANT', 'SUPERVISEUR', 'RESPONSABLE_EXAMEN']:
             return jsonify({'error': 'Rôle invalide'}), 400
 
         # Niveau texte libre — fallback seulement si aucune Formation n'est
@@ -424,7 +437,7 @@ def update_user(target_id):
             user.password_hash = bcrypt.generate_password_hash(data['password']).decode('utf-8')
         if 'role' in data:
             rs = data['role'].upper()
-            if rs in ['STUDENT', 'PROFESSOR', 'ADMIN', 'SURVEILLANT', 'SUPERVISEUR']:
+            if rs in ['STUDENT', 'PROFESSOR', 'ADMIN', 'SURVEILLANT', 'SUPERVISEUR', 'RESPONSABLE_EXAMEN']:
                 user.role = UserRole[rs]
         if 'is_active' in data:
             user.is_active = bool(data['is_active'])
@@ -605,7 +618,7 @@ def _apply_student_list_filters(query, search, formation_id_raw, pole_id_raw):
 def get_students_list():
     try:
         role = get_current_user_role()
-        if role not in ['professor', 'admin']:
+        if role not in ['professor', 'admin', 'responsable_examen']:
             return jsonify({'error': 'Accès non autorisé'}), 403
         session = get_session()
         # Même correctif que GET /api/admin/users (04/09) : une requête
@@ -683,7 +696,7 @@ def get_students_list():
 def get_students_ids():
     try:
         role = get_current_user_role()
-        if role not in ['professor', 'admin']:
+        if role not in ['professor', 'admin', 'responsable_examen']:
             return jsonify({'error': 'Accès non autorisé'}), 403
         session = get_session()
         search      = request.args.get('search', '').strip()
@@ -709,7 +722,7 @@ def get_students_ids():
 def get_enrollment_stats():
     try:
         session = get_session()
-        if not _require_admin(session):
+        if not _require_admin_like(session):
             session.close()
             return jsonify({'error': 'Accès non autorisé'}), 403
 

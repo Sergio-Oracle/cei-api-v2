@@ -330,7 +330,7 @@ def get_teacher_proctor_token(exam_id):
     role = get_current_user_role()
     
 
-    if role not in ['professor', 'admin', 'surveillant']:
+    if role not in ['professor', 'admin', 'responsable_examen', 'surveillant']:
         return jsonify({'error': 'Accès réservé aux enseignants et surveillants'}), 403
 
     config = get_livekit_config()
@@ -723,7 +723,7 @@ def send_proctoring_warning(attempt_id):
     role = get_current_user_role()
     
 
-    if role not in ['professor', 'admin', 'surveillant']:
+    if role not in ['professor', 'admin', 'responsable_examen', 'surveillant']:
         return jsonify({'error': 'Accès réservé aux enseignants et surveillants'}), 403
 
     session = get_session()
@@ -787,7 +787,7 @@ def proctor_ban_student(attempt_id):
     role = get_current_user_role()
     
 
-    if role not in ['professor', 'admin', 'surveillant']:
+    if role not in ['professor', 'admin', 'responsable_examen', 'surveillant']:
         return jsonify({'error': 'Accès réservé aux enseignants et surveillants'}), 403
 
     session = get_session()
@@ -816,7 +816,7 @@ def proctor_ban_student(attempt_id):
         attempt.banned_at = datetime.utcnow()
         attempt.ban_reason = reason
 
-        actor = 'teacher_ban' if role in ['professor', 'admin'] else 'proctor_ban'
+        actor = 'teacher_ban' if role in ['professor', 'admin', 'responsable_examen'] else 'proctor_ban'
         log = ExamActivityLog(
             attempt_id=attempt_id,
             event_type=actor,
@@ -899,7 +899,7 @@ def identity_manual_verify(attempt_id):
     user_id = get_current_user_id()
     role = get_current_user_role()
 
-    if role not in ['professor', 'admin', 'surveillant']:
+    if role not in ['professor', 'admin', 'responsable_examen', 'surveillant']:
         return jsonify({'error': 'Accès réservé aux enseignants et surveillants'}), 403
 
     session = get_session()
@@ -976,7 +976,7 @@ def get_active_proctoring(exam_id):
     role = get_current_user_role()
     
 
-    if role not in ['professor', 'admin', 'surveillant']:
+    if role not in ['professor', 'admin', 'responsable_examen', 'surveillant']:
         return jsonify({'error': 'Accès réservé aux enseignants et surveillants'}), 403
 
     session = get_session()
@@ -1079,7 +1079,7 @@ def get_active_proctoring(exam_id):
 
         # Pour l'enseignant : infos détaillées par groupe
         proctors_info = []
-        if role in ['professor', 'admin']:
+        if role in ['professor', 'admin', 'responsable_examen']:
             # Groupes Surveillants rattachés à l'EC du sujet — un surveillant peut
             # venir de plusieurs groupes couvrant le même EC, d'où une liste.
             group_names_by_proctor = {}
@@ -1224,7 +1224,7 @@ def get_student_messages(exam_id):
     user_id = get_current_user_id()
     role = get_current_user_role()
 
-    if role not in ['professor', 'admin', 'surveillant']:
+    if role not in ['professor', 'admin', 'responsable_examen', 'surveillant']:
         return jsonify({'error': 'Accès réservé aux enseignants et surveillants'}), 403
 
     session = get_session()
@@ -1384,7 +1384,7 @@ def generate_access_code(attempt_id):
     agir (supervision globale)."""
     user_id = get_current_user_id()
     role = get_current_user_role()
-    if role not in ('surveillant', 'superviseur', 'professor', 'admin'):
+    if role not in ('surveillant', 'superviseur', 'professor', 'admin', 'responsable_examen'):
         return jsonify({'error': 'Accès réservé aux surveillants, superviseurs et enseignants'}), 403
 
     session = get_session()
@@ -1461,7 +1461,7 @@ def list_exam_proctors(exam_id):
     """Lister les surveillants affectés à un examen"""
     role = get_current_user_role()
     
-    if role not in ['professor', 'admin']:
+    if role not in ['professor', 'admin', 'responsable_examen']:
         return jsonify({'error': 'Accès réservé aux enseignants'}), 403
 
     session = get_session()
@@ -1506,7 +1506,7 @@ def add_exam_proctor(exam_id):
     user_id = get_current_user_id()
     role = get_current_user_role()
     
-    if role not in ['professor', 'admin']:
+    if role not in ['professor', 'admin', 'responsable_examen']:
         return jsonify({'error': 'Accès réservé aux enseignants'}), 403
 
     session = get_session()
@@ -1589,7 +1589,7 @@ def remove_exam_proctor(exam_id, proctor_id):
     user_id = get_current_user_id()
     role = get_current_user_role()
 
-    if role not in ['professor', 'admin']:
+    if role not in ['professor', 'admin', 'responsable_examen']:
         return jsonify({'error': 'Accès réservé aux enseignants'}), 403
 
     session = get_session()
@@ -1891,7 +1891,7 @@ def distribute_proctors(exam_id):
     user_id = get_current_user_id()
     role = get_current_user_role()
 
-    if role not in ['professor', 'admin']:
+    if role not in ['professor', 'admin', 'responsable_examen']:
         return jsonify({'error': 'Accès réservé aux enseignants'}), 403
 
     session = get_session()
@@ -2081,7 +2081,7 @@ def toggle_recording(attempt_id):
     user_id = get_current_user_id()
     role = get_current_user_role()
     
-    if role not in ['professor', 'admin', 'surveillant']:
+    if role not in ['professor', 'admin', 'responsable_examen', 'surveillant']:
         return jsonify({'error': 'Accès réservé aux enseignants et surveillants'}), 403
 
     data = request.get_json() or {}
@@ -2277,7 +2277,7 @@ def toggle_room_recording(exam_id):
     """Démarrer ou arrêter l'enregistrement de toute la salle d'examen (RoomComposite)."""
     role = get_current_user_role()
     
-    if role not in ['professor', 'admin']:
+    if role not in ['professor', 'admin', 'responsable_examen']:
         return jsonify({'error': 'Accès réservé aux enseignants'}), 403
 
     data = request.get_json() or {}
@@ -2461,7 +2461,7 @@ def toggle_group_recording(exam_id):
     user_id = get_current_user_id()
     role = get_current_user_role()
     
-    if role not in ['professor', 'admin', 'surveillant']:
+    if role not in ['professor', 'admin', 'responsable_examen', 'surveillant']:
         return jsonify({'error': 'Accès réservé aux enseignants et surveillants'}), 403
 
     data = request.get_json() or {}
@@ -2726,7 +2726,7 @@ def get_exam_recordings(exam_id):
         role = get_current_user_role()
         session = get_session()
 
-        if role not in ['professor', 'admin', 'surveillant']:
+        if role not in ['professor', 'admin', 'responsable_examen', 'surveillant']:
             session.close()
             return jsonify({'error': 'Accès réservé aux enseignants et surveillants'}), 403
 
@@ -2884,7 +2884,7 @@ def get_local_snapshot(key):
     role = get_current_user_role()
     session = get_session()
     try:
-        if role not in ['professor', 'admin', 'surveillant']:
+        if role not in ['professor', 'admin', 'responsable_examen', 'surveillant']:
             return jsonify({'error': 'Accès réservé aux enseignants et surveillants'}), 403
 
         exam = session.query(OnlineExam).filter_by(id=exam_id).first()
@@ -2982,7 +2982,7 @@ def get_private_session_token(attempt_id):
 
         if role == 'student' and attempt.student_id != user_id:
             return jsonify({'error': 'Accès refusé'}), 403
-        if role not in ['student', 'professor', 'admin', 'surveillant', 'superviseur']:
+        if role not in ['student', 'professor', 'admin', 'responsable_examen', 'surveillant', 'superviseur']:
             return jsonify({'error': 'Accès refusé'}), 403
 
         room_name = f'private-{attempt_id}'
@@ -3033,7 +3033,7 @@ def get_supervisor_call_token(proctor_id):
     pour le surveillant lui-même (pour répondre)."""
     user_id = get_current_user_id()
     role = get_current_user_role()
-    if role not in ('superviseur', 'surveillant', 'admin'):
+    if role not in ('superviseur', 'surveillant', 'admin', 'responsable_examen'):
         return jsonify({'error': 'Accès refusé'}), 403
 
     config = get_livekit_config()
@@ -3114,7 +3114,7 @@ def get_video_recordings(exam_id):
         session = get_session()
 
         user = session.query(User).filter_by(id=user_id).first()
-        if not user or user.role not in [UserRole.PROFESSOR, UserRole.ADMIN, UserRole.SURVEILLANT]:
+        if not user or user.role not in [UserRole.PROFESSOR, UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN, UserRole.SURVEILLANT]:
             session.close()
             return jsonify({'error': 'Accès réservé aux enseignants et surveillants'}), 403
 
@@ -3452,7 +3452,7 @@ def agent_push_alert():
 def agent_get_alerts():
     """Dashboard : récupère les alertes non lues (prof / surveillant)."""
     role = get_current_user_role()
-    if role not in ['professor', 'admin', 'surveillant']:
+    if role not in ['professor', 'admin', 'responsable_examen', 'surveillant']:
         return jsonify({'error': 'Accès non autorisé'}), 403
     alerts = _load_alerts()
 
@@ -3493,7 +3493,7 @@ def agent_get_alerts():
 def agent_mark_read():
     """Marque des alertes comme lues (stocké dans Redis Set)."""
     role = get_current_user_role()
-    if role not in ['professor', 'admin', 'surveillant']:
+    if role not in ['professor', 'admin', 'responsable_examen', 'surveillant']:
         return jsonify({'error': 'Accès non autorisé'}), 403
     data = request.get_json(silent=True) or {}
     ids  = set(data.get('attempt_ids', []))
@@ -3606,7 +3606,7 @@ def agent_status():
     from datetime import datetime, timezone, timedelta
 
     role = get_current_user_role()
-    if role not in ['professor', 'admin', 'surveillant']:
+    if role not in ['professor', 'admin', 'responsable_examen', 'surveillant']:
         return jsonify({'error': 'Accès non autorisé'}), 403
 
     heartbeat_file = _os.path.join(_os.path.dirname(__file__), 'agent_heartbeat.json')

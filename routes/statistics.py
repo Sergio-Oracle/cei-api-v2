@@ -74,7 +74,7 @@ def get_subject_statistics(subject_id):
         session = get_session()
         user    = session.query(User).filter_by(id=user_id).first()
 
-        if user.role not in [UserRole.PROFESSOR, UserRole.ADMIN]:
+        if user.role not in [UserRole.PROFESSOR, UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN]:
             session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
 
         subject = session.query(Subject).filter_by(id=subject_id).first()
@@ -151,7 +151,7 @@ def get_subjects_statistics_bulk():
         session = get_session()
         user    = session.query(User).filter_by(id=user_id).first()
 
-        if user.role not in [UserRole.PROFESSOR, UserRole.ADMIN]:
+        if user.role not in [UserRole.PROFESSOR, UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN]:
             session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
 
         raw_ids = request.args.get('subject_ids', '')

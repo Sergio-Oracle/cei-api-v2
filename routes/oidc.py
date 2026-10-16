@@ -93,7 +93,8 @@ def _issue_session_and_redirect(user: User, target: str):
 
 
 _DASHBOARDS = {UserRole.ADMIN: 'admin', UserRole.PROFESSOR: 'professor', UserRole.STUDENT: 'student',
-               UserRole.SURVEILLANT: 'surveillant', UserRole.SUPERVISEUR: 'superviseur'}
+               UserRole.SURVEILLANT: 'surveillant', UserRole.SUPERVISEUR: 'superviseur',
+               UserRole.RESPONSABLE_EXAMEN: 'admin'}   # même espace que l'administrateur (sans la gestion des utilisateurs)
 
 
 def moodle_back(url) -> str | None:

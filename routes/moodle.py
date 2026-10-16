@@ -58,7 +58,7 @@ def resolve_ec_for_user(session, ec_id, user):
     ec = session.query(EC).filter_by(id=ec_id).first()
     if not ec:
         raise LookupError('EC non trouvé')
-    if user.role == UserRole.ADMIN:
+    if user.role in (UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN):
         return ec
     if user.role == UserRole.PROFESSOR and session.query(ECAssignment).filter_by(
             ec_id=ec_id, professor_id=user.id).first():
@@ -546,7 +546,7 @@ def moodle_my_ecs():
     session = get_session()
     try:
         user = session.query(User).filter_by(id=get_current_user_id()).first()
-        if not user or user.role not in (UserRole.PROFESSOR, UserRole.ADMIN):
+        if not user or user.role not in (UserRole.PROFESSOR, UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN):
             return jsonify({'error': 'Accès non autorisé'}), 403
         if not moodle_sync.is_enabled():
             return _disabled()

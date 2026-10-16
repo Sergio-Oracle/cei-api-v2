@@ -42,7 +42,7 @@ formations_bp = Blueprint('formations', __name__)
 
 def _is_admin(session):
     u = session.query(User).filter_by(id=get_current_user_id()).first()
-    if not u or u.role != UserRole.ADMIN:
+    if not u or u.role not in (UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN):
         session.close()
         return False, None
     return True, u
@@ -50,7 +50,7 @@ def _is_admin(session):
 
 def _is_admin_or_professor(session):
     u = session.query(User).filter_by(id=get_current_user_id()).first()
-    if not u or u.role not in (UserRole.ADMIN, UserRole.PROFESSOR):
+    if not u or u.role not in (UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN, UserRole.PROFESSOR):
         session.close()
         return False, None
     return True, u
@@ -59,7 +59,7 @@ def _is_admin_or_professor(session):
 def _can_manage_proctor_group(user, group):
     """Un admin gère tous les groupes de surveillants ; un professeur ne
     gère que ceux qu'il a lui-même créés (ProctorGroup.created_by_id)."""
-    return user.role == UserRole.ADMIN or group.created_by_id == user.id
+    return user.role in (UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN) or group.created_by_id == user.id
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -544,7 +544,7 @@ def get_all_ecs():
 def list_all_ues():
     try:
         role = get_current_user_role()
-        if role not in ['professor', 'admin']:
+        if role not in ['professor', 'admin', 'responsable_examen']:
             return jsonify({'error': 'Accès non autorisé'}), 403
         key = make_key('ues', 'all')
         cached = cache_get(key)
@@ -1322,7 +1322,7 @@ def get_professor_students():
     try:
         user_id = get_current_user_id()
         user = session.get(User, user_id)
-        if not user or user.role not in [UserRole.PROFESSOR, UserRole.ADMIN]:
+        if not user or user.role not in [UserRole.PROFESSOR, UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN]:
             return jsonify({'error': 'Accès non autorisé'}), 403
         try:
             page = max(1, int(request.args.get('page', 1)))

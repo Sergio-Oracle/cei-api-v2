@@ -27,6 +27,13 @@ class UserRole(enum.Enum):
     ADMIN = "admin"
     SURVEILLANT = "surveillant"
     SUPERVISEUR = "superviseur"  # supervise l'activité d'un ou plusieurs groupes de surveillants
+    # Responsable d'examen : mêmes droits que l'administrateur SAUF la gestion des utilisateurs
+    # (comptes, rôles, mots de passe, imports de comptes). Présent d'office dans tous les EC, y
+    # compris les nouveaux : il peut tout faire à la place d'un enseignant indisponible.
+    RESPONSABLE_EXAMEN = "responsable_examen"
+
+# Rôles qui ont les droits d'administration pédagogique (tout sauf les utilisateurs).
+ADMIN_LIKE = (UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN)
 
 class ReclamationStatus(enum.Enum):
     PENDING   = "pending"
@@ -1882,4 +1889,11 @@ def init_db():
                 _conn.commit()
             except Exception:
                 _conn.rollback()
+    # Nouveau rôle : la valeur doit exister dans le type énuméré PostgreSQL (create_all ne modifie
+    # jamais un type existant). ADD VALUE hors transaction, idempotent.
+    try:
+        with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as _ac:
+            _ac.execute(_text("ALTER TYPE userrole ADD VALUE IF NOT EXISTS 'RESPONSABLE_EXAMEN'"))
+    except Exception as _e:
+        print(f"[migration rôle] RESPONSABLE_EXAMEN : {_e}")
     print("Base de données initialisée avec examens en ligne et relevés de notes")

@@ -25,6 +25,6 @@ def assignment_kind(session, ec_id, user_id):
 
 def can_author(session, ec_id, user) -> bool:
     """Peut créer sujets et examens sur cet EC."""
-    if user.role == UserRole.ADMIN:
+    if user.role in (UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN):
         return True
     return user.role == UserRole.PROFESSOR and assignment_kind(session, ec_id, user.id) == 'responsable'

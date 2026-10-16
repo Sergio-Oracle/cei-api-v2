@@ -569,6 +569,7 @@ OPENAPI_SPEC = {
             "## Rôles\n"
             "| Rôle | Accès |\n|---|---|\n"
             "| `admin` | Complet |\n"
+            "| `responsable_examen` | Tout ce que fait l'administrateur SAUF la gestion des utilisateurs (comptes, rôles, imports de comptes) ; présent d'office dans tous les EC, il agit à la place d'un enseignant indisponible. Peut lire la liste des enseignants/surveillants/superviseurs (GET /api/admin/users?role=…, jamais celle des étudiants) |\n"
             "| `professor` | Sujets, examens, corrections |\n"
             "| `superviseur` | Supervision des groupes de surveillants (dashboard, demandes d'appel) |\n"
             "| `surveillant` | Dashboard surveillance |\n"
@@ -1113,9 +1114,9 @@ OPENAPI_SPEC = {
         "/api/admin/users": {
             "get": {
                 "tags": ["Administration"], "summary": "Liste de tous les utilisateurs (admin), paginée et triée A-Z",
-                "description": "Triée par ordre alphabétique (insensible à la casse) sur full_name — pas par date de création. pole_id filtre les étudiants d'un pôle donné via la Formation (utiliser la valeur spéciale 'none' pour les étudiants sans formation/pôle assigné).",
+                "description": "Responsable d'examen : lecture seule, uniquement avec un filtre `role` autre que `student` (403 sinon). Triée par ordre alphabétique (insensible à la casse) sur full_name — pas par date de création. pole_id filtre les étudiants d'un pôle donné via la Formation (utiliser la valeur spéciale 'none' pour les étudiants sans formation/pôle assigné).",
                 "parameters": [
-                    {"name": "role",     "in": "query", "schema": {"type": "string", "enum": ["admin","professor","surveillant","superviseur","student"]}},
+                    {"name": "role",     "in": "query", "schema": {"type": "string", "enum": ["admin","responsable_examen","professor","surveillant","superviseur","student"]}},
                     {"name": "pole_id",  "in": "query", "schema": {"type": "string"}, "description": "ID numérique d'un pôle, ou 'none' pour les étudiants sans pôle assigné."},
                     {"name": "no_email", "in": "query", "schema": {"type": "boolean"}, "description": "Ne garder que les comptes créés sans email institutionnel (@no-email.cei.local)."},
                     {"name": "page",     "in": "query", "schema": {"type": "integer", "default": 1}},
@@ -1140,7 +1141,7 @@ OPENAPI_SPEC = {
                     "properties": {
                         "email":        {"type": "string"},
                         "full_name":    {"type": "string"},
-                        "role":         {"type": "string", "enum": ["professor","surveillant","superviseur","student","admin"]},
+                        "role":         {"type": "string", "enum": ["professor","surveillant","superviseur","student","admin","responsable_examen"]},
                         "password":     {"type": "string"},
                         "niveau":       {"type": "string", "enum": ["L1","L2","L3","M1","M2"], "description": "Étudiant seulement. Fallback texte libre — ignoré/écrasé si formation_id est fourni (le niveau est alors dérivé de la formation)."},
                         "formation_id": {"type": "integer", "description": "Étudiant seulement. Rattache à une Formation et inscrit automatiquement à toutes ses UE."}

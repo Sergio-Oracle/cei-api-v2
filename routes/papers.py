@@ -51,7 +51,7 @@ def upload_paper():
         session = get_session()
         user    = session.query(User).filter_by(id=user_id).first()
 
-        if not user or user.role not in (UserRole.PROFESSOR, UserRole.ADMIN):
+        if not user or user.role not in (UserRole.PROFESSOR, UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN):
             session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
 
         if 'file' not in request.files:
@@ -154,7 +154,7 @@ def upload_paper():
                 subject_id=subject_id, student_id=student_id,
                 content=paper_content, grade=result, score=score, filename=filename,
                 file_hash=file_hash, extracted_student_name=extracted_name,
-                corrected_by_id=user_id if user.role in [UserRole.PROFESSOR, UserRole.ADMIN] else None,
+                corrected_by_id=user_id if user.role in [UserRole.PROFESSOR, UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN] else None,
                 corrected_at=corrected_at,
                 reclamation_window_end=corrected_at + timedelta(days=7),
             )
@@ -198,7 +198,7 @@ def upload_papers_batch():
         session = get_session()
         user    = session.query(User).filter_by(id=user_id).first()
 
-        if user.role not in [UserRole.PROFESSOR, UserRole.ADMIN]:
+        if user.role not in [UserRole.PROFESSOR, UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN]:
             session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
 
         subject_id = request.form.get('subject_id')
@@ -352,7 +352,7 @@ def get_papers_by_subject(subject_id):
         session = get_session()
         user    = session.query(User).filter_by(id=user_id).first()
 
-        if user.role not in [UserRole.PROFESSOR, UserRole.ADMIN]:
+        if user.role not in [UserRole.PROFESSOR, UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN]:
             session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
 
         subject = session.query(Subject).filter_by(id=subject_id).first()
@@ -515,7 +515,7 @@ def publish_paper(paper_id):
         user_id = get_current_user_id()
         session = get_session()
         user = session.query(User).filter_by(id=user_id).first()
-        if user.role not in [UserRole.PROFESSOR, UserRole.ADMIN]:
+        if user.role not in [UserRole.PROFESSOR, UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN]:
             session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
 
         paper = session.query(StudentPaper).options(
@@ -552,7 +552,7 @@ def publish_papers_bulk():
         user_id = get_current_user_id()
         session = get_session()
         user = session.query(User).filter_by(id=user_id).first()
-        if user.role not in [UserRole.PROFESSOR, UserRole.ADMIN]:
+        if user.role not in [UserRole.PROFESSOR, UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN]:
             session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
 
         data = request.get_json(silent=True) or {}

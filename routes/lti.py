@@ -140,7 +140,8 @@ def lti_launch():
 
 
 _DASHBOARDS = {UserRole.ADMIN: 'admin', UserRole.PROFESSOR: 'professor', UserRole.STUDENT: 'student',
-               UserRole.SURVEILLANT: 'surveillant', UserRole.SUPERVISEUR: 'superviseur'}
+               UserRole.SURVEILLANT: 'surveillant', UserRole.SUPERVISEUR: 'superviseur',
+               UserRole.RESPONSABLE_EXAMEN: 'admin'}   # même espace que l'administrateur (sans la gestion des utilisateurs)
 
 
 @lti_bp.route('/api/lti/session', methods=['GET'])

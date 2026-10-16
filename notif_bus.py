@@ -203,7 +203,7 @@ def _enqueue_admins(payload: dict) -> None:
         from models import get_session, User, UserRole
         session = get_session()
         try:
-            admin_ids = [u.id for u in session.query(User).filter_by(role=UserRole.ADMIN).all()]
+            admin_ids = [u.id for u in session.query(User).filter(User.role.in_([UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN])).all()]
         finally:
             session.close()
         if admin_ids:

@@ -46,7 +46,7 @@ def list_question_bank():
         session = get_session()
         user    = session.query(User).filter_by(id=user_id).first()
 
-        if user.role not in [UserRole.ADMIN, UserRole.PROFESSOR]:
+        if user.role not in [UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN, UserRole.PROFESSOR]:
             session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
 
         questions = session.query(QuestionBank).order_by(QuestionBank.created_at.desc()).all()
@@ -67,7 +67,7 @@ def save_question_bank():
         session = get_session()
         user    = session.query(User).filter_by(id=user_id).first()
 
-        if user.role not in [UserRole.ADMIN, UserRole.PROFESSOR]:
+        if user.role not in [UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN, UserRole.PROFESSOR]:
             session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
 
         data = request.get_json() or {}
@@ -114,7 +114,7 @@ def delete_question_bank(q_id):
 
         q = session.query(QuestionBank).filter_by(id=q_id).first()
         if not q: session.close(); return jsonify({'error': 'Question introuvable'}), 404
-        if user.role != UserRole.ADMIN and q.created_by_id != user_id:
+        if user.role not in (UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN) and q.created_by_id != user_id:
             session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
 
         session.delete(q); session.commit(); session.close()
@@ -137,7 +137,7 @@ def update_question_bank(q_id):
 
         q = session.query(QuestionBank).filter_by(id=q_id).first()
         if not q: session.close(); return jsonify({'error': 'Question introuvable'}), 404
-        if user.role != UserRole.ADMIN and q.created_by_id != user_id:
+        if user.role not in (UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN) and q.created_by_id != user_id:
             session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
 
         data = request.get_json() or {}
@@ -181,7 +181,7 @@ def duplicate_question_bank(q_id):
         user_id = get_current_user_id()
         session = get_session()
         user    = session.query(User).filter_by(id=user_id).first()
-        if not user or user.role not in [UserRole.ADMIN, UserRole.PROFESSOR]:
+        if not user or user.role not in [UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN, UserRole.PROFESSOR]:
             session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
 
         q = session.query(QuestionBank).filter_by(id=q_id).first()
@@ -216,7 +216,7 @@ def bulk_move_question_bank():
         user_id = get_current_user_id()
         session = get_session()
         user    = session.query(User).filter_by(id=user_id).first()
-        if not user or user.role not in [UserRole.ADMIN, UserRole.PROFESSOR]:
+        if not user or user.role not in [UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN, UserRole.PROFESSOR]:
             session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
 
         data = request.get_json() or {}
@@ -228,7 +228,7 @@ def bulk_move_question_bank():
         moved, skipped = 0, 0
         for qid in question_ids:
             q = session.query(QuestionBank).filter_by(id=int(qid)).first()
-            if not q or (user.role != UserRole.ADMIN and q.created_by_id != user_id):
+            if not q or (user.role not in (UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN) and q.created_by_id != user_id):
                 skipped += 1; continue
             q.ec_id = int(ec_id) if ec_id else None
             moved += 1
@@ -249,7 +249,7 @@ def bulk_delete_question_bank():
         user_id = get_current_user_id()
         session = get_session()
         user    = session.query(User).filter_by(id=user_id).first()
-        if not user or user.role not in [UserRole.ADMIN, UserRole.PROFESSOR]:
+        if not user or user.role not in [UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN, UserRole.PROFESSOR]:
             session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
 
         data = request.get_json() or {}
@@ -262,7 +262,7 @@ def bulk_delete_question_bank():
             q = session.query(QuestionBank).filter_by(id=int(qid)).first()
             if not q:
                 continue
-            if user.role != UserRole.ADMIN and q.created_by_id != user_id:
+            if user.role not in (UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN) and q.created_by_id != user_id:
                 skipped += 1; continue
             session.delete(q)
             deleted += 1
@@ -282,7 +282,7 @@ def find_duplicates():
         user_id = get_current_user_id()
         session = get_session()
         user    = session.query(User).filter_by(id=user_id).first()
-        if not user or user.role not in [UserRole.ADMIN, UserRole.PROFESSOR]:
+        if not user or user.role not in [UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN, UserRole.PROFESSOR]:
             session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
 
         questions = session.query(QuestionBank).order_by(QuestionBank.created_at.desc()).all()
@@ -315,7 +315,7 @@ def auto_clean_duplicates():
         user_id = get_current_user_id()
         session = get_session()
         user    = session.query(User).filter_by(id=user_id).first()
-        if not user or user.role not in [UserRole.ADMIN, UserRole.PROFESSOR]:
+        if not user or user.role not in [UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN, UserRole.PROFESSOR]:
             session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
 
         deleted = []
@@ -358,7 +358,7 @@ def check_duplicate():
         user_id = get_current_user_id()
         session = get_session()
         user    = session.query(User).filter_by(id=user_id).first()
-        if not user or user.role not in [UserRole.ADMIN, UserRole.PROFESSOR]:
+        if not user or user.role not in [UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN, UserRole.PROFESSOR]:
             session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
 
         data    = request.get_json() or {}
@@ -391,7 +391,7 @@ def assemble_from_bank():
         session = get_session()
         user    = session.query(User).filter_by(id=user_id).first()
 
-        if not user or user.role not in [UserRole.ADMIN, UserRole.PROFESSOR]:
+        if not user or user.role not in [UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN, UserRole.PROFESSOR]:
             session.close(); return jsonify({'error': 'Accès non autorisé'}), 403
 
         data           = request.get_json() or {}

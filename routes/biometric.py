@@ -205,7 +205,7 @@ def biometric_private_token():
         return jsonify({'error': 'exam_id et student_id requis'}), 400
     if role == 'student' and user_id != student_id:
         return jsonify({'error': 'Accès refusé'}), 403
-    if role not in ('student', 'surveillant', 'superviseur', 'professor', 'admin'):
+    if role not in ('student', 'surveillant', 'superviseur', 'professor', 'admin', 'responsable_examen'):
         return jsonify({'error': 'Accès refusé'}), 403
 
     config = get_livekit_config()
@@ -226,7 +226,7 @@ def biometric_private_token():
 @paseto_required
 def biometric_manual_verify():
     role = get_current_user_role()
-    if role not in ('surveillant', 'superviseur', 'professor', 'admin'):
+    if role not in ('surveillant', 'superviseur', 'professor', 'admin', 'responsable_examen'):
         return jsonify({'error': 'Accès refusé'}), 403
 
     data = request.get_json(silent=True) or {}
@@ -245,7 +245,7 @@ def biometric_manual_verify():
         session.close()
 
     verifier_id = get_current_user_id()
-    if verifier_id not in recipient_ids and role != 'admin':
+    if verifier_id not in recipient_ids and role not in ('admin', 'responsable_examen'):
         return jsonify({'error': "Vous n'êtes pas habilité à valider l'identité pour cet examen"}), 403
 
     cache_set(_verify_key(student_id), {'method': 'manual', 'verified_by': verifier_id, 'verified_at': datetime.utcnow().isoformat()}, ttl=_VERIFY_TTL)

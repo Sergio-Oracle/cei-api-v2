@@ -368,7 +368,15 @@ def get_current_user():
         if not user:
             session.close()
             return jsonify({'error': 'Utilisateur non trouvé'}), 404
-        result = user.to_dict(); session.close()
+        result = user.to_dict()
+        # Bouton « Journal d'activité » des Paramètres : la clé n'existe QUE pour les personnes autorisées
+        try:
+            from services.audit import access_flag
+            if access_flag(session, user):
+                result['audit_access'] = True
+        except Exception:
+            pass
+        session.close()
         return jsonify(result)
     except Exception as e:
         try: session.rollback(); session.close()

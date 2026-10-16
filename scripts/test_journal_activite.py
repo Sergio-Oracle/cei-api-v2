@@ -4,7 +4,7 @@
 import os, sys, uuid, json, time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import app as A
-from models import get_session, User, UserRole, Subject, EC, StaffAuditLog
+from models import get_session, User, UserRole, Subject, EC, StaffAuditLog, StaffAuditViewer
 from auth_paseto import create_access_token
 from extensions import bcrypt
 
@@ -22,6 +22,7 @@ def rows(**kw): return s.query(StaffAuditLog).filter_by(**kw).order_by(StaffAudi
 
 try:
     owner = mk(UserRole.ADMIN, 'proprio'); other = mk(UserRole.ADMIN, 'autre'); mgr = mk(UserRole.RESPONSABLE_EXAMEN, 'resp'); prof = mk(UserRole.PROFESSOR, 'prof')
+    etu = mk(UserRole.STUDENT, 'etu')
     os.environ['AUDIT_VIEWER_EMAILS'] = owner.email
     ho, hx, hm, hp = H(owner), H(other), H(mgr), H(prof)
     ec = s.query(EC).filter(EC.ue_id.isnot(None)).order_by(EC.id).first()
@@ -91,12 +92,45 @@ try:
     n_before = s.query(StaffAuditLog).count()
     c.get('/api/audit/accounts', headers=ho); c.get('/api/audit/activity', headers=ho)
     check("consulter le journal ne l'alourdit pas", s.query(StaffAuditLog).count() == n_before)
+
+    print('\n== Le propriétaire donne (et retire) l\'accès ==')
+    me_o = c.get('/api/auth/me', headers=ho).get_json(); me_p = c.get('/api/auth/me', headers=hp).get_json(); me_x = c.get('/api/auth/me', headers=hx).get_json()
+    check("le bouton n'est annoncé qu'au propriétaire (clé absente pour les autres)", me_o.get('audit_access') is True and 'audit_access' not in me_p and 'audit_access' not in me_x, (me_o.get('audit_access'), me_p.get('audit_access'), me_x.get('audit_access')))
+    check("accès : le propriétaire se sait propriétaire", c.get('/api/audit/access', headers=ho).get_json() == {'allowed': True, 'owner': True})
+    cand = c.get('/api/audit/candidates?q=Journal+Test', headers=ho).get_json()['candidates']
+    names = {x['id'] for x in cand}
+    check("recherche d'une personne à autoriser", prof.id in names and mgr.id in names and other.id in names, cand)
+    check("… sans étudiants ni propriétaire", etu.id not in names and owner.id not in names)
+    check("un délégué potentiel ne peut pas chercher (404)", c.get('/api/audit/candidates?q=Journal', headers=hp).status_code == 404)
+    r = c.post('/api/audit/grants', headers=ho, json={'user_id': prof.id})
+    check("le propriétaire autorise un professeur", r.status_code == 200, r.get_data(as_text=True)[:120])
+    check("le professeur voit maintenant le bouton", c.get('/api/auth/me', headers=hp).get_json().get('audit_access') is True)
+    time.sleep(0.01)
+    check("le professeur accède au journal (lecture)", c.get('/api/audit/access', headers=hp).get_json() == {'allowed': True, 'owner': False}
+          and c.get('/api/audit/accounts', headers=hp).status_code == 200 and c.get('/api/audit/activity', headers=hp).status_code == 200)
+    check("… mais ne peut ni donner ni retirer l'accès", c.post('/api/audit/grants', headers=hp, json={'user_id': mgr.id}).status_code == 404
+          and c.delete(f'/api/audit/grants/{prof.id}', headers=hp).status_code == 404 and c.get('/api/audit/grants', headers=hp).status_code == 404)
+    check("le responsable d'examen, lui, n'a toujours rien (404)", c.get('/api/audit/activity', headers=hm).status_code == 404)
+    lst = c.get('/api/audit/grants', headers=ho).get_json()
+    check("liste des accès : propriétaire + délégué", [o['id'] for o in lst['owners']] == [owner.id] and [g['id'] for g in lst['grants']] == [prof.id], lst)
+    check("octroi tracé dans le journal", any(x.kind == 'update' and 'accordé' in (x.label or '') and x.target_id == prof.id for x in rows(user_id=owner.id)))
+    check("l'ouverture par le délégué est tracée", any('accès délégué' in (x.label or '') for x in rows(user_id=prof.id)))
+    check("un étudiant ne peut pas être autorisé", c.post('/api/audit/grants', headers=ho, json={'user_id': etu.id}).status_code == 400)
+    check("le propriétaire ne peut pas être « autorisé »", c.post('/api/audit/grants', headers=ho, json={'user_id': owner.id}).status_code == 400)
+    check("compte inexistant refusé", c.post('/api/audit/grants', headers=ho, json={'user_id': 999999999}).status_code == 404)
+    check("octroi répété sans doublon", c.post('/api/audit/grants', headers=ho, json={'user_id': prof.id}).status_code == 200 and s.query(StaffAuditViewer).filter_by(user_id=prof.id).count() == 1)
+    r = c.delete(f'/api/audit/grants/{prof.id}', headers=ho)
+    check("le propriétaire retire l'accès", r.status_code == 200)
+    check("effet immédiat : le professeur reçoit de nouveau un 404", c.get('/api/audit/activity', headers=hp).status_code == 404 and c.get('/api/audit/access', headers=hp).status_code == 404)
+    check("… et le bouton disparaît de ses Paramètres", 'audit_access' not in c.get('/api/auth/me', headers=hp).get_json())
+    check("retrait tracé", any(x.kind == 'update' and 'retiré' in (x.label or '') and x.target_id == prof.id for x in rows(user_id=owner.id)))
 finally:
     s.rollback()
     s.query(StaffAuditLog).filter(StaffAuditLog.user_email.like(f'journal.{tag}.%')).delete(synchronize_session=False)
     s.query(StaffAuditLog).filter(StaffAuditLog.user_id.in_([i for i in ids if i])).delete(synchronize_session=False)
     s.query(Subject).filter(Subject.title.like(f'Sujet journal {tag}%')).delete(synchronize_session=False)
     s.query(User).filter(User.email.like(f'%.{tag}@test.invalid')).delete(synchronize_session=False)
+    s.query(StaffAuditViewer).filter(StaffAuditViewer.user_id.in_([i for i in ids if i])).delete(synchronize_session=False)
     s.query(User).filter(User.email.like(f'journal.{tag}.%')).delete(synchronize_session=False)
     s.commit(); print('\n(nettoyage terminé)')
 

@@ -1397,6 +1397,17 @@ class StaffAuditLog(Base):
     __table_args__ = (Index('ix_staff_audit_user_time', 'user_id', 'created_at'),)
 
 
+class StaffAuditViewer(Base):
+    """Personnes à qui le propriétaire a donné accès au journal d'activité (services/audit.py)."""
+    __tablename__ = 'staff_audit_viewers'
+
+    id              = Column(Integer, primary_key=True)
+    user_id         = Column(Integer, nullable=False, unique=True, index=True)
+    granted_by_id   = Column(Integer)
+    granted_by_name = Column(String(150))
+    granted_at      = Column(DateTime, default=datetime.utcnow)
+
+
 class TokenBlocklist(Base):
     """Refresh tokens révoqués (déconnexion, rotation, compromission)."""
     __tablename__ = 'token_blocklist'

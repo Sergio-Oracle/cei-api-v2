@@ -5,7 +5,8 @@ propriétaire de la plateforme (voir services.audit.viewer_ids), chaque route r�
 route inexistante (404 « Ressource introuvable ») : rien ne révèle que la fonction existe.
 
 Routes (lecture seule — aucune route ne modifie ni ne supprime une trace) :
-  GET /api/audit/access      accès autorisé ?
+  GET /api/audit/access      accès autorisé ? (et suis-je le propriétaire ?)
+  GET/POST/DELETE /api/audit/grants, GET /api/audit/candidates   le PROPRIÉTAIRE donne ou retire l'accès à d'autres
   GET /api/audit/accounts    administrateurs et responsables d'examen : en ligne, dernière activité, volumes
   GET /api/audit/activity    journal filtrable (compte, nature, dates, texte, refus seulement)
   GET /api/audit/export      même journal en CSV
@@ -20,8 +21,9 @@ from sqlalchemy import func, or_
 
 from auth_paseto import get_current_user_id, get_current_user_role, paseto_required
 from extensions import limiter
-from models import StaffAuditLog, User, UserRole, get_session
-from services.audit import AUDITED_ROLES, ONLINE_SECONDS, _redis, viewer_ids
+from models import StaffAuditLog, StaffAuditViewer, User, UserRole, get_session
+from services.audit import (AUDITED_ROLES, ONLINE_SECONDS, _redis, delegate_ids, is_owner, is_viewer,
+                            owner_ids, record_event, _flag_cache)
 
 audit_bp = Blueprint('audit', __name__)
 
@@ -33,7 +35,12 @@ def _hidden():
 
 
 def _allowed(session) -> bool:
-    return get_current_user_role() == 'admin' and get_current_user_id() in viewer_ids(session)
+    """Propriétaire ou personne à qui il a donné accès (vérifié à chaque requête, jamais mis en cache)."""
+    return is_viewer(session, get_current_user_id())
+
+
+def _owner(session) -> bool:
+    return is_owner(session, get_current_user_id())
 
 
 def _day(raw, end=False):
@@ -90,7 +97,116 @@ def _row(r):
 def audit_access():
     session = get_session()
     try:
-        return jsonify({'allowed': True}) if _allowed(session) else _hidden()
+        if not _allowed(session):
+            return _hidden()
+        owner = _owner(session)
+        if not owner:
+            # un délégué qui ouvre le journal laisse une trace (au plus une fois toutes les 10 minutes)
+            r = _redis()
+            fresh = True
+            if r is not None:
+                try:
+                    fresh = bool(r.set(f'cei:audit:opened:{get_current_user_id()}', '1', nx=True, ex=600))
+                except Exception:
+                    fresh = True
+            if fresh:
+                me = session.get(User, get_current_user_id())
+                record_event(session, me, 'read', "Ouverture du journal d'activité (accès délégué)")
+        return jsonify({'allowed': True, 'owner': owner})
+    finally:
+        session.close()
+
+
+def _person(u, granted=None):
+    return {'id': u.id, 'name': u.full_name, 'email': u.email, 'role': u.role.value, 'is_active': u.is_active,
+            **({'granted_at': granted.granted_at, 'granted_by': granted.granted_by_name} if granted else {})}
+
+
+@audit_bp.route('/api/audit/grants', methods=['GET'])
+@paseto_required
+@limiter.exempt
+def audit_grants():
+    session = get_session()
+    try:
+        if not _owner(session):
+            return _hidden()
+        owners = [session.get(User, i) for i in owner_ids(session)]
+        grants = (session.query(StaffAuditViewer, User).join(User, User.id == StaffAuditViewer.user_id)
+                  .order_by(StaffAuditViewer.granted_at.desc()).all())
+        return jsonify({'owners': [_person(u) for u in owners if u],
+                        'grants': [_person(u, g) for g, u in grants]})
+    finally:
+        session.close()
+
+
+@audit_bp.route('/api/audit/candidates', methods=['GET'])
+@paseto_required
+@limiter.exempt
+def audit_candidates():
+    """Personnes à qui l'accès peut être donné (comptes actifs hors étudiants, hors propriétaire et délégués)."""
+    session = get_session()
+    try:
+        if not _owner(session):
+            return _hidden()
+        text = (request.args.get('q') or '').strip()
+        if len(text) < 2:
+            return jsonify({'candidates': []})
+        like = f'%{text}%'
+        excluded = set(owner_ids(session)) | set(delegate_ids(session))
+        rows = (session.query(User).filter(User.is_active == True, User.role != UserRole.STUDENT,
+                                           or_(User.full_name.ilike(like), User.email.ilike(like)))
+                .order_by(func.lower(User.full_name)).limit(30).all())
+        return jsonify({'candidates': [_person(u) for u in rows if u.id not in excluded][:15]})
+    finally:
+        session.close()
+
+
+@audit_bp.route('/api/audit/grants', methods=['POST'])
+@paseto_required
+@limiter.exempt
+def audit_grant():
+    session = get_session()
+    try:
+        if not _owner(session):
+            return _hidden()
+        me = session.get(User, get_current_user_id())
+        uid = (request.get_json(silent=True) or {}).get('user_id')
+        target = session.get(User, int(uid)) if str(uid).isdigit() else None
+        if target is None or not target.is_active:
+            return jsonify({'error': 'Compte introuvable ou désactivé.'}), 404
+        if target.role == UserRole.STUDENT:
+            return jsonify({'error': "Un compte étudiant ne peut pas consulter le journal."}), 400
+        if target.id in owner_ids(session):
+            return jsonify({'error': 'Cette personne est déjà propriétaire du journal.'}), 400
+        if session.query(StaffAuditViewer).filter_by(user_id=target.id).first() is None:
+            session.add(StaffAuditViewer(user_id=target.id, granted_by_id=me.id, granted_by_name=me.full_name))
+            session.commit()
+            _flag_cache.pop(target.id, None)
+            record_event(session, me, 'update', "Accès au journal d'activité accordé", 'user', target.id,
+                         f"{target.full_name} ({target.email})")
+        return jsonify({'success': True})
+    finally:
+        session.close()
+
+
+@audit_bp.route('/api/audit/grants/<int:user_id>', methods=['DELETE'])
+@paseto_required
+@limiter.exempt
+def audit_revoke(user_id):
+    session = get_session()
+    try:
+        if not _owner(session):
+            return _hidden()
+        me = session.get(User, get_current_user_id())
+        row = session.query(StaffAuditViewer).filter_by(user_id=user_id).first()
+        if row is not None:
+            target = session.get(User, user_id)
+            session.delete(row)
+            session.commit()
+            _flag_cache.pop(user_id, None)
+            record_event(session, me, 'update', "Accès au journal d'activité retiré", 'user', user_id,
+                         f"{target.full_name} ({target.email})" if target else f"compte n° {user_id}")
+        return jsonify({'success': True})
     finally:
         session.close()
 

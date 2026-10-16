@@ -443,10 +443,9 @@ def install(app):
 
 # ── qui peut consulter ───────────────────────────────────────────────────────
 
-def viewer_ids(session):
-    """Comptes autorisés à consulter le journal : ceux de AUDIT_VIEWER_EMAILS (séparés par des virgules), à
-    défaut le PREMIER administrateur (identifiant le plus bas) — le propriétaire de la plateforme. Un
-    administrateur ajouté plus tard n'y a pas accès."""
+def owner_ids(session):
+    """Propriétaire(s) du journal : les comptes de AUDIT_VIEWER_EMAILS (séparés par des virgules), à défaut le
+    PREMIER administrateur (identifiant le plus bas). Seul le propriétaire accorde ou retire l'accès à d'autres."""
     import os
     from sqlalchemy import func
     from models import User, UserRole
@@ -456,3 +455,50 @@ def viewer_ids(session):
                 .filter(func.lower(User.email).in_(emails)).all()]
     first = session.query(User).filter(User.role == UserRole.ADMIN, User.is_active == True).order_by(User.id).first()
     return [first.id] if first else []
+
+
+viewer_ids = owner_ids          # ancien nom, conservé
+
+
+def delegate_ids(session):
+    """Comptes actifs à qui le propriétaire a donné accès."""
+    from models import StaffAuditViewer, User
+    return [uid for (uid,) in session.query(StaffAuditViewer.user_id)
+            .join(User, User.id == StaffAuditViewer.user_id).filter(User.is_active == True)]
+
+
+def is_owner(session, uid) -> bool:
+    return uid in owner_ids(session)
+
+
+def is_viewer(session, uid) -> bool:
+    """Peut consulter le journal : propriétaire ou délégué. Jamais mis en cache (une révocation joue tout de suite)."""
+    return uid in owner_ids(session) or uid in delegate_ids(session)
+
+
+_flag_cache = {}                 # id -> (autorisé, instant) — SEULEMENT pour afficher le bouton, jamais pour autoriser
+
+
+def access_flag(session, user) -> bool:
+    """Faut-il montrer le bouton « Journal d'activité » à cet utilisateur ? (étudiants exclus ; 30 s de cache.)"""
+    from models import UserRole
+    if user is None or user.role == UserRole.STUDENT:
+        return False
+    hit = _flag_cache.get(user.id)
+    if hit and time.time() - hit[1] < 30:
+        return hit[0]
+    ok = is_viewer(session, user.id)
+    _flag_cache[user.id] = (ok, time.time())
+    return ok
+
+
+def record_event(session, user, kind, label, target_type=None, target_id=None, target_label=None, details=None):
+    """Trace explicite (les routes /api/audit/* ne sont pas tracées automatiquement) : octroi/retrait d'accès,
+    ouverture du journal par un délégué."""
+    _write(session, user_id=user.id, user_name=user.full_name, user_email=user.email,
+           role=user.role.value if hasattr(user.role, 'value') else str(user.role), kind=kind,
+           method=request.method, path=request.path[:400], rule=(request.url_rule.rule if request.url_rule else request.path)[:200],
+           status_code=200, label=label[:300], target_type=target_type, target_id=target_id,
+           target_label=(target_label or '')[:300] or None, ip=(request.remote_addr or '')[:64],
+           user_agent=(request.headers.get('User-Agent') or '')[:300],
+           details=json.dumps(details, ensure_ascii=False) if details else None)

@@ -430,6 +430,7 @@ def update_user(target_id):
             user.email = data['email']
         if data.get('password'):
             user.password_hash = bcrypt.generate_password_hash(data['password']).decode('utf-8')
+            from auth_paseto import revoke_all_devices; revoke_all_devices(user.id)
         if 'role' in data:
             rs = data['role'].upper()
             if rs in ['STUDENT', 'PROFESSOR', 'ADMIN', 'SURVEILLANT', 'SUPERVISEUR', 'RESPONSABLE_EXAMEN']:

@@ -27,6 +27,7 @@ from extensions import limiter
 from helpers import utcnow
 from auth_paseto import (
     create_access_token, create_refresh_token, set_refresh_cookie,
+    issue_device_cookie, read_device_cookie,
     hash_token, session_key, REFRESH_TTL, decode_token, COOKIE_NAME,
 )
 from api_key_auth import api_key_required, api_client_allows_role
@@ -80,6 +81,8 @@ def _issue_session_and_redirect(user: User, target: str):
 
     resp = make_response(redirect(target))
     set_refresh_cookie(resp, refresh_token)
+    if user.role == UserRole.STUDENT:
+        issue_device_cookie(resp, user.id)   # appareil reconnu (bouton CEI de Moodle)
     # Reproduit exactement AuthContext.tsx::setAuthCookie() côté serveur —
     # même nom/attributs, pour que middleware.ts l'accepte immédiatement.
     resp.set_cookie(
@@ -194,6 +197,35 @@ def from_moodle():
                 return _relay_page(target)
         except Exception:
             pass   # jeton illisible ou expiré : connexion UNCHK ci-dessous
+        finally:
+            session.close()
+    # Session CEI fermée (remplacée ailleurs, expirée) mais appareil déjà connu :
+    # on rouvre la session sans repasser par Keycloak, dont la session expire
+    # bien avant celle de Moodle. Même règle « une seule session » qu'ailleurs :
+    # si une autre est active, confirmation sur la page CEI (pas de mot de passe).
+    device_user = read_device_cookie()
+    if device_user:
+        session = get_session()
+        try:
+            user = session.get(User, device_user)
+            if user and user.is_active and user.role == UserRole.STUDENT:
+                existing = cache_get(session_key(user.id))
+                if existing:
+                    retry_token = secrets.token_urlsafe(24)
+                    cache_set(f"cei:oidc:retry:{retry_token}", {'user_id': user.id}, ttl=_RETRY_TTL)
+                    params = {'sso_conflict': '1', 'retry_token': retry_token,
+                              'device_label': existing.get('device_label', 'un autre appareil')}
+                    if back:
+                        params['lti_back'] = back
+                    if to:
+                        params['lti_to'] = to
+                    return redirect(f"{_app_url()}/login?{urlencode(params)}")
+                user.last_login = utcnow()
+                session.commit()
+                schedule_refresh_person(user.id)
+                return open_session_page(user, back, to)
+        except Exception:
+            pass   # on retombe sur la connexion UNCHK ci-dessous
         finally:
             session.close()
     if not _configured():

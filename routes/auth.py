@@ -18,6 +18,7 @@ from auth_paseto import (
     paseto_required, get_current_user_id,
     create_access_token, create_refresh_token,
     set_refresh_cookie, clear_refresh_cookie,
+    issue_device_cookie, forget_device, revoke_all_devices,
     get_refresh_token_from_cookie, hash_token,
     ACCESS_TTL, REFRESH_TTL, session_key,
 )
@@ -253,6 +254,8 @@ def login():
             'expires_in': int(ACCESS_TTL.total_seconds()),
         }))
         set_refresh_cookie(resp, refresh_token)
+        if user_dict.get('role') == 'student':
+            issue_device_cookie(resp, user_dict['id'])   # appareil reconnu (bouton CEI de Moodle)
         return resp, 200
     except Exception as e:
         try: session.rollback(); session.close()
@@ -342,6 +345,7 @@ def logout():
     cache_delete(_session_key(get_current_user_id()))
     resp = make_response(jsonify({'success': True, 'message': 'Déconnecté'}))
     clear_refresh_cookie(resp)
+    forget_device(resp)
     return resp, 200
 
 
@@ -444,6 +448,7 @@ def change_password():
 
         user.password_hash = bcrypt.generate_password_hash(new_pw).decode('utf-8')
         session.commit()
+        revoke_all_devices(user.id)
         # Correctif (29/08, retour utilisateur) : /app n'existe pas dans le
         # frontend (héritage d'un ancien schéma d'URL) — /login est la
         # vraie page vers laquelle renvoyer depuis cet email de confirmation.
@@ -543,6 +548,7 @@ def reset_password():
 
         saved_email = user.email; saved_name = user.full_name
         user.password_hash       = bcrypt.generate_password_hash(new_password).decode('utf-8')
+        revoke_all_devices(user.id)
         user.reset_token         = None
         user.reset_token_expires = None
         session.commit()

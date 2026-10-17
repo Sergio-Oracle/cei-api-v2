@@ -35,7 +35,7 @@ def _event_payload(exam, course_id: int) -> dict:
     return {
         'name': f"Examen CEI : {exam.title}"[:255],
         'description': (f"<p>Examen en ligne sur CEI (Centre d'Examen Intelligent) — durée {exam.duration_minutes} min.</p>"
-                        f"<p>Le jour de l'examen, cliquez sur le bouton « CEI » du menu de Moodle (en haut de la page) "
+                        f"<p>Cliquez sur le bouton « CEI » du menu de Moodle (en haut de la page) "
                         f"pour rejoindre CEI et composer votre examen.</p>"),
         'format': 1,
         'courseid': course_id,

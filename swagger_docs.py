@@ -769,8 +769,7 @@ OPENAPI_SPEC = {
         "/api/auth/from-moodle": {"get": {
             "tags": ["SSO / Fédération d'identité"], "summary": "Bouton « CEI » du menu de Moodle", "security": [],
             "description": "Cible du bouton ajouté une fois dans le menu principal de Moodle (toutes les pages, tous les cours). Même fenêtre, tableau de bord du rôle, sans reconnexion : session CEI déjà ouverte dans ce navigateur (cookie cei_refresh valide et session active) → directement ; sinon connexion UNCHK silencieuse (Keycloak déjà ouvert par Moodle). Adresse de retour = page Moodle d'origine (paramètre back ou Referer, https sur *.unchk.sn ou plateforme déclarée), sinon accueil de la plateforme : la flèche Retour, « Retour à Moodle » et la déconnexion y ramènent. La personne est alignée sur Moodle en arrière-plan (rôle, UE, EC, nom, formation).",
-            "parameters": [{"name": "back", "in": "query", "schema": {"type": "string"}, "description": "Page Moodle où revenir (facultatif)"},
-                           {"name": "to", "in": "query", "schema": {"type": "string", "example": "/exam/175"}, "description": "Examen où arriver au lieu du tableau de bord (facultatif, format /exam/<id> uniquement) : utilisé par le lien « Rejoindre CEI » du calendrier Moodle"}],
+            "parameters": [{"name": "back", "in": "query", "schema": {"type": "string"}, "description": "Page Moodle où revenir (facultatif)"}],
             "responses": {"200": {"description": "Page relais vers /lti/enter"}, "302": {"description": "Vers la connexion UNCHK"}}
         }},
         "/api/auth/oidc/login": {"get": {

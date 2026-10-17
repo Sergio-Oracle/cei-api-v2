@@ -29,14 +29,16 @@ def _app_url() -> str:
 
 
 def _event_payload(exam, course_id: int) -> dict:
+    link = f"{_app_url()}/api/auth/from-moodle?to=/exam/{exam.id}"   # même entrée que le bouton « CEI »
     # start_time/end_time sont stockés en UTC naïf (voir create_online_exam).
     start = calendar.timegm(exam.start_time.timetuple())
     duration = max(0, int((exam.end_time - exam.start_time).total_seconds()))
     return {
         'name': f"Examen CEI : {exam.title}"[:255],
         'description': (f"<p>Examen en ligne sur CEI (Centre d'Examen Intelligent) — durée {exam.duration_minutes} min.</p>"
-                        f"<p>Le jour de l'examen, cliquez sur le bouton « CEI » du menu de Moodle (en haut de la page) "
-                        f"pour rejoindre CEI et composer votre examen. Aucune nouvelle connexion n'est demandée.</p>"),
+                        f"<p>Le jour de l'examen, cliquez sur le bouton « CEI » du menu de Moodle (en haut de la page), "
+                        f"ou directement ici : <a href=\"{link}\">Rejoindre CEI pour composer l'examen</a>. "
+                        f"Aucune nouvelle connexion n'est demandée.</p>"),
         'format': 1,
         'courseid': course_id,
         'eventtype': 'course',

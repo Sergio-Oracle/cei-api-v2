@@ -16,6 +16,7 @@ mais connue de Moodle → compte créé automatiquement, rôle déduit de Moodle
 Inconnue de CEI et de tout Moodle → refus.
 """
 import os
+import re
 import secrets
 from urllib.parse import urlencode
 
@@ -120,14 +121,20 @@ def moodle_back(url) -> str | None:
     return url if host in known else None
 
 
-def open_session_page(user: User, back: str | None):
+def exam_target(value) -> str | None:
+    """Adresse CEI d'un examen (« /exam/123 ») passée par un lien du calendrier
+    Moodle ; toute autre valeur est ignorée (pas de redirection libre)."""
+    return value if isinstance(value, str) and re.fullmatch(r'/exam/\d{1,9}', value) else None
+
+
+def open_session_page(user: User, back: str | None, to: str | None = None):
     """Ouvre la session CEI puis mène au tableau de bord du rôle en passant
     par /lti/enter, qui retient l'adresse de retour vers Moodle. Page HTML
     plutôt que redirection HTTP : la navigation suivante part alors de CEI,
     et le cookie cei_logged_in (SameSite=Strict) l'accompagne — après une
     redirection venue de Keycloak ou de Moodle, il ne serait pas envoyé."""
     target = f"{_app_url()}/lti/enter?" + urlencode({
-        'to': f"/dashboard/{_DASHBOARDS.get(user.role, 'student')}", 'back': back or '', 'k': secrets.token_urlsafe(8)})
+        'to': to or f"/dashboard/{_DASHBOARDS.get(user.role, 'student')}", 'back': back or '', 'k': secrets.token_urlsafe(8)})
     issued = _issue_session_and_redirect(user, target)
     resp = _relay_page(target)
     for header in issued.headers.getlist('Set-Cookie'):
@@ -161,6 +168,7 @@ def from_moodle():
     en paramètre back, sinon l'accueil de la plateforme."""
     from models import MoodleInstance
     back = moodle_back(request.args.get('back')) or moodle_back(request.referrer)
+    to = exam_target(request.args.get('to'))   # lien « Rejoindre CEI » du calendrier Moodle
     if not back:
         session = get_session()
         try:
@@ -181,7 +189,7 @@ def from_moodle():
             if payload.get('type') == 'refresh' and user and user.is_active and not revoked and same_session:
                 schedule_refresh_person(user.id)
                 target = f"{_app_url()}/lti/enter?" + urlencode({
-                    'to': f"/dashboard/{_DASHBOARDS.get(user.role, 'student')}", 'back': back or '',
+                    'to': to or f"/dashboard/{_DASHBOARDS.get(user.role, 'student')}", 'back': back or '',
                     'k': secrets.token_urlsafe(8)})
                 return _relay_page(target)
         except Exception:
@@ -190,7 +198,7 @@ def from_moodle():
             session.close()
     if not _configured():
         return redirect(f"{_app_url()}/login?sso_error=not_configured")
-    return redirect(f"{_app_url()}/api/auth/oidc/login?" + urlencode({'back': back or ''}))
+    return redirect(f"{_app_url()}/api/auth/oidc/login?" + urlencode({'back': back or '', 'to': to or ''}))
 
 
 _REQUIRED_ENVS = ('OIDC_ISSUER', 'OIDC_CLIENT_ID', 'OIDC_CLIENT_SECRET', 'OIDC_REDIRECT_URI')
@@ -216,7 +224,8 @@ def oidc_login():
     state = secrets.token_urlsafe(32)
     nonce = secrets.token_urlsafe(32)
     # back : adresse Moodle où revenir (arrivée par le bouton « CEI » de Moodle).
-    cache_set(f"cei:oidc:state:{state}", {'nonce': nonce, 'back': moodle_back(request.args.get('back'))},
+    cache_set(f"cei:oidc:state:{state}", {'nonce': nonce, 'back': moodle_back(request.args.get('back')),
+               'to': exam_target(request.args.get('to'))},
               ttl=_STATE_TTL)
     return redirect(oidc_keycloak.build_authorization_url(state, nonce))
 
@@ -274,13 +283,15 @@ def oidc_callback():
                 }
                 if entry.get('back'):
                     params['lti_back'] = entry['back']
+                if entry.get('to'):
+                    params['lti_to'] = entry['to']
                 return redirect(f"{_app_url()}/login?{urlencode(params)}")
 
         user.last_login = utcnow()
         session.commit()
         schedule_refresh_person(user.id)   # rôle, UE, EC, formation alignés sur Moodle
         if entry.get('back'):
-            return open_session_page(user, entry['back'])
+            return open_session_page(user, entry['back'], entry.get('to'))
         return _issue_session_and_redirect(user, f"{_app_url()}/dashboard")
     finally:
         session.close()

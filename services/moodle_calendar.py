@@ -18,7 +18,6 @@ import calendar
 import hashlib
 import os
 import threading
-import time
 from datetime import datetime, timezone
 
 from services import moodle_sync
@@ -29,43 +28,17 @@ def _app_url() -> str:
     return os.getenv('APP_URL', 'https://dev-cei.ddns.net').rstrip('/')
 
 
-_join_cache: dict = {}   # instance.id -> (expiration, adresse de lancement)
-
-
-def _join_link(inst, client, exam) -> str:
-    """Adresse du lien « Rejoindre CEI » du calendrier. De préférence le
-    lancement LTI de l'activité « CEI » posée une fois sur la page d'accueil de
-    Moodle : c'est Moodle qui authentifie l'étudiant (sa session dure 8 h), sans
-    repasser par Keycloak dont la session expire bien plus tôt. À défaut de
-    cette activité, l'entrée du bouton « CEI » du menu."""
-    now = time.time()
-    cached = _join_cache.get(inst.id)
-    if not cached or cached[0] < now:
-        url = None
-        try:
-            for section in client.call('core_course_get_contents', {'courseid': 1}) or []:
-                for mod in section.get('modules', []):
-                    if mod.get('modname') == 'lti' and 'cei' in (mod.get('name') or '').lower() and mod.get('visible', 1):
-                        url = f"{inst.base_url.rstrip('/')}/mod/lti/launch.php?id={mod['id']}"
-                        break
-                if url:
-                    break
-        except MoodleError:
-            url = None
-        _join_cache[inst.id] = (now + 600, url)
-        cached = _join_cache[inst.id]
-    return cached[1] or f"{_app_url()}/api/auth/from-moodle?to=/exam/{exam.id}"
-
-
-def _event_payload(exam, course_id: int, link: str) -> dict:
+def _event_payload(exam, course_id: int) -> dict:
+    link = f"{_app_url()}/api/auth/from-moodle?to=/exam/{exam.id}"   # même entrée que le bouton « CEI »
     # start_time/end_time sont stockés en UTC naïf (voir create_online_exam).
     start = calendar.timegm(exam.start_time.timetuple())
     duration = max(0, int((exam.end_time - exam.start_time).total_seconds()))
     return {
         'name': f"Examen CEI : {exam.title}"[:255],
         'description': (f"<p>Examen en ligne sur CEI (Centre d'Examen Intelligent) — durée {exam.duration_minutes} min.</p>"
-                        f"<p>Le jour de l'examen, cliquez ici : <a href=\"{link}\">Rejoindre CEI pour composer l'examen</a> "
-                        f"(ou sur le bouton « CEI » du menu de Moodle). Aucune nouvelle connexion n'est demandée.</p>"),
+                        f"<p>Le jour de l'examen, cliquez sur le bouton « CEI » du menu de Moodle (en haut de la page), "
+                        f"ou directement ici : <a href=\"{link}\">Rejoindre CEI pour composer l'examen</a>. "
+                        f"Aucune nouvelle connexion n'est demandée.</p>"),
         'format': 1,
         'courseid': course_id,
         'eventtype': 'course',
@@ -111,7 +84,7 @@ def _target(session, exam):
     if not found:
         return None, f'aucun cours Moodle {ec.code}'
     inst, client, course = found
-    payload = _event_payload(exam, course['id'], _join_link(inst, client, exam))
+    payload = _event_payload(exam, course['id'])
     return (inst, client, payload, _signature(payload)), None
 
 

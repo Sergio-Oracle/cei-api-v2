@@ -293,6 +293,13 @@ def respond_reclamation(rid):
                     attempt.corrected_by_id = user_id
 
         session.commit()
+        try:                                   # note modifiée après publication : elle doit suivre dans Moodle
+            if rec.attempt_id:
+                from routes.exams import _push_grades_if_published
+                _att = session.query(ExamAttempt).filter_by(id=rec.attempt_id).first()
+                _push_grades_if_published(_att.exam if _att else None)
+        except Exception:
+            pass
         payload = _notify_reclamation_decision(rec)
         result = {'id': rec.id, 'status': rec.status.value,
                   'response': rec.response,

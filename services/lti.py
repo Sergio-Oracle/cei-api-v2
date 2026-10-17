@@ -378,14 +378,29 @@ def push_exam_scores(session, exam_id: int, dry_run: bool = False) -> dict:
     return report
 
 
-def schedule_push(exam_id: int) -> None:
-    """À appeler après la publication des résultats — arrière-plan, jamais bloquant."""
+def schedule_push(exam_id: int, delay: int = 0) -> None:
+    """À appeler après la publication des résultats, ou après une note corrigée une fois les résultats publiés
+    (réclamation, correction manuelle) — arrière-plan, jamais bloquant.
+
+    `delay` > 0 : plusieurs corrections rapprochées ne déclenchent qu'UN dépôt, lancé `delay` secondes après la
+    première et qui lit alors les notes à jour (toutes les corrections de la fenêtre y sont donc incluses)."""
     from services import moodle_sync
     if not moodle_sync.is_enabled():
         return
+    lock_key = f"cei:lti:push:{exam_id}"
+    if delay > 0:
+        try:
+            from cache import _get_client
+            r = _get_client()
+            if r is not None and not r.set(lock_key, '1', nx=True, ex=delay + 120):
+                return                                   # un dépôt est déjà prévu, il prendra cette note aussi
+        except Exception:
+            pass                                          # Redis indisponible : on dépose quand même
 
     def run():
         from models import get_session
+        if delay > 0:
+            time.sleep(delay)
         session = get_session()
         try:
             rep = push_exam_scores(session, exam_id)
@@ -395,5 +410,13 @@ def schedule_push(exam_id: int) -> None:
             print(f"[lti] notes examen {exam_id} : {e}")
         finally:
             session.close()
+            if delay > 0:
+                try:
+                    from cache import _get_client
+                    r = _get_client()
+                    if r is not None:
+                        r.delete(lock_key)
+                except Exception:
+                    pass
 
     threading.Thread(target=run, daemon=True, name='lti-grades').start()

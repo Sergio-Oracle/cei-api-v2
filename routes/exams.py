@@ -1867,6 +1867,17 @@ def _extract_correct_answers(rubric: str) -> dict:
     return result
 
 
+def _push_grades_if_published(exam):
+    """Une note modifiée APRÈS la publication des résultats (réclamation, correction manuelle) doit aussi arriver
+    dans le carnet Moodle : dépôt différé de 15 s, regroupé si plusieurs corrections se suivent."""
+    try:
+        if exam is not None and exam.results_published:
+            from services.lti import schedule_push
+            schedule_push(exam.id, delay=15)
+    except Exception:
+        pass
+
+
 def _parse_utc_naive(raw):
     """Date-heure reçue du navigateur → UTC naïf (format de la base). Accepte « Z »,
     un décalage (+02:00) ou une date sans fuseau (alors lue comme UTC)."""
@@ -2741,6 +2752,7 @@ def correct_exam_attempt(attempt_id):
             return jsonify({'error': str(ve)}), 400
 
         session.commit()
+        _push_grades_if_published(attempt.exam)
 
         # Pas d'email ici : la note reste masquée à l'étudiant tant que le
         # professeur n'a pas explicitement publié les résultats (voir
@@ -3153,6 +3165,10 @@ def import_exam_grades(exam_id):
                 imported.append(email)
 
         session.commit()
+        try:
+            _push_grades_if_published(session.get(OnlineExam, exam_id))
+        except Exception:
+            pass
         session.close()
         return jsonify({
             'success': True,
@@ -3694,6 +3710,7 @@ def manual_grade_attempt(attempt_id):
         attempt.corrected_at   = utcnow()
         attempt.corrected_by_id = user_id
         session.commit()
+        _push_grades_if_published(attempt.exam)
         student_email = attempt.student.email if attempt.student else None
         attempt_id_copy = attempt.id
         session.close()
@@ -3775,6 +3792,7 @@ def update_question_grades(attempt_id):
         attempt.corrected_at    = utcnow()
         attempt.corrected_by_id = user_id
         session.commit()
+        _push_grades_if_published(attempt.exam)
         result = {'success': True, 'score': new_score, 'question_scores': updated, 'feedback': result_text}
         session.close()
         return jsonify(result)

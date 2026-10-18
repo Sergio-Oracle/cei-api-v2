@@ -4465,10 +4465,12 @@ def get_professor_recent_incidents():
             session.close()
             return jsonify({'error': 'Accès réservé aux professeurs'}), 403
         
-        # Récupérer les examens actifs du professeur
-        active_exams = session.query(OnlineExam).filter_by(
-            created_by_id=user_id,
-            status=ExamStatus.ACTIVE
+        # Examens du professeur en cours OU clôturés : les incidents des dernières
+        # 24 h restent consultables après la clôture (la cloche, elle, les signale
+        # déjà) — limiter aux examens actifs faisait disparaître la liste à la clôture.
+        active_exams = session.query(OnlineExam).filter(
+            OnlineExam.created_by_id == user_id,
+            OnlineExam.status.in_([ExamStatus.ACTIVE, ExamStatus.CLOSED])
         ).all()
         
         exam_ids = [e.id for e in active_exams]

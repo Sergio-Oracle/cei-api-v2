@@ -376,6 +376,15 @@ def activate_online_exam(exam_id):
             session.close()
             return jsonify({'error': 'Vous ne pouvez activer que vos propres examens'}), 403
         
+        # Contrôle du sujet : refuser d'ouvrir un examen dont les étudiants ne verraient pas les questions
+        # (incident du 19/10/2026) — sauf confirmation explicite (force) du professeur / de l'administrateur.
+        from services.subject_check import analyze as _subject_analyze
+        _chk = _subject_analyze(exam.subject.content if exam.subject else '')
+        if not _chk['ok'] and not (request.get_json(silent=True) or {}).get('force'):
+            session.close()
+            return jsonify({'error': 'Le sujet contient des problèmes de lecture : ' + ' | '.join(i['message'] for i in _chk['issues'] if i['level'] == 'error'),
+                            'needs_confirmation': True, 'subject_check': _chk}), 409
+
         # Passer en statut ACTIVE
         was_draft = exam.status == ExamStatus.DRAFT
         exam.status = ExamStatus.ACTIVE
@@ -1515,6 +1524,8 @@ def get_exam_attempt_paginated(attempt_id):
             return jsonify({'error': 'Tentative non trouvée'}), 404
 
         pages = _build_exam_pages(attempt.exam, attempt_id)
+        from services.subject_check import alert_if_unreadable
+        alert_if_unreadable(attempt.exam, pages)   # prévient le personnel si les étudiants ne reçoivent aucune question
         session.close()
         return jsonify(pages)
     except Exception as e:

@@ -1529,7 +1529,7 @@ def _parse_subject_questions_for_grading(content: str) -> dict:
     contenu brut du sujet — port Python minimal de parseExamBlocks (frontend) pour
     reconstruire des réponses lisibles par l'IA, notamment pour l'appariement où
     l'énoncé de la paire de gauche n'est jamais stocké dans les réponses brutes."""
-    Q_RE = re.compile(r'^(?:(?:Question|Q)\.?\s+)?(\d{1,3})\s*[—\-–:.)]\s*(.+)', re.I)
+    Q_RE = re.compile(r'^(?:(?:Question|Q)\.?\s+)?(\d{1,3})(?:\s*[—\-–:.)]|\s+(?=\[(?:QCM_MULTI|QCM|VF|OUVERT|SUBOPEN|APPARIEMENT|CODE)\]))\s*(.+)', re.I)  # « Question 1 [QCM] » accepté
     TYPE_MARKER = re.compile(r'\[(QCM_MULTI|QCM|VF|OUVERT|SUBOPEN|APPARIEMENT|CODE)\]', re.I)
     C_RE = re.compile(r'^(?:\(?([A-Fa-f])\)?)\s*[.):\s-]\s+(.+)')
     PAIR_RE = re.compile(r'^(?:\(?([A-Fa-f])\)?)\s*[.):\s-]\s+(.+?)\s*(?:→|->)\s*(.+)')
@@ -1586,7 +1586,7 @@ def _parse_subject_blocks_ordered(raw: str) -> list:
     plutôt que de laisser le client recalculer)."""
     VF_RE = re.compile(r'\bvrai\s*[/|ou]\s*faux\b|\bV\s*[/|]\s*F\b', re.I)
     strip = lambda s: re.sub(r'\s*[*_]{1,2}$', '', re.sub(r'^[*_]{1,2}\s*', '', s.strip())).strip()
-    Q_RE = re.compile(r'^(?:(?:Question|Q)\.?\s+)?(\d{1,2})(?!\s*\.\s*\d)(?:\s*[.:)–—-]|\.\s+|\s{2,})\s*(.+)', re.I)
+    Q_RE = re.compile(r'^(?:(?:Question|Q)\.?\s+)?(\d{1,2})(?!\s*\.\s*\d)(?:\s*[.:)–—-]|\.\s+|\s{2,}|\s+(?=\[(?:QCM_MULTI|QCM|VF|OUVERT|SUBOPEN|APPARIEMENT|CODE)\]))\s*(.+)', re.I)  # « Question 1 [QCM] » accepté
     TYPE_MARKER = re.compile(r'\[(QCM_MULTI|QCM|VF|OUVERT|SUBOPEN|APPARIEMENT|CODE|OUVERT[ES]*)\]', re.I)
     C_RE = re.compile(r'^(?:\(?([A-Fa-f])\)?)\s*[.):\s-]\s+(.+)')
     PAIR_RE = re.compile(r'^(?:\(?([A-Fa-f])\)?)\s*[.):\s-]\s+(.+?)\s*(?:→|->)\s*(.+)')

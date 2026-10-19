@@ -1680,7 +1680,10 @@ def _parse_subject_blocks_ordered(raw: str) -> list:
                 extra_lines.append(lines[i])
                 i += 1
             else:
-                break
+                # Suite d'une proposition coupée par un retour à la ligne (texte extrait d'un PDF) :
+                # on la rattache à la dernière proposition au lieu d'abandonner les suivantes (B, C, D…).
+                choices[-1]['text'] = (choices[-1]['text'] + ' ' + lines[i].strip()).strip()
+                i += 1
 
         if q['markerType']:
             btype = {

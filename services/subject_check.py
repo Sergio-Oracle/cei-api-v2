@@ -46,8 +46,18 @@ def analyze(content: str) -> dict:
             issues.append({'level': 'error', 'message':
                 f"Question {b.get('num')} : {len(b.get('choices') or [])} proposition(s) reconnue(s) sur un QCM "
                 "(propositions coupées ou mal numérotées A., B., C. ?)."})
-        elif b['type'] == 'vf' and False:
-            pass
+
+    # Propositions incohérentes : la plupart des QCM en ont N et certains moins → propositions probablement perdues
+    # (ligne coupée, lettre mal formée). Seulement un avertissement : un QCM à 3 propositions peut être voulu.
+    counts = [len(b.get('choices') or []) for b in blocks if b['type'] in ('qcm', 'qcm_multi')]
+    if len(counts) >= 3:
+        mode = max(set(counts), key=counts.count)
+        if counts.count(mode) >= len(counts) * 0.6:
+            odd = [b.get('num') for b in blocks if b['type'] in ('qcm', 'qcm_multi') and 2 <= len(b.get('choices') or []) < mode]
+            if odd:
+                issues.append({'level': 'warn', 'message':
+                    f"Question(s) {', '.join(map(str, odd))} : moins de propositions que les autres QCM ({mode}) — "
+                    "vérifiez qu'aucune proposition n'a été perdue."})
 
     nums = [b.get('num') for b in blocks if b.get('num')]
     if nums:

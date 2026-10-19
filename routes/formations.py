@@ -13,7 +13,7 @@ from datetime import datetime
 from threading import Thread
 
 from flask import Blueprint, request, jsonify
-from sqlalchemy.orm import joinedload
+from sqlalchemy.orm import joinedload, selectinload
 
 from auth_paseto import paseto_required, get_current_user_id, get_current_user_role
 from cache import cache_get, cache_set, cache_delete_pattern, make_key
@@ -516,7 +516,11 @@ def get_all_ecs():
         user_id = get_current_user_id()
         session = get_session()
         user = session.query(User).filter_by(id=user_id).first()
-        query = session.query(EC).filter_by(is_active=True).options(joinedload(EC.ue))
+        # Chargement groupé : EC.to_dict() lit UE → semestre → formation → pôle et les affectations ;
+        # sans cela chaque EC déclenchait ~4 requêtes (N+1) et la liste prenait plus d'une seconde.
+        query = session.query(EC).filter_by(is_active=True).options(
+            joinedload(EC.ue).joinedload(UE.semester).joinedload(Semester.formation).joinedload(Formation.pole),
+            selectinload(EC.assignments))
         if user and user.role == UserRole.PROFESSOR:
             query = query.join(ECAssignment).filter(ECAssignment.professor_id == user_id)
         niveau      = request.args.get('niveau')

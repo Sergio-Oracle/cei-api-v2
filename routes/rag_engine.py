@@ -248,9 +248,21 @@ def rag_engines_status(engine_id):
     try:
         engine = _engine_or_404(session, engine_id)
         try:
-            return jsonify({'datasets': ragflow_client.client_for(engine).index_status()})
+            datasets = ragflow_client.client_for(engine).index_status()
         except RagflowError as e:
             return jsonify({'error': str(e)}), 502
+        # Registre de CEI (documents Moodle suivis) : source du panneau « Documents des cours Moodle ». Renvoyé ici pour
+        # que les deux écrans parlent des mêmes échecs (RAGFlow ne compte que les indexations plantées ; CEI y ajoute
+        # les documents terminés sans aucun texte exploitable).
+        from sqlalchemy import func
+        from models import RagDocument
+        ledger = {'ready': 0, 'indexing': 0, 'failed': 0, 'no_text': 0}
+        for st, n in session.query(RagDocument.status, func.count()).filter_by(engine_id=engine.id).group_by(RagDocument.status):
+            ledger[st] = n
+        ledger['no_text'] = (session.query(func.count()).select_from(RagDocument)
+                             .filter(RagDocument.engine_id == engine.id, RagDocument.status == 'failed',
+                                     RagDocument.error.ilike('Aucun texte exploitable%')).scalar() or 0)
+        return jsonify({'datasets': datasets, 'ledger': ledger})
     except LookupError as e:
         return jsonify({'error': str(e)}), 404
     finally:

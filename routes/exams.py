@@ -1103,7 +1103,11 @@ def save_exam_answers(attempt_id):
                             'banned': attempt.status == AttemptStatus.BANNED}), 400
         
         data = request.get_json(silent=True) or {}
-        attempt.answers = data.get('answers', '{}')
+        incoming = data.get('answers', '{}')
+        # Un envoi vide (page rechargée, état pas encore restauré) n'efface
+        # jamais ce qui a déjà été enregistré.
+        if not (_is_blank_answers(incoming) and not _is_blank_answers(attempt.answers)):
+            attempt.answers = incoming
         
         session.commit()
         session.close()
@@ -2066,6 +2070,33 @@ Tu DOIS terminer ta correction par une ligne contenant EXACTEMENT : "Points obte
 (la somme de tous les points ci-dessus, jamais "Note totale", jamais "/20")."""
 
 
+def _has_real_answers(data) -> bool:
+    """Vrai si la copie contient au moins une réponse non vide (chaîne non
+    blanche, case cochée, paire d'appariement...). Une copie {"pq_1": ""} ou
+    {} est considérée vide."""
+    if isinstance(data, bool):
+        return True
+    if isinstance(data, str):
+        return bool(data.strip())
+    if isinstance(data, dict):
+        return any(_has_real_answers(v) for v in data.values())
+    if isinstance(data, (list, tuple)):
+        return any(_has_real_answers(v) for v in data)
+    return bool(data)
+
+
+def _is_blank_answers(raw) -> bool:
+    """Charge utile de réponses (JSON texte ou objet) sans aucune réponse."""
+    if raw is None:
+        return True
+    if isinstance(raw, str):
+        try:
+            return not _has_real_answers(json.loads(raw)) if raw.strip() else True
+        except Exception:
+            return not raw.strip()
+    return not _has_real_answers(raw)
+
+
 def _sweep_uncorrected(limit: int = 15):
     """Filet de sécurité, au plus un passage toutes les 5 minutes (verrou Redis) :
     1. clôture les tentatives restées « en cours » alors que leur échéance
@@ -2141,9 +2172,9 @@ def _run_auto_correction(attempt_id: int):
         try:
             answers_data = json.loads(attempt.answers) if attempt.answers else {}
         except Exception:
-            answers_data = {}
+            answers_data = {'_texte': attempt.answers} if (attempt.answers or '').strip() else {}
 
-        if not answers_data:
+        if not _has_real_answers(answers_data):
             # Copie rendue sans aucune réponse : 0/20 explicite (au lieu de rester
             # « Non corrigé », ambigu pour l'enseignant). Modifiable à la main.
             attempt.score = 0.0
@@ -2349,7 +2380,7 @@ def submit_exam_attempt(attempt_id):
         
         # Sauvegarder les dernières réponses
         data = request.get_json(silent=True) or {}
-        if 'answers' in data:
+        if 'answers' in data and not (_is_blank_answers(data['answers']) and not _is_blank_answers(attempt.answers)):
             attempt.answers = data['answers']
 
         attempt.status = AttemptStatus.SUBMITTED
@@ -2608,10 +2639,17 @@ def _run_ai_correction(attempt, corrected_by_id=None) -> float:
     try:
         answers_data = json.loads(attempt.answers) if attempt.answers else {}
     except Exception:
-        answers_data = {}
+        answers_data = {'_texte': attempt.answers} if (attempt.answers or '').strip() else {}
 
-    if not answers_data:
-        raise ValueError('Aucune réponse à corriger pour cet étudiant')
+    if not _has_real_answers(answers_data):
+        # Copie sans aucune réponse : 0/20 explicite, que le professeur ou le
+        # responsable d'examen peut ouvrir et modifier à la main.
+        attempt.score = 0.0
+        attempt.feedback = "Copie vide : aucune réponse enregistrée pour cet examen."
+        attempt.question_scores = json.dumps([])
+        attempt.corrected_at = utcnow()
+        attempt.corrected_by_id = corrected_by_id
+        return 0.0
 
     # Notation automatique (sans IA) des questions QCM/QCM_MULTI/Vrai-Faux/
     # Appariement — comme Moodle. Seul le reliquat de points (questions
@@ -2643,8 +2681,6 @@ def _run_ai_correction(attempt, corrected_by_id=None) -> float:
 
     ai_structured = []
     if remaining_max <= 0.01 or not student_answers.strip():
-        if det_max <= 0.01:
-            raise ValueError('Aucune réponse à corriger pour cet étudiant')
         score  = _to_20(det_score)
         result = f"{det_section}Note totale: {score:.2f}/20"
     else:

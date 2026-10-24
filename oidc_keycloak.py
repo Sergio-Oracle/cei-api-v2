@@ -61,6 +61,17 @@ def _userinfo_endpoint() -> str:
     return f"{issuer()}/protocol/openid-connect/userinfo"
 
 
+def end_session_url(id_token_hint: str | None, post_logout_redirect_uri: str) -> str:
+    """Adresse de fin de session Keycloak (déconnexion unique). Terminer la
+    session Keycloak déclenche la déconnexion de Moodle (canal frontal du
+    client Moodle, réglé côté Keycloak)."""
+    from urllib.parse import urlencode
+    params = {'client_id': client_id(), 'post_logout_redirect_uri': post_logout_redirect_uri}
+    if id_token_hint:
+        params['id_token_hint'] = id_token_hint
+    return f"{issuer()}/protocol/openid-connect/logout?{urlencode(params)}"
+
+
 def build_authorization_url(state: str, nonce: str) -> str:
     from urllib.parse import urlencode
     params = {

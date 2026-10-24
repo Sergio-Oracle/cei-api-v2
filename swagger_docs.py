@@ -812,13 +812,6 @@ OPENAPI_SPEC = {
                 "400": {"description": "retry_token invalide ou expiré"}
             }
         }},
-        "/api/auth/oidc/logout-url": {"post": {
-            "tags": ["SSO / Fédération d'identité"], "summary": "Adresse de fin de session UNCHK (déconnexion unique CEI + Moodle)",
-            "description": "À appeler avant /api/auth/logout. Le navigateur ouvre l'adresse renvoyée : Keycloak termine la session UNCHK, ce qui déconnecte aussi Moodle (canal frontal du client Moodle). url=null si la connexion UNCHK n'est pas configurée.",
-            "responses": {"200": {"description": "Adresse Keycloak", "content": {"application/json": {"schema": {
-                "type": "object", "properties": {"url": {"type": "string", "nullable": True}}
-            }}}}}
-        }},
         "/api/auth/oidc/exchange": {"post": {
             "tags": ["SSO / Fédération d'identité"],
             "summary": "Échange un jeton Keycloak (ENT) contre un jeton CEI — appel serveur-à-serveur",

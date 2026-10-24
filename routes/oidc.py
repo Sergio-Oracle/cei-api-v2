@@ -28,7 +28,6 @@ from auth_paseto import (
     create_access_token, create_refresh_token, set_refresh_cookie,
     hash_token, session_key, REFRESH_TTL, decode_token, COOKIE_NAME,
 )
-from auth_paseto import paseto_required, get_current_user_id
 from api_key_auth import api_key_required, api_client_allows_role
 from models import get_session, User, UserRole, TokenBlocklist
 from services.provisioning import provision_from_moodle, schedule_refresh_person
@@ -194,20 +193,6 @@ def from_moodle():
     return redirect(f"{_app_url()}/api/auth/oidc/login?" + urlencode({'back': back or ''}))
 
 
-@oidc_bp.route('/api/auth/oidc/logout-url', methods=['POST'])
-@paseto_required
-def oidc_logout_url():
-    """Adresse Keycloak à ouvrir pour terminer la session UNCHK (donc aussi
-    celle de Moodle). À appeler AVANT /api/auth/logout. url=null si la
-    connexion UNCHK n'est pas configurée."""
-    if not _configured():
-        return jsonify({'url': None})
-    uid = get_current_user_id()
-    saved = cache_get(f"cei:oidc:idt:{uid}") or {}
-    cache_delete(f"cei:oidc:idt:{uid}")
-    return jsonify({'url': oidc_keycloak.end_session_url(saved.get('id_token'), f"{_app_url()}/login?logged_out=1")})
-
-
 _REQUIRED_ENVS = ('OIDC_ISSUER', 'OIDC_CLIENT_ID', 'OIDC_CLIENT_SECRET', 'OIDC_REDIRECT_URI')
 
 
@@ -294,8 +279,6 @@ def oidc_callback():
         user.last_login = utcnow()
         session.commit()
         schedule_refresh_person(user.id)   # rôle, UE, EC, formation alignés sur Moodle
-        # Gardé pour la déconnexion unique (id_token_hint de Keycloak).
-        cache_set(f"cei:oidc:idt:{user.id}", {'id_token': tokens.get('id_token')}, ttl=7 * 86400)
         if entry.get('back'):
             return open_session_page(user, entry['back'])
         return _issue_session_and_redirect(user, f"{_app_url()}/dashboard")

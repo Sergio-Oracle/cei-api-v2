@@ -4225,10 +4225,10 @@ OPENAPI_SPEC = {
             }
         }},
         "/api/online_exams/{exam_id}/export-csv": {"get": {
-            "tags": ["Examens en ligne"], "summary": "Export CSV complet (tentatives + scores + incidents)",
+            "tags": ["Examens en ligne"], "summary": "Export des notes en tableau Excel .xlsx (étudiant, email, statut, note, risque, alertes, durée, date)",
             "parameters": [{"name": "exam_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
             "responses": {
-                "200": {"description": "CSV complet", "content": {"text/csv": {"schema": {"type": "string", "format": "binary"}}}}
+                "200": {"description": "Fichier Excel .xlsx", "content": {"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": {"schema": {"type": "string", "format": "binary"}}}}
             }
         }},
         "/api/online_exams/{exam_id}/import-grades": {"post": {

@@ -3061,8 +3061,7 @@ def get_exam_attempts(exam_id):
 @exams_bp.route('/api/online_exams/<int:exam_id>/export-csv', methods=['GET'])
 @paseto_required
 def export_exam_csv(exam_id):
-    """Exporte les notes d'un examen en CSV (prof/admin)."""
-    import csv
+    """Exporte les notes d'un examen en tableau Excel .xlsx (prof/admin). Le nom de la route reste « export-csv » pour ne pas casser les clients existants."""
     try:
         user_id = get_current_user_id()
         session = get_session()
@@ -3080,28 +3079,56 @@ def export_exam_csv(exam_id):
         attempts = session.query(ExamAttempt).options(
             joinedload(ExamAttempt.student)
         ).filter_by(exam_id=exam_id).order_by(ExamAttempt.submitted_at).all()
-        output = io.StringIO()
-        writer = csv.writer(output)
-        writer.writerow(['Étudiant', 'Email', 'Statut', 'Note /20', 'Risque %',
-                         'Tab switches', 'Alertes', 'Durée (min)', 'Soumis à'])
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+        from openpyxl.utils import get_column_letter
+        statuts = {'submitted': 'Soumis', 'auto_submitted': 'Soumis automatiquement',
+                   'in_progress': 'En cours', 'banned': 'Exclu'}
+        wb = Workbook()
+        ws = wb.active
+        ws.title = 'Notes'
+        headers = ['Étudiant', 'Email', 'Statut', 'Note /20', 'Risque %',
+                   'Changements d\'onglet', 'Alertes', 'Durée (min)', 'Soumis le']
+        ws.append(headers)
         for a in attempts:
-            name  = a.student.full_name if a.student else '?'
-            email = a.student.email if a.student else ''
-            dur   = int((a.submitted_at - a.started_at).total_seconds() / 60) if a.submitted_at and a.started_at else ''
-            writer.writerow([
-                name, email, a.status.value,
-                a.score if a.score is not None else '',
+            ws.append([
+                a.student.full_name if a.student else '?',
+                a.student.email if a.student else '',
+                statuts.get(a.status.value, a.status.value),
+                a.score if a.score is not None else None,
                 a.risk_score or 0,
                 a.tab_switches or 0,
                 a.warnings_count or 0,
-                dur,
-                a.submitted_at.strftime('%Y-%m-%d %H:%M') if a.submitted_at else '',
+                int((a.submitted_at - a.started_at).total_seconds() / 60) if a.submitted_at and a.started_at else None,
+                a.submitted_at if a.submitted_at else None,
             ])
         session.close()
-        filename = f"notes_{exam.title.replace(' ','_')}.csv"
+        thin = Side(style='thin', color='CBD5E1')
+        border = Border(left=thin, right=thin, top=thin, bottom=thin)
+        for c in ws[1]:
+            c.font = Font(bold=True, color='FFFFFF')
+            c.fill = PatternFill('solid', fgColor='1E40AF')
+            c.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+            c.border = border
+        ws.row_dimensions[1].height = 30
+        for row in ws.iter_rows(min_row=2):
+            for c in row:
+                c.border = border
+            row[3].number_format = '0.00'
+            row[8].number_format = 'dd/mm/yyyy hh:mm'
+            for k in (3, 4, 5, 6, 7, 8):
+                row[k].alignment = Alignment(horizontal='center')
+        for idx, w in enumerate([34, 38, 24, 11, 11, 20, 10, 13, 18], start=1):
+            ws.column_dimensions[get_column_letter(idx)].width = w
+        ws.freeze_panes = 'A2'
+        ws.auto_filter.ref = ws.dimensions
+        buf = io.BytesIO()
+        wb.save(buf)
+        buf.seek(0)
+        filename = f"notes_{re.sub(r'[^A-Za-z0-9_-]+', '_', exam.title)}.xlsx"
         return send_file(
-            io.BytesIO(output.getvalue().encode('utf-8-sig')),
-            mimetype='text/csv',
+            buf,
+            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
             as_attachment=True,
             download_name=filename
         )

@@ -148,6 +148,18 @@ check("PDF : affirmation coupée par le tableau recollée",
       "[phrase de sujet retirée] (0,25 pts) [VF]" in EPREUVE_PDF)
 check("Word : balises de l'enseignant non répétées", '[VF] (' not in EPREUVE_DOCX and '[QCM] (' not in EPREUVE_DOCX)
 
+print('\n== barème écrit depuis le corrigé (sans IA) ==')
+from services.exam_normalizer import rubric_from_corrige
+def _fx(n):
+    with open(os.path.join(ROOT, 'scripts', 'fixtures', n), encoding='utf-8') as f:
+        return f.read()
+for nom, ep, co in (('PDF à tableaux', 'epreuve_droit_pdf_tableaux.txt', 'corrige_droit_pdf_tableaux.txt'),
+                    ('Word à tableaux (clé rapide en tête, 2 parties QCM)', 'epreuve_droit_docx_tableaux.txt', 'corrige_droit_docx_tableaux.txt')):
+    txt, rep_n = normalize_exam_text(_fx(ep))
+    rub, warns = rubric_from_corrige(_fx(co), rep_n)
+    total = sum(float(p.replace(',', '.')) for p in re.findall(r'^Question \d+ \((\d+(?:,\d+)?) pts\)', rub, re.M))
+    check(f"{nom} : barème 20/20 sans avertissement", abs(total - 20) < 1e-6 and not warns, f"{total} pts, {warns[:3]}")
+
 print('\n== sujets défectueux : le contrôle doit protester ==')
 VIDE = "Sujet sans aucune question numérotée.\nRépondez librement."
 CASSE = "Question 1 [QCM]\nÉnoncé\nA. seule proposition\nQuestion 2 [QCM]\nÉnoncé\nA. a\nB. b\nQuestion 3 [QCM]\nÉnoncé\nA. a\nB. b\nC. c\nQuestion 4 [QCM]\nÉnoncé\nA. a\nB. b\nC. c\nD. d\n"

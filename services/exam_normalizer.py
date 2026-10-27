@@ -128,7 +128,7 @@ def _qcm(body, per, g, rep):
     def flush():
         nonlocal cur, ch
         if cur is not None:
-            rep['qinfo'].append({'num': cur[0], 'kind': 'qcm', 'local': cur[2], 'choices': {l: t for l, t in ch}})
+            rep['qinfo'].append({'num': cur[0], 'kind': 'qcm', 'local': cur[2], 'pts': per, 'choices': {l: t for l, t in ch}})
             out.append(f"Question {cur[0]} — {_untag(cur[1])} ({_fmt(per)} pts) [QCM]")
             out.extend(f"{l}. {t}" for l, t in ch)
             if len(ch) < 2:
@@ -176,7 +176,7 @@ def _vf(body, per, g, rep):
     for k, r in enumerate(rows):
         r = _untag(r)
         g[0] += 1
-        rep['qinfo'].append({'num': g[0], 'kind': 'vf', 'local': k + 1, 'text': r})
+        rep['qinfo'].append({'num': g[0], 'kind': 'vf', 'local': k + 1, 'pts': per, 'text': r})
         out.append(f"Question {g[0]} — {r} ({_fmt(per)} pts) [VF]")
         out.append('Vrai / Faux')
     rep['counts']['vf'] = rep['counts'].get('vf', 0) + len(rows)
@@ -311,7 +311,7 @@ def normalize_exam_text(raw: str) -> tuple:
         n_items = int(pi.group('n')) if pi else 0
         per = _num(pi.group('pts')) if pi else (pts / n_items if n_items else pts)
         rep['sections'].append({'rom': m.group('rom'), 'title': title, 'kind': kind, 'points': pts, 'items': n_items})
-        before = g[0]
+        before, q_before = g[0], len(rep['qinfo'])
         if kind == 'qcm':
             block = _qcm(rest, per, g, rep)
         elif kind == 'vf':
@@ -326,6 +326,8 @@ def normalize_exam_text(raw: str) -> tuple:
         else:
             rep['warnings'].append(f"Partie {m.group('rom')} « {title} » : type non reconnu, texte laissé tel quel")
             block = rest
+        for q in rep['qinfo'][q_before:]:
+            q['sec'] = m.group('rom').upper()  # numéros locaux : le corrigé donne une clé par partie
         if n_items and kind in ('qcm', 'vf', 'open') and g[0] - before != n_items:
             rep['warnings'].append(f"Partie {m.group('rom')} : {g[0] - before} question(s) reconnue(s) au lieu de {n_items}")
         out.extend(block)
@@ -368,6 +370,29 @@ def rubric_from_corrige(corrige_raw: str, rep: dict) -> tuple:
                 return body
         return None
 
+    # Clés par partie : « Clé de correction rapide » (en tête du corrigé, une ligne « I. QCM : 1 C · 2 A… » par
+    # partie, ou dans la partie elle-même), sinon colonne « Rép. » du tableau de la partie (« 1 C Là où… »).
+    _tok = r'(\d{1,2})\s*(Vrai|Faux|[A-F]|V)\b'
+    quick = {}
+    for ln in lines:
+        mq = re.match(r'^([IVX]{1,5})\.\s+[^:()]{2,40}:\s*(\d.*)$', ln)
+        if mq and not _CORR_SECTION.match(ln):
+            quick.setdefault(mq.group(1).upper(), {}).update((int(a), b) for a, b in re.findall(_tok, mq.group(2)))
+
+    def sec_key(rom, kind):
+        if rom not in sec:  # épreuve et corrigé numérotés autrement : première partie de ce type
+            rom = next((r for r, (kd, _) in sec.items() if kd == kind), rom)
+        key = dict(quick.get(rom, {}))
+        body = sec.get(rom, (None, []))[1]
+        mk = re.search(r'Cl[ée] de correction rapide\s*:(.*?)(?:N°\s+R[ée]p|$)', ' '.join(body), re.I)
+        if mk:
+            key.update((int(a), b) for a, b in re.findall(_tok, mk.group(1)))
+        for ln in body:
+            mr = re.match(r'^' + _tok, ln)
+            if mr:
+                key.setdefault(int(mr.group(1)), mr.group(2))
+        return key
+
     out = ['=== BARÈME DE NOTATION (écrit depuis le corrigé officiel) ===', '']
     total = 0.0
     sections_info = {sc['kind']: sc for sc in rep['sections']}
@@ -376,39 +401,21 @@ def rubric_from_corrige(corrige_raw: str, rep: dict) -> tuple:
         per_by_kind[sc['kind']] = (sc['points'] / sc['items']) if sc.get('items') else sc['points']
 
     # QCM
-    body = kind_sec('qcm')
-    qcm = [q for q in rep['qinfo'] if q['kind'] == 'qcm']
-    if qcm:
-        key = {}
-        if body:
-            flat = ' '.join(body)
-            m = re.search(r'Cl[ée] de correction rapide\s*:(.*?)(?:N°\s+R[ée]p|$)', flat, re.I)
-            for a, b in re.findall(r'(\d{1,2})\s*([A-F])\b', m.group(1) if m else ''):
-                key[int(a)] = b
-        for q in qcm:
-            letter = key.get(q['local'])
-            if not letter or letter not in q['choices']:
-                warns.append(f"QCM {q['local']} : réponse introuvable dans le corrigé")
-                continue
-            per = per_by_kind.get('qcm', 0.25); total += per
-            out += [f"Question {q['num']} ({_fmt(per)} pts) :", f"  • Bonne réponse : {letter}) {q['choices'][letter]}", '']
+    for q in [q for q in rep['qinfo'] if q['kind'] == 'qcm']:
+        letter = sec_key(q.get('sec'), 'qcm').get(q['local'])
+        if not letter or letter not in q['choices']:
+            warns.append(f"QCM {q['local']} (partie {q.get('sec', '?')}) : réponse introuvable dans le corrigé")
+            continue
+        per = q.get('pts', per_by_kind.get('qcm', 0.25)); total += per
+        out += [f"Question {q['num']} ({_fmt(per)} pts) :", f"  • Bonne réponse : {letter}) {q['choices'][letter]}", '']
     # Vrai / faux
-    body = kind_sec('vf')
-    vf = [q for q in rep['qinfo'] if q['kind'] == 'vf']
-    if vf:
-        key = {}
-        if body:
-            flat = ' '.join(body)
-            m = re.search(r'Cl[ée] de correction rapide\s*:(.*?)(?:N°\s+R[ée]p|$)', flat, re.I)
-            for a, b in re.findall(r'(\d{1,2})\s*([VF])\b', m.group(1) if m else ''):
-                key[int(a)] = 'Vrai' if b == 'V' else 'Faux'
-        for q in vf:
-            v = key.get(q['local'])
-            if not v:
-                warns.append(f"Vrai/Faux {q['local']} : réponse introuvable dans le corrigé")
-                continue
-            per = per_by_kind.get('vf', 0.25); total += per
-            out += [f"Question {q['num']} ({_fmt(per)} pts) :", f"  • Réponse : {v}", '']
+    for q in [q for q in rep['qinfo'] if q['kind'] == 'vf']:
+        v = {'V': 'Vrai', 'Vrai': 'Vrai', 'F': 'Faux', 'Faux': 'Faux'}.get(sec_key(q.get('sec'), 'vf').get(q['local']))
+        if not v:
+            warns.append(f"Vrai/Faux {q['local']} : réponse introuvable dans le corrigé")
+            continue
+        per = q.get('pts', per_by_kind.get('vf', 0.25)); total += per
+        out += [f"Question {q['num']} ({_fmt(per)} pts) :", f"  • Réponse : {v}", '']
     # Association
     body = kind_sec('association')
     for q in [q for q in rep['qinfo'] if q['kind'] == 'association']:

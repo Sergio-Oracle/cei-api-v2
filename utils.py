@@ -350,11 +350,44 @@ def extract_text_from_pdf(filepath):
     print("Impossible d'extraire le texte de ce PDF (police non-Unicode, tesseract requis)")
     return None
 
+def _docx_lines(container) -> list:
+    """Paragraphes ET tableaux, dans l'ordre du document (doc.paragraphs seul ignore les tableaux : les
+    affirmations vrai/faux, les faits d'un cas pratique ou la clé d'un corrigé mis en tableau disparaissaient).
+    Tableau à une colonne : ses paragraphes tels quels ; sinon une ligne par rangée, cases séparées par un espace
+    (une case fusionnée n'est lue qu'une fois)."""
+    from docx.table import Table
+    from docx.text.paragraph import Paragraph
+    lines = []
+    for child in container.iter_inner_content():
+        if isinstance(child, Paragraph):
+            lines.append(child.text)
+            continue
+        if not isinstance(child, Table):
+            continue
+        if len(child.columns) == 1:
+            for row in child.rows:
+                for cell in row.cells:
+                    lines.extend(_docx_lines(cell))
+            continue
+        for row in child.rows:
+            seen, parts = set(), []
+            for cell in row.cells:
+                if id(cell._tc) in seen:
+                    continue
+                seen.add(id(cell._tc))
+                txt = ' '.join(l.strip() for l in _docx_lines(cell) if l.strip())
+                if txt:
+                    parts.append(txt)
+            if parts:
+                lines.append(' '.join(parts))
+    return lines
+
+
 def extract_text_from_docx(filepath):
     """Extraire le texte d'un DOCX"""
     try:
         doc = docx.Document(filepath)
-        text = "\n".join([para.text for para in doc.paragraphs])
+        text = "\n".join(_docx_lines(doc))
         return text.strip()
     except Exception as e:
         print(f"Erreur DOCX: {e}")

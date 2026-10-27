@@ -1938,3 +1938,30 @@ def init_db():
     except Exception as _e:
         print(f"[migration rôle] RESPONSABLE_EXAMEN : {_e}")
     print("Base de données initialisée avec examens en ligne et relevés de notes")
+
+
+# ── Commentaire de correction : jamais de texte technique à l'écran ──────────────────────────────────────────────
+# Les marqueurs « ### Question N » et la ligne « Points obtenus : X » de la correction IA sont nettoyés à la lecture
+# (anciennes copies comprises) et à l'écriture : tous les écrans (étudiant, enseignant, réclamations, exports) en profitent.
+from sqlalchemy import event as _sa_event
+from sqlalchemy.orm.attributes import set_committed_value as _set_committed_value
+from text_clean import clean_ai_feedback as _clean_ai_feedback
+
+
+@_sa_event.listens_for(ExamAttempt, 'load')
+def _clean_feedback_on_load(target, context):
+    fb = target.__dict__.get('feedback')
+    if fb:
+        _set_committed_value(target, 'feedback', _clean_ai_feedback(fb))
+
+
+@_sa_event.listens_for(ExamAttempt, 'refresh')
+def _clean_feedback_on_refresh(target, context, attrs):
+    fb = target.__dict__.get('feedback')
+    if fb:
+        _set_committed_value(target, 'feedback', _clean_ai_feedback(fb))
+
+
+@_sa_event.listens_for(ExamAttempt.feedback, 'set', retval=True)
+def _clean_feedback_on_set(target, value, oldvalue, initiator):
+    return _clean_ai_feedback(value)

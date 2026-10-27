@@ -13,7 +13,7 @@ from repositories.subject_repository import SubjectRepository
 from routes.question_bank import _similarity, DUPLICATE_THRESHOLD
 from services.ai_service import call_ai as _call_ai
 from utils import allowed_file, extract_text_from_file
-from services.exam_normalizer import normalize_exam_text
+from services.exam_normalizer import normalize_exam_text, rubric_from_corrige
 
 _UPLOAD_FOLDER = os.getenv('UPLOAD_FOLDER', 'static/uploads')
 
@@ -116,6 +116,9 @@ _NEW_TYPE_RUBRIC = {
     'TROUS': 'Pour chaque question [TROUS] : une ligne  "Réponse : 1-B, 2-A"  (numéro du trou {n}, tiret, lettre de la proposition).',
     'ORDRE': 'Pour chaque question [ORDRE] : une ligne  "Ordre : C, A, B, D"  (lettres des éléments du premier au dernier).',
     'COURT': 'Pour chaque question [COURT] : une ligne  "Réponses acceptées : réponse 1 | variante 2"  (formulations équivalentes séparées par « | »).',
+    'CLOZE': 'Pour chaque question [CLOZE] : une ligne  "Champs : 1=réponse|variante ; 2=14 (± 0,5) ; 3=B"  (champ COURT : réponses acceptées séparées par | ; champ NUM : valeur et tolérance ; champ CHOIX : LETTRE de l\'option, A = la première) — une entrée par champ.',
+    'CALCULEE': 'Pour chaque question [CALCULEE] : une ligne  "Formule : a*b*n/100 (± 1)"  (formule avec les variables de l\'énoncé, opérateurs + - * / ** et parenthèses ; tolérance absolue ou « (± 2 %) »).',
+    'ZONES': 'Pour chaque question [ZONES] : une ligne  "Zones : 1=[x1,y1,x2,y2] ; 2=[x1,y1,x2,y2]"  (rectangle de la bonne zone de chaque étiquette, dans l\'ordre des étiquettes, en % de la largeur et de la hauteur de l\'image : 0,0 = coin haut-gauche, 100,100 = coin bas-droit).',
     'NUMERIQUE': 'Pour chaque question [NUMERIQUE] : une ligne  "Valeur : 12,5 (± 0,1)"  (valeur attendue et tolérance absolue, ou « (± 2 %) »).',
 }
 
@@ -310,6 +313,7 @@ class SubjectService:
         saved_paths = []
         content_parts = []
         corrige_parts = []
+        corrige_raw = []
         norm_reports = []
         first_filename = None
         first_s3_key = None
@@ -328,6 +332,7 @@ class SubjectService:
                 if re.search(r'corrig|correction|bar[eè]me|solution', f.filename, re.I):
                     # Corrigé officiel : sert uniquement à écrire les clés du barème, jamais montré aux étudiants
                     corrige_parts.append(f"--- Corrigé: {f.filename} ---\n{part}")
+                    corrige_raw.append(part)
                 else:
                     part, nrep = normalize_exam_text(part)
                     norm_reports.append(nrep)
@@ -372,7 +377,18 @@ class SubjectService:
         # de toute façon modifiable ensuite dans les deux cas, mais le mode
         # manuel évite d'imposer un point de départ écrit par l'IA à un
         # professeur qui veut garder la main dès le départ.
-        if rubric_mode == 'manual':
+        # Corrigé fourni par l'enseignant : barème écrit DIRECTEMENT depuis lui (sans IA, donc sans erreur de
+        # recopie) quand l'épreuve est structurée et que toutes les clés sont retrouvées ; sinon l'IA le lit.
+        rubric_source = 'ia' if rubric_mode != 'manual' else 'manuel'
+        det_rubric, det_warns = '', []
+        if corrige_raw:
+            first_rep = next((r for r in norm_reports if r.get('structured')), None)
+            if first_rep:
+                det_rubric, det_warns = rubric_from_corrige('\n'.join(corrige_raw), first_rep)
+        if det_rubric and not det_warns:
+            rubric = det_rubric
+            rubric_source = 'corrigé'
+        elif rubric_mode == 'manual':
             rubric = _build_manual_rubric_skeleton(question_blocks, total_points)
         else:
             rubric = ''
@@ -395,6 +411,8 @@ class SubjectService:
         result['duplicates'] = duplicates
         result['normalization'] = [r for r in norm_reports if r.get('structured')]
         result['has_corrige'] = bool(corrige_text)
+        result['rubric_source'] = rubric_source
+        result['corrige_warnings'] = det_warns
         return result
 
     # ── Delete ────────────────────────────────────────────────────────────────

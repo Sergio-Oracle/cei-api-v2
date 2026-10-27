@@ -101,7 +101,7 @@ D. d1
 with open(os.path.join(ROOT, 'scripts', 'fixtures', 'sujet_types_moodle.txt'), encoding='utf-8') as f:
     SUJET_TYPES = f.read()
 CORPUS = {
-    'types Moodle (association, tri, ordre, trous, réponse courte, numérique, description)': (SUJET_TYPES, 7, None),
+    'types Moodle (association, tri, ordre, trous, réponse courte, numérique, description)': (SUJET_TYPES, 10, None),
     'sujet réel examen 127 (PDF, marqueur collé, propositions coupées)': (SUJET_127, 20, 4),
     'format classique (Question 1. … [QCM], parties)': (CLASSIQUE, 3, None),
     'vrai/faux': (VF, 2, None),

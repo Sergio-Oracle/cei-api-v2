@@ -8,6 +8,11 @@ Balises (titre de la question) et leur équivalent Moodle :
   [TROUS]        gapselect : texte avec {1} {2}…, propositions communes « A. texte »
   [COURT]        shortanswer : une réponse libre d'une ligne, comparée aux réponses acceptées du barème
   [NUMERIQUE]    numerical : une valeur, comparée avec tolérance
+  [CLOZE]        multianswer : texte avec champs {1} {2}…, chaque champ décrit par une ligne « - 1 COURT », « - 2 NUM »
+                 ou « - 3 CHOIX : a | b | c » (champ libre, nombre, ou menu déroulant)
+  [CALCULEE]     calculated : énoncé avec variables {a} {b} tirées au hasard PAR ÉTUDIANT (ligne « Variables : a = 1..9 | b = 2..5 pas 0,5 »),
+                 réponse = formule du barème
+  [ZONES]        ddimageortext/ddmarker : une [IMAGE:fichier] et « Étiquettes : A | B | C » ; l'étudiant place chaque étiquette sur l'image
   [DESCRIPTION]  description : texte d'information (énoncé commun), ni numéro ni note
 
 Barème (ligne dans le bloc de la question) :
@@ -15,6 +20,9 @@ Barème (ligne dans le bloc de la question) :
   ordre :                      « Ordre : C, A, B, D »          (du 1er au dernier)
   court :                      « Réponses acceptées : Dakar | dakar »
   numerique :                  « Valeur : 12,5 (± 0,1) »  ou  « Valeur : 12,5 (± 2 %) »
+  cloze :                      « Champs : 1=Dakar|dakar ; 2=14 (± 0,5) ; 3=B »  (réponses acceptées, nombre + tolérance, lettre du choix)
+  calculee :                   « Formule : a*b*n/100 (± 1) »  (variables de l'énoncé ; tolérance absolue ou en %)
+  zones :                      « Zones : 1=[x1,y1,x2,y2] ; 2=[…] »  (rectangles en % de l'image, étiquettes dans l'ordre)
 
 Les familles « grille » (association, tri, ordre, trous) partagent le même stockage des réponses
 (pq_<n>_<index de l'élément> = lettre ou rang) et la même notation proportionnelle (fraction d'éléments
@@ -23,11 +31,11 @@ justes), comme qtype_match de Moodle.
 import re
 import unicodedata
 
-GRID_MARKERS = ('ASSOCIATION', 'TRI', 'ORDRE', 'TROUS')
-TEXT_MARKERS = ('COURT', 'NUMERIQUE')
+GRID_MARKERS = ('ASSOCIATION', 'TRI', 'ORDRE', 'TROUS', 'CLOZE', 'ZONES')
+TEXT_MARKERS = ('COURT', 'NUMERIQUE', 'CALCULEE')
 NEW_MARKERS = GRID_MARKERS + TEXT_MARKERS
 # Alternance pour les expressions régulières des lecteurs de sujet (plus longs d'abord)
-MARKER_ALT = ('QCM_MULTI|QCM|VF|OUVERT|SUBOPEN|APPARIEMENT|CODE|ASSOCIATION|TRI|ORDRE|TROUS|COURT|NUMERIQUE')
+MARKER_ALT = ('QCM_MULTI|QCM|VF|OUVERT|SUBOPEN|APPARIEMENT|CODE|ASSOCIATION|TRI|ORDRE|TROUS|CLOZE|ZONES|COURT|NUMERIQUE|CALCULEE')
 
 GRID_BTYPE = {m: m.lower() for m in GRID_MARKERS}
 TEXT_BTYPE = {'COURT': 'court', 'NUMERIQUE': 'numerique'}
@@ -85,6 +93,28 @@ def extract_keys_from_block(block: str) -> dict:
         if v is not None:
             tol = parse_number(m.group(2)) if m.group(2) else 0.0
             out['number'] = {'value': v, 'tol': abs(tol or 0.0), 'percent': m.group(3) == '%'}
+    m = _FIELDS_RE.search(block)
+    if m:
+        fields = {}
+        for part in re.split(r'\s*;\s*', m.group(1).strip()):
+            fm = re.match(r'(\d{1,2})\s*=\s*(.+)$', part.strip())
+            if fm:
+                fields[int(fm.group(1))] = fm.group(2).strip()
+        if fields:
+            out['fields'] = fields
+    m = _FORMULA_RE.search(block)
+    if m:
+        tol = parse_number(m.group(2)) if m.group(2) else 0.0
+        out['formula'] = {'expr': m.group(1).strip(), 'tol': abs(tol or 0.0), 'percent': m.group(3) == '%'}
+    m = _ZONES_RE.search(block)
+    if m:
+        zones = {}
+        for zm in re.finditer(r'(\d{1,2})\s*=\s*\[\s*([\d.,\s]+?)\s*\]', m.group(1)):
+            vals = [float(x) for x in re.findall(r'\d+(?:[.]\d+)?', zm.group(2))]
+            if len(vals) == 4:
+                zones[int(zm.group(1))] = vals
+        if zones:
+            out['zones'] = zones
     return out
 
 
@@ -101,6 +131,10 @@ def grid_from_lines(marker: str, extra_lines: list, choices: list, items: list, 
         gaps = sorted({int(g) for g in GAP_RE.findall(' '.join([text] + list(extra_lines)))})
         its = [{'text': f'Trou {g}', 'gap': g} for g in gaps]
         return its, [{'letter': c['letter'], 'text': c['text']} for c in choices]
+    if marker == 'CLOZE':
+        return cloze_items(items), []
+    if marker == 'ZONES':
+        return [{'text': t, 'zone': i + 1} for i, t in enumerate(items)], []
     if marker == 'TRI':
         opts = [{'letter': chr(65 + i), 'text': t} for i, t in enumerate(cats)]
         return [{'text': t} for t in items], opts
@@ -120,6 +154,40 @@ def grade_grid(marker: str, q: dict, key: dict, answers: dict, num: str):
         v = str(answers.get(f'pq_{num}_{i}') or '').strip().upper()
         if v:
             given[i] = v
+    if marker == 'CLOZE':
+        fields = key.get('fields')
+        if not fields or any(it.get('gap') not in fields for it in items):
+            return None
+        good, parts = 0, []
+        for i, it in enumerate(items):
+            raw = str(answers.get(f'pq_{num}_{i}') or '').strip()
+            spec = fields[it['gap']]
+            ok = False
+            if it.get('kind') == 'num':
+                m = re.match(r'(-?[\d\s.,]+?)\s*(?:\(\s*[±+]\s*/?\s*-?\s*([\d.,]+)\s*(%?)\s*\))?\s*$', spec)
+                v, want = parse_number(raw), (parse_number(m.group(1)) if m else None)
+                if v is not None and want is not None:
+                    tol = parse_number(m.group(2)) if m.group(2) else 0.0
+                    tol = abs(want) * tol / 100.0 if m.group(3) == '%' else (tol or 0.0)
+                    ok = abs(v - want) <= tol + 1e-9
+            elif it.get('kind') == 'choix':
+                ok = raw.upper() == spec.strip().upper()
+            else:
+                ok = bool(norm_text(raw)) and norm_text(raw) in [norm_text(a) for a in spec.split('|')]
+            good += ok
+            parts.append(f"{it['gap']}-{raw or '·'}")
+        return good / len(items), good, len(items), ', '.join(parts), {}
+    if marker == 'ZONES':
+        zones = key.get('zones')
+        if not zones or any((it.get('zone') or 0) not in zones for it in items):
+            return None
+        good, parts = 0, []
+        for i, it in enumerate(items):
+            raw = str(answers.get(f'pq_{num}_{i}') or '').strip()
+            ok = bool(raw) and point_in_rect(raw, zones[it['zone']])
+            good += ok
+            parts.append(f"{it['text']}:{'ok' if ok else ('hors zone' if raw else 'non placé')}")
+        return good / len(items), good, len(items), ', '.join(parts), {}
     if marker == 'ORDRE':
         order = key.get('order')
         letters = [it.get('letter') for it in items]
@@ -155,3 +223,123 @@ def grade_numerique(key: dict, raw: str):
         return 0.0, (raw or '').strip()
     tol = abs(k['value']) * k['tol'] / 100.0 if k['percent'] else k['tol']
     return (1.0 if abs(v - k['value']) <= tol + 1e-9 else 0.0), (raw or '').strip()
+
+
+# ── Champs de texte à trous imbriqués (cloze) ─────────────────────────────────
+
+_CLOZE_ITEM_RE = re.compile(r'^\s*(\d{1,2})\s+(COURT|NUM|CHOIX)\b(?:\s*:\s*(.+))?$', re.I)
+_FIELDS_RE = re.compile(r'Champs\s*:\s*(.+)', re.I)
+_FORMULA_RE = re.compile(r'Formule\s*:\s*([^\n(]+?)\s*(?:\(\s*[±+]\s*/?\s*-?\s*([\d.,]+)\s*(%?)\s*\))?\s*$', re.I | re.M)
+_ZONES_RE = re.compile(r'Zones\s*:\s*(.+)', re.I)
+LABELS_RE = re.compile(r'^\s*[ÉE]tiquettes?\s*:\s*(.+)$', re.I)
+VARS_RE = re.compile(r'^\s*Variables?\s*:\s*(.+)$', re.I)
+
+
+def cloze_items(raw_items: list) -> list:
+    out = []
+    for r in raw_items:
+        m = _CLOZE_ITEM_RE.match(r)
+        if not m:
+            continue
+        kind = m.group(2).lower()
+        opts = [o.strip() for o in (m.group(3) or '').split('|') if o.strip()] if kind == 'choix' else []
+        out.append({'text': f'Champ {m.group(1)}', 'gap': int(m.group(1)), 'kind': kind, 'options': opts, 'spec': r})
+    return out
+
+
+# ── Variables aléatoires par étudiant (calculée) ─────────────────────────────
+
+def parse_vars(line: str) -> dict:
+    """« a = 100000..500000 pas 10000 | b = 3..9 » → {nom: (min, max, pas, entier)}."""
+    out = {}
+    for part in (line or '').split('|'):
+        m = re.match(r'\s*([A-Za-z]\w*)\s*=\s*(-?[\d.,]+)\s*\.\.\s*(-?[\d.,]+)(?:\s*pas\s*([\d.,]+))?\s*$', part)
+        if not m:
+            continue
+        lo, hi = parse_number(m.group(2)), parse_number(m.group(3))
+        step = parse_number(m.group(4)) if m.group(4) else 1.0
+        is_int = all(float(x).is_integer() for x in (lo, hi, step))
+        if lo is None or hi is None or not step or step <= 0 or hi < lo:
+            continue
+        out[m.group(1)] = (lo, hi, step, is_int)
+    return out
+
+
+def instantiate(vars_line: str, seed, num) -> dict:
+    """Valeurs des variables pour (seed, question) : stables pour un même étudiant, différentes d'un étudiant à l'autre."""
+    import random
+    rng = random.Random(f'{seed}:{num}')
+    values = {}
+    for name, (lo, hi, step, is_int) in parse_vars(vars_line).items():
+        n = int(round((hi - lo) / step))
+        v = lo + step * rng.randint(0, max(0, n))
+        values[name] = int(round(v)) if is_int else round(v, 6)
+    return values
+
+
+def fmt_value(v) -> str:
+    if isinstance(v, int) or float(v).is_integer():
+        return f'{int(v):,}'.replace(',', '\u202f')
+    return str(round(v, 6)).replace('.', ',')
+
+
+def substitute(text: str, values: dict) -> str:
+    return re.sub(r'\{([A-Za-z]\w*)\}', lambda m: fmt_value(values[m.group(1)]) if m.group(1) in values else m.group(0), text or '')
+
+
+def eval_formula(expr: str, values: dict):
+    """Évalue une formule arithmétique sans eval() : nombres, variables, + - * / ** %, parenthèses, sqrt/abs/round/min/max/pi."""
+    import ast, math, operator
+    ops = {ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: operator.mul, ast.Div: operator.truediv,
+           ast.Pow: operator.pow, ast.Mod: operator.mod, ast.USub: operator.neg, ast.UAdd: operator.pos}
+    fns = {'sqrt': math.sqrt, 'abs': abs, 'round': round, 'min': min, 'max': max}
+    consts = {'pi': math.pi}
+
+    def ev(n):
+        if isinstance(n, ast.Expression):
+            return ev(n.body)
+        if isinstance(n, ast.Constant) and isinstance(n.value, (int, float)) and not isinstance(n.value, bool):
+            return n.value
+        if isinstance(n, ast.Name):
+            if n.id in values:
+                return values[n.id]
+            if n.id in consts:
+                return consts[n.id]
+            raise ValueError(n.id)
+        if isinstance(n, ast.BinOp) and type(n.op) in ops:
+            r = ev(n.right)
+            if isinstance(n.op, ast.Pow) and abs(r) > 12:
+                raise ValueError('puissance trop grande')
+            return ops[type(n.op)](ev(n.left), r)
+        if isinstance(n, ast.UnaryOp) and type(n.op) in ops:
+            return ops[type(n.op)](ev(n.operand))
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id in fns and not n.keywords:
+            return fns[n.func.id](*[ev(a) for a in n.args])
+        raise ValueError('expression non permise')
+    try:
+        return float(ev(ast.parse((expr or '').replace('×', '*').replace('÷', '/').replace('^', '**').replace(',', '.').strip(), mode='eval')))
+    except Exception:
+        return None
+
+
+def point_in_rect(xy: str, rect) -> bool:
+    try:
+        x, y = [float(t) for t in str(xy).split(',')[:2]]
+    except ValueError:
+        return False
+    x1, y1, x2, y2 = rect
+    return min(x1, x2) <= x <= max(x1, x2) and min(y1, y2) <= y <= max(y1, y2)
+
+
+def grade_calculee(key: dict, raw: str, vars_line: str, seed, num):
+    """→ (fraction, réponse saisie, valeur attendue) ou None (pas de formule / pas de graine)."""
+    f = key.get('formula')
+    if not f or seed is None or not vars_line:
+        return None
+    want = eval_formula(f['expr'], instantiate(vars_line, seed, num))
+    if want is None:
+        return None
+    v = parse_number(raw)
+    tol = abs(want) * f['tol'] / 100.0 if f['percent'] else f['tol']
+    ok = v is not None and abs(v - want) <= tol + 1e-9
+    return (1.0 if ok else 0.0), (raw or '').strip(), want

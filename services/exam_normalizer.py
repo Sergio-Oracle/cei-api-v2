@@ -108,6 +108,7 @@ def _qcm(body, per, g, rep):
     def flush():
         nonlocal cur, ch
         if cur is not None:
+            rep['qinfo'].append({'num': cur[0], 'kind': 'qcm', 'local': cur[2], 'choices': {l: t for l, t in ch}})
             out.append(f"Question {cur[0]} — {cur[1]} ({_fmt(per)} pts) [QCM]")
             out.extend(f"{l}. {t}" for l, t in ch)
             if len(ch) < 2:
@@ -120,7 +121,7 @@ def _qcm(body, per, g, rep):
             flush()
             nxt += 1
             g[0] += 1
-            cur = (g[0], m.group(2).strip())
+            cur = (g[0], m.group(2).strip(), nxt - 1)
             continue
         c = re.match(r'^([A-F])\.\s+(.*)$', ln)
         if c and cur is not None:
@@ -129,7 +130,7 @@ def _qcm(body, per, g, rep):
             if ch:
                 ch[-1][1] = (ch[-1][1] + ' ' + ln).strip()
             else:
-                cur = (cur[0], (cur[1] + ' ' + ln).strip())
+                cur = (cur[0], (cur[1] + ' ' + ln).strip(), cur[2])
     flush()
     rep['counts']['qcm'] = nxt - 1
     return out
@@ -138,8 +139,9 @@ def _qcm(body, per, g, rep):
 def _vf(body, per, g, rep):
     rows, nxt = _rows(body, 1)
     out = []
-    for r in rows:
+    for k, r in enumerate(rows):
         g[0] += 1
+        rep['qinfo'].append({'num': g[0], 'kind': 'vf', 'local': k + 1, 'text': r})
         out.append(f"Question {g[0]} — {r} ({_fmt(per)} pts) [VF]")
         out.append('Vrai / Faux')
     rep['counts']['vf'] = len(rows)
@@ -165,6 +167,7 @@ def _tri(body, per, g, rep):
             continue
         g[0] += 1
         total += len(rows)
+        rep['qinfo'].append({'num': g[0], 'kind': 'tri', 'plateau': p['n'], 'first': nxt - len(rows), 'items': rows, 'cats': cats})
         out.append(f"Question {g[0]} — Plateau {p['n']} : {p['title']} ? ({_fmt(per * len(rows))} pts) [TRI]")
         out.append('Catégories : ' + ' | '.join(cats))
         out.extend(f"- {r}" for r in rows)
@@ -218,6 +221,7 @@ def _association(body, pts_total, n_expected, g, rep):
     if n_expected and len(items) != n_expected:
         rep['warnings'].append(f"Association : {len(items)} notions reconnues au lieu de {n_expected}")
     g[0] += 1
+    rep['qinfo'].append({'num': g[0], 'kind': 'association', 'items': labels, 'defs': defs})
     out = [f"Question {g[0]} — Associez chaque notion à sa définition ({_fmt(pts_total)} pts) [ASSOCIATION]"]
     if len(defs) > len(items):
         out.append(f"{len(defs) - len(items)} proposition(s) ne correspondent à aucune notion.")
@@ -246,8 +250,9 @@ def _open(body, per, g, rep):
             qs.append(cur)
         elif cur is not None:
             cur.append(ln)
-    for q in qs:
+    for k, q in enumerate(qs):
         g[0] += 1
+        rep['qinfo'].append({'num': g[0], 'kind': 'open', 'local': k + 1, 'pts': per})
         out.append(f"Question {g[0]} — {_join(q)} ({_fmt(per)} pts) [OUVERT]")
     rep['counts']['open'] = len(qs)
     if not qs:
@@ -256,7 +261,7 @@ def _open(body, per, g, rep):
 
 
 def normalize_exam_text(raw: str) -> tuple:
-    rep = {'structured': False, 'counts': {}, 'warnings': [], 'sections': []}
+    rep = {'structured': False, 'counts': {}, 'warnings': [], 'sections': [], 'qinfo': []}
     lines = _clean(raw or '')
     heads = [(i, _SECTION.match(l)) for i, l in enumerate(lines)]
     heads = [(i, m) for i, m in heads if m]
@@ -298,3 +303,158 @@ def normalize_exam_text(raw: str) -> tuple:
         out.extend(block)
     rep['questions'] = g[0]
     return '\n'.join(out), rep
+
+
+# ── Corrigé officiel → barème CEI (sans IA) ───────────────────────────────────────────────────────────────────────
+
+_CORR_SECTION = re.compile(r'^(?P<rom>[IVX]{1,5})\.\s+(?P<title>.+?)\s*\(\s*(?P<pts>\d+(?:[.,]\d+)?)\s*points?\b[^)]*\)\s*$', re.I)
+
+
+def _flex(text: str) -> str:
+    """Motif qui retrouve `text` malgré des retours à la ligne / espaces différents."""
+    return r'\s+'.join(re.escape(w) for w in text.split())
+
+
+def rubric_from_corrige(corrige_raw: str, rep: dict) -> tuple:
+    """Barème CEI (texte) écrit directement depuis le corrigé officiel, partie par partie, grâce à la
+    numérotation mémorisée par normalize_exam_text. Retourne (barème, avertissements). Si un avertissement
+    est renvoyé, l'appelant garde le barème partiel et laisse l'IA compléter à partir du corrigé."""
+    warns = []
+    lines = _clean(corrige_raw or '')
+    heads = [(i, _CORR_SECTION.match(l)) for i, l in enumerate(lines)]
+    heads = [(i, m) for i, m in heads if m]
+    if not heads or not rep.get('qinfo'):
+        return '', ['corrigé non structuré (parties « I. … (N points) » introuvables)']
+    sec = {}
+    for k, (i, m) in enumerate(heads):
+        end = heads[k + 1][0] if k + 1 < len(heads) else len(lines)
+        sec[m.group('rom').upper()] = (_kind(m.group('title')), lines[i + 1:end])
+    # le dernier bloc contient la grille de notation individuelle : à retirer
+    for rom, (kd, body) in list(sec.items()):
+        cut = next((j for j, l in enumerate(body) if l.lower().startswith('grille de notation')), len(body))
+        sec[rom] = (kd, body[:cut])
+
+    def kind_sec(kind):
+        for rom, (kd, body) in sec.items():
+            if kd == kind:
+                return body
+        return None
+
+    out = ['=== BARÈME DE NOTATION (écrit depuis le corrigé officiel) ===', '']
+    total = 0.0
+    sections_info = {sc['kind']: sc for sc in rep['sections']}
+    per_by_kind = {}
+    for sc in rep['sections']:
+        per_by_kind[sc['kind']] = (sc['points'] / sc['items']) if sc.get('items') else sc['points']
+
+    # QCM
+    body = kind_sec('qcm')
+    qcm = [q for q in rep['qinfo'] if q['kind'] == 'qcm']
+    if qcm:
+        key = {}
+        if body:
+            flat = ' '.join(body)
+            m = re.search(r'Cl[ée] de correction rapide\s*:(.*?)(?:N°\s+R[ée]p|$)', flat, re.I)
+            for a, b in re.findall(r'(\d{1,2})\s*([A-F])\b', m.group(1) if m else ''):
+                key[int(a)] = b
+        for q in qcm:
+            letter = key.get(q['local'])
+            if not letter or letter not in q['choices']:
+                warns.append(f"QCM {q['local']} : réponse introuvable dans le corrigé")
+                continue
+            per = per_by_kind.get('qcm', 0.25); total += per
+            out += [f"Question {q['num']} ({_fmt(per)} pts) :", f"  • Bonne réponse : {letter}) {q['choices'][letter]}", '']
+    # Vrai / faux
+    body = kind_sec('vf')
+    vf = [q for q in rep['qinfo'] if q['kind'] == 'vf']
+    if vf:
+        key = {}
+        if body:
+            flat = ' '.join(body)
+            m = re.search(r'Cl[ée] de correction rapide\s*:(.*?)(?:N°\s+R[ée]p|$)', flat, re.I)
+            for a, b in re.findall(r'(\d{1,2})\s*([VF])\b', m.group(1) if m else ''):
+                key[int(a)] = 'Vrai' if b == 'V' else 'Faux'
+        for q in vf:
+            v = key.get(q['local'])
+            if not v:
+                warns.append(f"Vrai/Faux {q['local']} : réponse introuvable dans le corrigé")
+                continue
+            per = per_by_kind.get('vf', 0.25); total += per
+            out += [f"Question {q['num']} ({_fmt(per)} pts) :", f"  • Réponse : {v}", '']
+    # Association
+    body = kind_sec('association')
+    for q in [q for q in rep['qinfo'] if q['kind'] == 'association']:
+        flat = re.sub(r'\s+', ' ', ' '.join(body or []))
+        pairs, pos = [], 0
+        for k, label in enumerate(q['items'], 1):
+            m = re.compile(r'(?:^|\s)%d\s+%s\s+([A-L])(?=\s)' % (k, _flex(label))).search(flat, pos)
+            if not m:
+                warns.append(f"Association : notion {k} « {label} » introuvable dans le corrigé")
+                continue
+            pairs.append(f"{k}-{m.group(1)}"); pos = m.end()
+        if len(pairs) == len(q['items']):
+            sc = sections_info.get('association', {})
+            pts = sc.get('points', 0); total += pts
+            out += [f"Question {q['num']} ({_fmt(pts)} pts) :", "  • Réponse : " + ', '.join(pairs), '']
+    # Tri
+    body = kind_sec('tri')
+    tri = [q for q in rep['qinfo'] if q['kind'] == 'tri']
+    if tri:
+        flat = re.sub(r'\s+', ' ', ' '.join(body or []))
+        pos = 0
+        for q in tri:
+            res = []
+            for idx, item in enumerate(q['items']):
+                n = q['first'] + idx
+                m = re.compile(r'(?:^|\s)%d\s+%s\s+(.{0,40}?)(?=\s+[A-ZÉ])' % (n, _flex(item))).search(flat, pos)
+                cat = None
+                if m:
+                    tail = flat[m.end(1) - len(m.group(1)):m.end(1) + 40]
+                    for ci, c in enumerate(q['cats']):
+                        if re.match(r'\s*' + _flex(c), tail, re.I):
+                            cat = chr(65 + ci); break
+                    pos = m.start() + 1
+                if not cat:
+                    # repli : première catégorie nommée juste après la situation
+                    m2 = re.compile(_flex(item) + r'\s+(' + '|'.join(_flex(c) for c in q['cats']) + r')', re.I).search(flat, pos)
+                    if m2:
+                        for ci, c in enumerate(q['cats']):
+                            if re.fullmatch(_flex(c), m2.group(1), re.I):
+                                cat = chr(65 + ci); break
+                if not cat:
+                    warns.append(f"Tri : situation {n} introuvable ou catégorie non reconnue dans le corrigé")
+                    break
+                res.append(f"{idx + 1}-{cat}")
+            if len(res) == len(q['items']):
+                per = per_by_kind.get('tri', 0.25) * len(q['items']); total += per
+                out += [f"Question {q['num']} ({_fmt(per)} pts) :", "  • Réponse : " + ', '.join(res), '']
+    # Cas pratique / questions ouvertes
+    body = kind_sec('open')
+    for q in [q for q in rep['qinfo'] if q['kind'] == 'open']:
+        txt = re.sub(r'\s+', ' ', ' '.join(body or []))
+        m = re.search(r'Question\s+%d\.(.*?)(?=Question\s+%d\.|\Z)' % (q['local'], q['local'] + 1), txt)
+        if not m:
+            warns.append(f"Question ouverte {q['local']} : introuvable dans le corrigé")
+            continue
+        seg = m.group(1)
+        seg = re.split(r'\bSource\s*:', seg)[0]
+        bm = re.search(r'Bar[èe]me\s+(.*)$', seg)
+        parts = []
+        if bm:
+            parts = [p.strip(' .;') for p in bm.group(1).split(';') if p.strip(' .;')]
+        def grab(label, nxt):
+            mm = re.search(label + r'\s+(.*?)(?=\s+(?:' + nxt + r')\s+|$)', seg)
+            return mm.group(1).strip() if mm else ''
+        maj = grab('Majeure', 'Mineure'); mi = grab('Mineure', 'Conclusion'); co = grab('Conclusion', 'Bar[èe]me')
+        per = q['pts']; total += per
+        out.append(f"Question {q['num']} ({_fmt(per)} pts) :")
+        for k, ptxt in enumerate(parts, 1):
+            pm = re.match(r'(\d+(?:[.,]\d+)?)\s*points?\s*(?:pour\s+)?(.*)', ptxt, re.I)
+            out.append(f"  • Critère {k} : {pm.group(1)} pt — {pm.group(2)}" if pm else f"  • Critère {k} : {ptxt}")
+        if not parts:
+            out.append(f"  • Critère : {_fmt(per)} pt — voir corrigé ci-dessous")
+            warns.append(f"Question ouverte {q['local']} : barème « Barème … » introuvable")
+        out.append(f"  • Corrigé attendu — Majeure : {maj} Mineure : {mi} Conclusion : {co}")
+        out.append('')
+    out += ['──────────────────────────', f'TOTAL : {_fmt(total)} / {_fmt(sum(sc["points"] for sc in rep["sections"]))} points']
+    return '\n'.join(out), warns

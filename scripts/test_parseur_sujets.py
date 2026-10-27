@@ -100,7 +100,16 @@ D. d1
 """
 with open(os.path.join(ROOT, 'scripts', 'fixtures', 'sujet_types_moodle.txt'), encoding='utf-8') as f:
     SUJET_TYPES = f.read()
+# Épreuves réelles du 27/10 : extraction PDF avec tableaux relus case par case (utils._table_lines : lignes coupées,
+# association à deux colonnes) et Word aux affirmations vrai/faux non numérotées — passées par la normalisation.
+from services.exam_normalizer import normalize_exam_text
+with open(os.path.join(ROOT, 'scripts', 'fixtures', 'epreuve_droit_pdf_tableaux.txt'), encoding='utf-8') as f:
+    EPREUVE_PDF, _rep_pdf = normalize_exam_text(f.read())
+with open(os.path.join(ROOT, 'scripts', 'fixtures', 'epreuve_droit_docx_vf_sans_numero.txt'), encoding='utf-8') as f:
+    EPREUVE_DOCX, _rep_docx = normalize_exam_text(f.read())
 CORPUS = {
+    'épreuve PDF à tableaux (20 QCM, 16 V/F, association, 4 plateaux de tri, cas pratique)': (EPREUVE_PDF, 47, None),
+    'épreuve Word (28 QCM, 28 V/F sans numéro, QCM sur cas pratique)': (EPREUVE_DOCX, 68, None),
     'types Moodle (association, tri, ordre, trous, réponse courte, numérique, description)': (SUJET_TYPES, 10, None),
     'sujet réel examen 127 (PDF, marqueur collé, propositions coupées)': (SUJET_127, 20, 4),
     'format classique (Question 1. … [QCM], parties)': (CLASSIQUE, 3, None),
@@ -127,6 +136,17 @@ for i, (nom, (contenu, n_attendu, n_choix)) in enumerate(CORPUS.items()):
         check("navigateur = serveur (types, numéros, nombre de propositions)", s_srv == s_js, f"\n     serveur={s_srv[:4]}…\n     navigateur={s_js[:4]}…")
     rep = analyze(contenu)
     check("contrôle de lisibilité : sujet accepté", rep['ok'], rep['issues'])
+
+print('\n== normalisation des épreuves réelles ==')
+for nom, txt, rep_n in (('PDF', EPREUVE_PDF, _rep_pdf), ('Word', EPREUVE_DOCX, _rep_docx)):
+    total = sum(float(p.replace(',', '.')) for p in re.findall(r'^Question \d+ — .*\((\d+(?:,\d+)?) pts\)', txt, re.M))
+    check(f"{nom} : barème total 20 points", abs(total - 20) < 1e-6, f"{total}")
+    check(f"{nom} : aucun avertissement", not rep_n['warnings'], rep_n['warnings'])
+check("PDF : situation du plateau 1 entière",
+      "- [phrase de sujet retirée]" in EPREUVE_PDF)
+check("PDF : affirmation coupée par le tableau recollée",
+      "[phrase de sujet retirée] (0,25 pts) [VF]" in EPREUVE_PDF)
+check("Word : balises de l'enseignant non répétées", '[VF] (' not in EPREUVE_DOCX and '[QCM] (' not in EPREUVE_DOCX)
 
 print('\n== sujets défectueux : le contrôle doit protester ==')
 VIDE = "Sujet sans aucune question numérotée.\nRépondez librement."

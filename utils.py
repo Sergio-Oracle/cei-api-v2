@@ -230,6 +230,80 @@ def _ocr_pdf(filepath):
         return None
 
 
+_ROW_MARK = re.compile(r'^(?:\d{1,2}|[A-L])[.)]?(?:\s|$)')
+
+
+def _table_lines(table) -> list:
+    """Lignes d'un tableau PDF, une par ligne logique : [(top, texte)].
+
+    Lu ligne à ligne, un tableau dont une case tient sur plusieurs lignes sort cassé : le numéro (ou
+    la notion d'en face), centré verticalement, tombe entre les lignes du texte (« Le contrat… /
+    1 ☐ ☐ / avec son fournisseur »), et la conversion en questions coupe alors les phrases au mauvais
+    endroit. Ici on regroupe les cases d'une même ligne visuelle (bande), puis on lit chaque bande
+    colonne par colonne, de gauche à droite. Une bande se termine sur une ligne vide du tableau, ou
+    quand une ligne a une case dans la première colonne de la bande (nouvelle ligne du tableau) ; une
+    ligne sans cette case en est la suite (fin d'une case sur plusieurs lignes)."""
+    texts = table.extract()
+    bands, cur = [], []
+    for row, vals in zip(table.rows, texts):
+        cells = []
+        for bbox, val in zip(row.cells, vals):
+            val = re.sub(r'(\w)-\n(?=[a-zà-ÿ])', r'\1-', val or '')  # « celle-\nci » → « celle-ci »
+            val = re.sub(r'\s+', ' ', val).strip()
+            if bbox is not None and val:
+                cells.append((bbox[0], bbox[2], bbox[1], val))
+        if not cells:
+            if cur:
+                bands.append(cur)
+            cur = []
+            continue
+        if cur:
+            left = min(cur)
+            same_col = [c for c in cells if c[0] < left[1] and c[1] > left[0]]
+            # « écrit » sous « 8. Commencement de preuve par » : suite de la case, pas une nouvelle ligne
+            if same_col and (_ROW_MARK.match(same_col[0][3]) or not _ROW_MARK.match(left[3])):
+                bands.append(cur)
+                cur = []
+        cur.extend(cells)
+    if cur:
+        bands.append(cur)
+
+    out = []
+    for band in bands:
+        cols = []  # colonnes = cases dont les étendues horizontales se chevauchent
+        for c in sorted(band):
+            if cols and c[0] < cols[-1]['x1'] - 2:
+                cols[-1]['cells'].append(c)
+                cols[-1]['x1'] = max(cols[-1]['x1'], c[1])
+            else:
+                cols.append({'x1': c[1], 'cells': [c]})
+        parts = [v for col in cols for (_, _, _, v) in sorted(col['cells'], key=lambda c: c[2])]
+        out.append((min(c[2] for c in band), ' '.join(parts)))
+    return out
+
+
+def _pdf_page_text(page) -> str:
+    """Texte d'une page ; les tableaux à plusieurs colonnes sont relus par _table_lines."""
+    try:
+        tables = [t for t in page.find_tables()
+                  if any(sum(1 for v in r if v and v.strip()) >= 2 for r in t.extract())]
+    except Exception:
+        tables = []
+    if not tables:
+        return page.extract_text() or ''
+
+    def outside(obj):
+        if obj.get('object_type') != 'char':
+            return True
+        cx, cy = (obj['x0'] + obj['x1']) / 2, (obj['top'] + obj['bottom']) / 2
+        return not any(t.bbox[0] <= cx <= t.bbox[2] and t.bbox[1] <= cy <= t.bbox[3] for t in tables)
+
+    lines = [(ln['top'], ln['text']) for ln in page.filter(outside).extract_text_lines()]
+    for t in tables:
+        lines.extend(_table_lines(t))
+    return '\n'.join(text for _, text in sorted(lines, key=lambda l: l[0]))
+
+
 def extract_text_from_pdf(filepath):
     """Extraire le texte d'un PDF : pdfplumber → PyPDF2 → OCR tesseract."""
     # 1. pdfplumber (meilleur support CMap/CIDFont)
@@ -238,7 +312,7 @@ def extract_text_from_pdf(filepath):
         pages_text = []
         with pdfplumber.open(filepath) as pdf:
             for page in pdf.pages:
-                t = page.extract_text()
+                t = _pdf_page_text(page)
                 if t:
                     pages_text.append(t)
         text = "\n".join(pages_text).strip()

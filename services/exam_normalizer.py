@@ -20,6 +20,8 @@ _SECTION = re.compile(
     r'^(?P<rom>[IVX]{1,5})\.\s+(?P<title>[^(]{4,}?)\s*\(\s*(?P<pts>\d+(?:[.,]\d+)?)\s*(?:points?|pts?)\s*\)\s*$', re.I)
 _PER_ITEM = re.compile(r'\(\s*(?P<n>\d+)\s+[A-Za-zéèêàùç\' ]+?\s*,\s*(?P<pts>\d+(?:[.,]\d+)?)\s*points?\s*chacune\s*\)', re.I)
 _END_SENT = re.compile(r'[.:;?!»)]$')
+# balises de type déjà écrites par l'enseignant dans son document (« … ? [QCM] ») : la normalisation pose les siennes
+_TAG = re.compile(r'\s*\[(?:QCM|QCM_MULTI|VF|OUVERT|SUBOPEN|APPARIEMENT|ASSOCIATION|TRI|ORDRE|TROUS|CLOZE|ZONES|COURT|NUMERIQUE|CALCULEE|CODE)\]', re.I)
 
 
 def _num(s) -> float:
@@ -44,6 +46,10 @@ def _clean(raw: str) -> list:
 
 def _join(lines: list) -> str:
     return re.sub(r'\s+', ' ', ' '.join(lines)).strip()
+
+
+def _untag(text: str) -> str:
+    return re.sub(r'\s+', ' ', _TAG.sub(' ', text)).strip()
 
 
 def _paragraphs(lines: list) -> list:
@@ -78,7 +84,9 @@ def _rows(lines: list, expected_first: int) -> tuple:
     en-tête, ignoré tant qu'aucune ligne n'a commencé)."""
     rows, nxt = [], expected_first
     for ln in lines:
-        m = re.match(r'^(\d{1,2})(?:\s+(.*))?$', ln)
+        if re.match(r'^N°\s', ln):  # en-tête du tableau, répété en haut de page
+            continue
+        m = re.match(r'^(\d{1,2})[.)]?(?:\s+(.*))?$', ln)
         if m and int(m.group(1)) == nxt:
             rows.append((m.group(2) or '').strip())
             nxt += 1
@@ -88,34 +96,48 @@ def _rows(lines: list, expected_first: int) -> tuple:
 
 
 def _consigne_split(body: list) -> tuple:
-    """(consigne, reste) — la consigne commence par « Consigne. » et se termine à la parenthèse « (N …, X point chacune) »."""
-    if not body or not body[0].lower().startswith('consigne'):
+    """(consigne, reste) — la consigne commence par « Consigne. » et se termine à la parenthèse « (N …, X point chacune) ».
+    Elle peut suivre une ou deux lignes d'introduction (« Compétence visée : … »), retirées avec elle."""
+    start = next((k for k, ln in enumerate(body[:3]) if ln.lower().startswith('consigne')), None)
+    if start is None:
         return '', body
     acc = []
-    for k, ln in enumerate(body):
+    for k, ln in enumerate(body[start:], start):
         acc.append(ln)
         if _PER_ITEM.search(_join(acc)):
             return _join(acc), body[k + 1:]
-        if k >= 4:
+        if k - start >= 4:
             break
-    return _join(acc[:1]), body[1:]
+    return _join(acc[:1]), body[start + 1:]
+
+
+def _facts(body: list) -> tuple:
+    """(lignes de [DESCRIPTION] des faits, reste) — « Les faits … Les questions » d'un cas pratique."""
+    i_f = next((i for i, l in enumerate(body) if re.match(r'^Les faits\s*$', l, re.I)), None)
+    i_q = next((i for i, l in enumerate(body) if re.match(r'^Les questions\s*$', l, re.I)), None)
+    if i_f is None or i_q is None or i_q <= i_f:
+        return [], body
+    return ['[DESCRIPTION] Les faits'] + _paragraphs(body[i_f + 1:i_q]), body[i_q + 1:]
 
 
 def _qcm(body, per, g, rep):
-    out, cur, ch = [], None, []
+    out, body = _facts(body)
+    cur, ch = None, []
     nxt = 1
 
     def flush():
         nonlocal cur, ch
         if cur is not None:
             rep['qinfo'].append({'num': cur[0], 'kind': 'qcm', 'local': cur[2], 'choices': {l: t for l, t in ch}})
-            out.append(f"Question {cur[0]} — {cur[1]} ({_fmt(per)} pts) [QCM]")
+            out.append(f"Question {cur[0]} — {_untag(cur[1])} ({_fmt(per)} pts) [QCM]")
             out.extend(f"{l}. {t}" for l, t in ch)
             if len(ch) < 2:
                 rep['warnings'].append(f"QCM {cur[0]} : moins de 2 propositions reconnues")
         cur, ch = None, []
 
     for ln in body:
+        if re.match(r"^Fin de l'épreuve", ln, re.I):
+            break
         m = re.match(r'^(\d{1,2})\.\s+(.*)$', ln)
         if m and int(m.group(1)) == nxt and (cur is None or ch):
             flush()
@@ -132,19 +154,32 @@ def _qcm(body, per, g, rep):
             else:
                 cur = (cur[0], (cur[1] + ' ' + ln).strip(), cur[2])
     flush()
-    rep['counts']['qcm'] = nxt - 1
+    rep['counts']['qcm'] = rep['counts'].get('qcm', 0) + nxt - 1
     return out
 
 
 def _vf(body, per, g, rep):
-    rows, nxt = _rows(body, 1)
+    """Tableau numéroté (PDF) ; à défaut, affirmations non numérotées : une par balise [VF] de
+    l'enseignant, sinon une par phrase recollée (document Word : un paragraphe par affirmation)."""
+    rows, _ = _rows(body, 1)
+    if not rows:
+        if any(_TAG.search(l) for l in body):
+            acc = []
+            for ln in body:
+                acc.append(ln)
+                if _TAG.search(ln):
+                    rows.append(_join(acc))
+                    acc = []
+        else:
+            rows = [l for l in _paragraphs(body) if re.search(r'[A-Za-zÀ-ÿ]{3}', l)]
     out = []
     for k, r in enumerate(rows):
+        r = _untag(r)
         g[0] += 1
         rep['qinfo'].append({'num': g[0], 'kind': 'vf', 'local': k + 1, 'text': r})
         out.append(f"Question {g[0]} — {r} ({_fmt(per)} pts) [VF]")
         out.append('Vrai / Faux')
-    rep['counts']['vf'] = len(rows)
+    rep['counts']['vf'] = rep['counts'].get('vf', 0) + len(rows)
     return out
 
 
@@ -232,14 +267,7 @@ def _association(body, pts_total, n_expected, g, rep):
 
 
 def _open(body, per, g, rep):
-    out = []
-    txt = list(body)
-    i_f = next((i for i, l in enumerate(txt) if re.match(r'^Les faits\s*$', l, re.I)), None)
-    i_q = next((i for i, l in enumerate(txt) if re.match(r'^Les questions\s*$', l, re.I)), None)
-    if i_f is not None and i_q is not None and i_q > i_f:
-        out.append('[DESCRIPTION] Les faits')
-        out.extend(_paragraphs(txt[i_f + 1:i_q]))
-        txt = txt[i_q + 1:]
+    out, txt = _facts(list(body))
     qs, cur = [], None
     for ln in txt:
         if re.match(r"^Fin de l'épreuve", ln, re.I):
@@ -253,8 +281,8 @@ def _open(body, per, g, rep):
     for k, q in enumerate(qs):
         g[0] += 1
         rep['qinfo'].append({'num': g[0], 'kind': 'open', 'local': k + 1, 'pts': per})
-        out.append(f"Question {g[0]} — {_join(q)} ({_fmt(per)} pts) [OUVERT]")
-    rep['counts']['open'] = len(qs)
+        out.append(f"Question {g[0]} — {_untag(_join(q))} ({_fmt(per)} pts) [OUVERT]")
+    rep['counts']['open'] = rep['counts'].get('open', 0) + len(qs)
     if not qs:
         rep['warnings'].append("Partie rédactionnelle : aucune question « Question N. » reconnue")
     return out
@@ -298,8 +326,8 @@ def normalize_exam_text(raw: str) -> tuple:
         else:
             rep['warnings'].append(f"Partie {m.group('rom')} « {title} » : type non reconnu, texte laissé tel quel")
             block = rest
-        if n_items and kind in ('qcm', 'vf', 'open') and rep['counts'].get(kind, 0) != n_items:
-            rep['warnings'].append(f"Partie {m.group('rom')} : {rep['counts'].get(kind, 0)} question(s) reconnue(s) au lieu de {n_items}")
+        if n_items and kind in ('qcm', 'vf', 'open') and g[0] - before != n_items:
+            rep['warnings'].append(f"Partie {m.group('rom')} : {g[0] - before} question(s) reconnue(s) au lieu de {n_items}")
         out.extend(block)
     rep['questions'] = g[0]
     return '\n'.join(out), rep

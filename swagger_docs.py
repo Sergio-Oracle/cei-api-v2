@@ -3932,8 +3932,8 @@ OPENAPI_SPEC = {
             }}}}}
         }},
         "/api/professor/recent_incidents": {"get": {
-            "tags": ["Tableaux de bord"], "summary": "Incidents récents des examens du professeur",
-            "description": "Flux recalculé à chaque appel (incidents de proctoring des dernières 24h + affectations d'EC des 7 derniers jours) — jamais stocké tel quel. Les items supprimés/marqués comme lus via /dismiss sont exclus.",
+            "tags": ["Tableaux de bord"], "summary": "Incidents récents des examens (enseignant, administrateur, responsable d'examen)",
+            "description": "Enseignant : ses examens et ceux de ses EC (y compris créés à sa place par le responsable d'examen) ; administrateur et responsable d'examen : tous les examens. Flux recalculé à chaque appel (incidents de proctoring des dernières 24h + affectations d'EC des 7 derniers jours) — jamais stocké tel quel. Les items supprimés/marqués comme lus via /dismiss sont exclus.",
             "responses": {"200": {"description": "Incidents récents"}}
         }},
         "/api/professor/recent_incidents/dismiss": {"post": {

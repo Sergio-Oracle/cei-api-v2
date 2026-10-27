@@ -167,6 +167,14 @@ try:
     check("le professeur et le tuteur de l'EC sont prévenus", prof.id in staff and tut.id in staff)
     check("un professeur d'un autre EC ne l'est pas", other.id not in staff)
 
+    print('\n== Flux des incidents (cloche et page Notifications) ==')
+    ra = c.get('/api/professor/recent_incidents', headers=H(mgr))
+    check("le responsable d'examen lit le flux des incidents", ra.status_code == 200, ra.status_code)
+    check("l'administrateur aussi", c.get('/api/professor/recent_incidents', headers=H(admin)).status_code == 200)
+    check("le professeur de l'EC aussi (examen créé à sa place)", c.get('/api/professor/recent_incidents', headers=hp).status_code == 200)
+    check("un étudiant n'y a pas accès", c.get('/api/professor/recent_incidents', headers=H(stud)).status_code == 403)
+    check("le responsable peut marquer un item comme lu", c.post('/api/professor/recent_incidents/dismiss', headers=H(mgr), json={'item_id': 'x'}).status_code in (200, 400))
+
     print('\n== Administrateur : aucune régression ==')
     check("tableau de bord", c.get('/api/admin/dashboard', headers=ha).status_code == 200)
     check("liste des comptes", c.get('/api/admin/users', headers=ha).status_code == 200)

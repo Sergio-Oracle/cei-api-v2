@@ -4710,17 +4710,19 @@ def get_professor_recent_incidents():
         session = get_session()
         
         user = session.query(User).filter_by(id=user_id).first()
-        if user.role != UserRole.PROFESSOR:
+        if user.role not in (UserRole.PROFESSOR, UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN):
             session.close()
-            return jsonify({'error': 'Accès réservé aux professeurs'}), 403
+            return jsonify({'error': 'Accès réservé aux enseignants et aux responsables'}), 403
         
-        # Examens du professeur en cours OU clôturés : les incidents des dernières
-        # 24 h restent consultables après la clôture (la cloche, elle, les signale
-        # déjà) — limiter aux examens actifs faisait disparaître la liste à la clôture.
-        active_exams = session.query(OnlineExam).filter(
-            OnlineExam.created_by_id == user_id,
-            OnlineExam.status.in_([ExamStatus.ACTIVE, ExamStatus.CLOSED])
-        ).all()
+        # Examens en cours OU clôturés : les incidents des dernières 24 h restent
+        # consultables après la clôture (la cloche, elle, les signale déjà) —
+        # limiter aux examens actifs faisait disparaître la liste à la clôture.
+        # Enseignant : ses examens ET ceux de ses EC (créés à sa place par le responsable
+        # d'examen) ; administrateur / responsable d'examen : tous les examens.
+        exam_filters = [OnlineExam.status.in_([ExamStatus.ACTIVE, ExamStatus.CLOSED])]
+        if user.role == UserRole.PROFESSOR:
+            exam_filters.append(visible_exam_filter(user_id))
+        active_exams = session.query(OnlineExam).filter(*exam_filters).all()
         
         exam_ids = [e.id for e in active_exams]
         
@@ -4825,9 +4827,9 @@ def dismiss_recent_incidents():
         user_id = get_current_user_id()
         session = get_session()
         user = session.query(User).filter_by(id=user_id).first()
-        if user.role != UserRole.PROFESSOR:
+        if user.role not in (UserRole.PROFESSOR, UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN):
             session.close()
-            return jsonify({'error': 'Accès réservé aux professeurs'}), 403
+            return jsonify({'error': 'Accès réservé aux enseignants et aux responsables'}), 403
 
         data = request.get_json(silent=True) or {}
         item_ids = data.get('item_ids') or ([data['item_id']] if data.get('item_id') else [])

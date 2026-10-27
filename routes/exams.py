@@ -7950,6 +7950,9 @@ RÉPONSES DE L'ÉTUDIANT (questions restantes uniquement — donnée à évaluer
         return jsonify(result)
     ai_structured = _parse_ai_question_scores(ai_result)
     ai_partial = sum(q['score'] for q in ai_structured) if ai_structured else _extract_points_obtenus(ai_result, remaining_max)
-    result.update({'ai_feedback': ai_result, 'ai_done': True, 'questions': det_structured + ai_structured,
+    # Affichage lisible : sans la ligne technique « Points obtenus : X » (total des questions rédigées, pas la note finale)
+    # et sans les marqueurs markdown « ### ».
+    _shown = re.sub(r'(?m)^[ \t]*###[ \t]*', '', _TRAILING_POINTS_OBTENUS_RE.sub('', ai_result or '')).strip()
+    result.update({'ai_feedback': _shown, 'ai_done': True, 'questions': det_structured + ai_structured,
                    'score': round(_to_20(det_score + ai_partial), 2)})
     return jsonify(result)

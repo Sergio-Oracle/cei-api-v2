@@ -11,7 +11,7 @@ import logging
 import re
 
 _log = logging.getLogger('cei.subject_check')
-_MARKER_RE = re.compile(r'\[(QCM_MULTI|QCM|VF|OUVERT|SUBOPEN|APPARIEMENT|CODE)\]', re.I)
+_MARKER_RE = re.compile(r'\[(QCM_MULTI|QCM|VF|OUVERT|SUBOPEN|APPARIEMENT|CODE|ASSOCIATION|TRI|ORDRE|TROUS|COURT|NUMERIQUE)\]', re.I)
 _QUESTION_WORD_RE = re.compile(r'^\s*(?:Question|Q)\.?\s*\d+', re.I | re.M)
 
 

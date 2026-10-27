@@ -1478,8 +1478,8 @@ def _build_exam_pages(exam, seed) -> dict:
 
     blocks = _parse_subject_blocks_ordered(content) if content else []
 
-    p1_types = ('qcm', 'qcm_multi', 'vf', 'appariement')
-    p2_types = ('section', 'open', 'subopen', 'code')
+    p1_types = ('qcm', 'qcm_multi', 'vf', 'appariement', 'association', 'tri', 'ordre', 'trous', 'court', 'numerique')
+    p2_types = ('section', 'description', 'open', 'subopen', 'code')
     p1_blocks = [b for b in blocks if b['type'] in p1_types]
     p2_items  = [b for b in blocks if b['type'] in p2_types]
 
@@ -1540,13 +1540,17 @@ def get_exam_attempt_paginated(attempt_id):
 
 
 def _parse_subject_questions_for_grading(content: str) -> dict:
-    """Extrait num→{type, text, choices:{letter:text}, pairs:[{left,right}]} du
-    contenu brut du sujet — port Python minimal de parseExamBlocks (frontend) pour
+    """Extrait num→{type, text, choices:{letter:text}, pairs:[{left,right}], items, options}
+    du contenu brut du sujet — port Python minimal de parseExamBlocks (frontend) pour
     reconstruire des réponses lisibles par l'IA, notamment pour l'appariement où
-    l'énoncé de la paire de gauche n'est jamais stocké dans les réponses brutes."""
-    Q_RE = re.compile(r'^(?:(?:Question|Q)\.?\s+)?(\d{1,3})(?:\s*[—\-–:.)]|\s+(?=\[(?:QCM_MULTI|QCM|VF|OUVERT|SUBOPEN|APPARIEMENT|CODE)\]))\s*(.+)', re.I)  # « Question 1 [QCM] » accepté
-    TYPE_MARKER = re.compile(r'\[(QCM_MULTI|QCM|VF|OUVERT|SUBOPEN|APPARIEMENT|CODE)\]', re.I)
+    l'énoncé de la paire de gauche n'est jamais stocké dans les réponses brutes.
+    Les nouveaux types (association, tri, ordre, trous) remplissent `items`/`options`
+    (voir services/question_types.py)."""
+    from services import question_types as QT
+    Q_RE = re.compile(r'^(?:(?:Question|Q)\.?\s+)?(\d{1,3})(?:\s*[—\-–:.)]|\s+(?=\[(?:%s)\]))\s*(.+)' % 'QCM_MULTI|QCM|VF|OUVERT|SUBOPEN|APPARIEMENT|CODE|ASSOCIATION|TRI|ORDRE|TROUS|COURT|NUMERIQUE', re.I)  # « Question 1 [QCM] » accepté
+    TYPE_MARKER = re.compile(r'\[(%s)\]' % 'QCM_MULTI|QCM|VF|OUVERT|SUBOPEN|APPARIEMENT|CODE|ASSOCIATION|TRI|ORDRE|TROUS|COURT|NUMERIQUE', re.I)
     C_RE = re.compile(r'^(?:\(?([A-Fa-f])\)?)\s*[.):\s-]\s+(.+)')
+    C_WIDE = re.compile(r'^(?:\(?([A-La-l])\)?)\s*[.):\s-]\s+(.+)')
     PAIR_RE = re.compile(r'^(?:\(?([A-Fa-f])\)?)\s*[.):\s-]\s+(.+?)\s*(?:→|->)\s*(.+)')
 
     questions = {}
@@ -1565,13 +1569,36 @@ def _parse_subject_questions_for_grading(content: str) -> dict:
         text = TYPE_MARKER.sub('', rest).strip()
         i += 1
         choices, pairs = {}, []
+        g_items, g_cats, g_choices, g_extra = [], [], [], []
+        is_grid = marker in QT.GRID_MARKERS
         while i < len(lines):
             l = lines[i].strip()
             if not l:
                 i += 1
                 continue
-            if Q_RE.match(l):
+            if Q_RE.match(l) and not (is_grid and (QT.ITEM_RE.match(l) or C_WIDE.match(l))):
                 break
+            if QT.DESC_RE.match(l):
+                break
+            if is_grid:
+                cm_ = QT.CATS_RE.match(l)
+                if cm_:
+                    g_cats = [c.strip() for c in cm_.group(1).split('|') if c.strip()]
+                    i += 1
+                    continue
+                im_ = QT.ITEM_RE.match(l)
+                if im_ and marker != 'ORDRE':
+                    g_items.append(im_.group(1).strip())
+                    i += 1
+                    continue
+                wm_ = C_WIDE.match(l)
+                if wm_:
+                    g_choices.append({'letter': wm_.group(1).upper(), 'text': wm_.group(2).strip()})
+                    i += 1
+                    continue
+                g_extra.append(l)
+                i += 1
+                continue
             if marker == 'APPARIEMENT':
                 pm = PAIR_RE.match(l)
                 if pm:
@@ -1584,7 +1611,11 @@ def _parse_subject_questions_for_grading(content: str) -> dict:
                 i += 1
                 continue
             i += 1
-        questions[num] = {'marker': marker, 'text': text, 'choices': choices, 'pairs': pairs}
+        entry = {'marker': marker, 'text': text, 'choices': choices, 'pairs': pairs}
+        if is_grid:
+            items, options = QT.grid_from_lines(marker, g_extra, g_choices, g_items, g_cats, text)
+            entry['items'], entry['options'] = items, options
+        questions[num] = entry
     return questions
 
 
@@ -1601,10 +1632,12 @@ def _parse_subject_blocks_ordered(raw: str) -> list:
     plutôt que de laisser le client recalculer)."""
     VF_RE = re.compile(r'\bvrai\s*[/|ou]\s*faux\b|\bV\s*[/|]\s*F\b', re.I)
     strip = lambda s: re.sub(r'\s*[*_]{1,2}$', '', re.sub(r'^[*_]{1,2}\s*', '', s.strip())).strip()
-    Q_RE = re.compile(r'^(?:(?:Question|Q)\.?\s+)?(\d{1,2})(?!\s*\.\s*\d)(?:\s*[.:)–—-]|\.\s+|\s{2,}|\s+(?=\[(?:QCM_MULTI|QCM|VF|OUVERT|SUBOPEN|APPARIEMENT|CODE)\]))\s*(.+)', re.I)  # « Question 1 [QCM] » accepté
-    TYPE_MARKER = re.compile(r'\[(QCM_MULTI|QCM|VF|OUVERT|SUBOPEN|APPARIEMENT|CODE|OUVERT[ES]*)\]', re.I)
+    Q_RE = re.compile(r'^(?:(?:Question|Q)\.?\s+)?(\d{1,2})(?!\s*\.\s*\d)(?:\s*[.:)–—-]|\.\s+|\s{2,}|\s+(?=\[(?:QCM_MULTI|QCM|VF|OUVERT|SUBOPEN|APPARIEMENT|CODE|ASSOCIATION|TRI|ORDRE|TROUS|COURT|NUMERIQUE)\]))\s*(.+)', re.I)  # « Question 1 [QCM] » accepté
+    TYPE_MARKER = re.compile(r'\[(QCM_MULTI|QCM|VF|OUVERT|SUBOPEN|APPARIEMENT|CODE|ASSOCIATION|TRI|ORDRE|TROUS|COURT|NUMERIQUE|OUVERT[ES]*)\]', re.I)
     C_RE = re.compile(r'^(?:\(?([A-Fa-f])\)?)\s*[.):\s-]\s+(.+)')
     PAIR_RE = re.compile(r'^(?:\(?([A-Fa-f])\)?)\s*[.):\s-]\s+(.+?)\s*(?:→|->)\s*(.+)')
+    C_WIDE = re.compile(r'^(?:\(?([A-La-l])\)?)\s*[.):\s-]\s+(.+)')
+    from services import question_types as QT
     SEP_RE = re.compile(r'^[-=*─═▬]{3,}$')
     # Accepte "Partie 3", "Partie III" ET "Partie — Appariement (5 pts)" —
     # même correctif que côté frontend (parseExamBlocks) : sans le groupe
@@ -1649,6 +1682,15 @@ def _parse_subject_blocks_ordered(raw: str) -> list:
     # préambule ignoré ici (déjà affiché intégralement via le panneau "sujet complet")
 
     while i < n:
+        dm = QT.DESC_RE.match(lines[i])
+        if dm:
+            body = []
+            i += 1
+            while i < n and not is_q(lines[i]) and not is_sect(lines[i]) and not QT.DESC_RE.match(lines[i]):
+                body.append(lines[i].rstrip())
+                i += 1
+            blocks.append({'type': 'description', 'title': dm.group(1).strip(), 'text': '\n'.join(body).strip()})
+            continue
         if is_sect(lines[i]):
             blocks.append({'type': 'section', 'title': strip(lines[i])})
             i += 1
@@ -1664,8 +1706,11 @@ def _parse_subject_blocks_ordered(raw: str) -> list:
             i += 1
             continue
         is_pair_mode = q['markerType'] == 'APPARIEMENT'
+        is_grid = q['markerType'] in QT.GRID_MARKERS
+        is_text_q = q['markerType'] in QT.TEXT_MARKERS
         i += 1
         extra_lines, choices, pairs = [], [], []
+        g_items, g_cats = [], []
         while i < n:
             if is_sep(lines[i]):
                 i += 1
@@ -1676,6 +1721,34 @@ def _parse_subject_blocks_ordered(raw: str) -> list:
                 break
             if is_q(lines[i]) and not is_c(lines[i]):
                 break
+            if QT.DESC_RE.match(lines[i]):
+                break
+            if is_text_q:
+                extra_lines.append(lines[i])
+                i += 1
+                continue
+            if is_grid:
+                cm_ = QT.CATS_RE.match(strip(lines[i]))
+                if cm_:
+                    g_cats = [c.strip() for c in cm_.group(1).split('|') if c.strip()]
+                    i += 1
+                    continue
+                im_ = QT.ITEM_RE.match(strip(lines[i]))
+                if im_ and q['markerType'] != 'ORDRE':
+                    g_items.append(im_.group(1).strip())
+                    i += 1
+                    continue
+                wm_ = C_WIDE.match(strip(lines[i]))
+                if wm_:
+                    choices.append({'letter': wm_.group(1).upper(), 'text': strip(wm_.group(2))})
+                    i += 1
+                    continue
+                if choices:
+                    choices[-1]['text'] = (choices[-1]['text'] + ' ' + lines[i].strip()).strip()
+                else:
+                    extra_lines.append(lines[i])
+                i += 1
+                continue
             if is_pair_mode:
                 p = get_pair(lines[i])
                 if p:
@@ -1704,6 +1777,8 @@ def _parse_subject_blocks_ordered(raw: str) -> list:
             btype = {
                 'QCM': 'qcm', 'QCM_MULTI': 'qcm_multi', 'VF': 'vf', 'SUBOPEN': 'subopen',
                 'APPARIEMENT': 'appariement', 'CODE': 'code',
+                'ASSOCIATION': 'association', 'TRI': 'tri', 'ORDRE': 'ordre', 'TROUS': 'trous',
+                'COURT': 'court', 'NUMERIQUE': 'numerique',
             }.get(q['markerType'], 'open')
         else:
             has_pts_choices = any(PTS_RE.search(c['text']) for c in choices)
@@ -1726,10 +1801,15 @@ def _parse_subject_blocks_ordered(raw: str) -> list:
             else:
                 clean_extra.append(l)
 
-        blocks.append({
+        blk = {
             'type': btype, 'num': q['num'], 'text': q['text'], 'extraLines': clean_extra,
             'choices': choices, 'pairs': pairs or None, 'media': media or None,
-        })
+        }
+        if is_grid:
+            items, options = QT.grid_from_lines(q['markerType'], clean_extra, choices, g_items, g_cats, q['text'])
+            blk['items'], blk['options'] = items, options
+            blk['choices'] = []   # les propositions vivent dans `options` (jamais mélangées comme un QCM)
+        blocks.append(blk)
     return blocks
 
 
@@ -1745,7 +1825,7 @@ def _paginate_moodle_style(blocks: list, per_page: int) -> list:
         return [blocks]
     pages, current, q_count = [], [], 0
     for b in blocks:
-        is_question = b['type'] not in ('section', 'text')
+        is_question = b['type'] not in ('section', 'text', 'description')
         if b['type'] == 'section' and current:
             pages.append(current)
             current, q_count = [], 0
@@ -1808,6 +1888,14 @@ def _build_readable_student_answers(subject_content: str, answers_data, exclude_
                 if ans:
                     parts.append(f"  • {pair['left']} → {ans}")
             lines.append(f"Question {num} ({qtext}) — Appariements de l'étudiant :\n" + '\n'.join(parts) if parts else no_answer)
+        elif marker in ('ASSOCIATION', 'TRI', 'ORDRE', 'TROUS') and q.get('items'):
+            opts = {o['letter']: o['text'] for o in q.get('options', [])}
+            parts = []
+            for idx, it in enumerate(q['items']):
+                ans = answers_data.get(f'{direct_key}_{idx}', '').strip().upper()
+                if ans:
+                    parts.append(f"  • {it['text']} → {ans}{(') ' + opts[ans]) if ans in opts and marker != 'ORDRE' else ''}")
+            lines.append(f"Question {num} ({qtext}) — Réponses de l'étudiant :\n" + '\n'.join(parts) if parts else no_answer)
         elif marker == 'SUBOPEN' and q.get('choices'):
             parts = []
             for letter, ctext in q['choices'].items():
@@ -1882,6 +1970,11 @@ def _extract_correct_answers(rubric: str) -> dict:
         vm = _RUBRIC_VF_ANSWER_RE.search(block)
         if vm:
             result[num] = {'type': 'vf', 'value': vm.group(1).capitalize()}
+            continue
+        from services import question_types as QT
+        ext = QT.extract_keys_from_block(block)
+        if ext:
+            result[num] = {'type': 'ext', **ext}   # association / tri / ordre / trous / court / numérique
     return result
 
 
@@ -1926,6 +2019,7 @@ def _deterministic_grade(content: str, rubric: str, answers_data) -> tuple:
     ExamAttempt.question_scores pour la correction question par question."""
     if not isinstance(answers_data, dict):
         return 0.0, 0.0, 0.0, [], set(), []
+    from services import question_types as QT
 
     questions   = _parse_subject_questions_for_grading(content)
     points_map  = _question_points_map(content, rubric)
@@ -2013,6 +2107,34 @@ def _deterministic_grade(content: str, rubric: str, answers_data) -> tuple:
                 f"— {earned:.2f}/{pts:.2f} pt")
             structured.append({'num': num, 'type': 'appariement', 'max': pts, 'score': earned,
                                 'correct': n_right == len(pairs), 'given': f'{n_right}/{len(pairs)} correctes'})
+
+        elif marker in QT.GRID_MARKERS or marker in QT.TEXT_MARKERS:
+            key = correct_map.get(num)
+            if not key or key.get('type') != 'ext':
+                continue   # pas de clé dans le barème : la question reste confiée à l'IA / au professeur
+            if marker in QT.GRID_MARKERS:
+                res = QT.grade_grid(marker, q, key, answers_data, num)
+                if not res:
+                    continue
+                fraction, good, total_items, resume, _want = res
+                earned = round(pts * fraction, 2)
+                score += earned; max_score += pts; graded_nums.add(num)
+                breakdown.append(f"Question {num} : {good}/{total_items} élément(s) juste(s) — {earned:.2f}/{pts:.2f} pt")
+                structured.append({'num': num, 'type': marker.lower(), 'max': pts, 'score': earned,
+                                   'correct': good == total_items, 'given': f'{good}/{total_items} justes ({resume})'})
+            else:
+                raw = (answers_data.get(f'pq_{num}') or '').strip()
+                res = QT.grade_court(key, raw) if marker == 'COURT' else QT.grade_numerique(key, raw)
+                if not res:
+                    continue
+                fraction, given = res
+                earned = round(pts * fraction, 2)
+                score += earned; max_score += pts; graded_nums.add(num)
+                breakdown.append(
+                    f"Question {num} : {'Bonne réponse' if fraction else 'Réponse fausse ou absente'} "
+                    f"({given or 'aucune réponse'}) — {earned:.2f}/{pts:.2f} pt")
+                structured.append({'num': num, 'type': marker.lower(), 'max': pts, 'score': earned,
+                                   'correct': bool(fraction), 'given': given})
 
     total_max = round(sum(points_map.values()), 2)
     return round(score, 2), round(max_score, 2), total_max, breakdown, graded_nums, structured
@@ -5384,7 +5506,14 @@ def generate_full_exam_from_suggestion():
     has_qcm_multi   = any(k in exam_type_lower for k in ['réponses multiples', 'qcm multi', 'choix multiples multiples'])
     has_qcm         = (any(k in exam_type_lower for k in ['qcm', 'choix multiple', 'mcq']) and not has_qcm_multi)
     has_vf          = any(k in exam_type_lower for k in ['vrai', 'faux', 'vrai/faux', 'v/f'])
-    has_appariement = any(k in exam_type_lower for k in ['appariement', 'matching', 'associat'])
+    has_appariement = any(k in exam_type_lower for k in ['appariement', 'matching'])
+    # Types ajoutés pour couvrir ceux de Moodle (services/question_types.py)
+    has_association = 'associat' in exam_type_lower
+    has_tri         = bool(re.search(r'\btri\b|classement|catégori', exam_type_lower))
+    has_ordre       = bool(re.search(r'\bordre\b|remise en ordre|ordonn', exam_type_lower))
+    has_trous       = bool(re.search(r'trous|à compléter|cloze|gapselect', exam_type_lower))
+    has_court       = bool(re.search(r'r[ée]ponses? courtes?|shortanswer', exam_type_lower))
+    has_numerique   = bool(re.search(r'num[ée]rique|numerical', exam_type_lower))
     has_code        = any(k in exam_type_lower for k in ['code', 'programmation', 'algorithme'])
     # Retour DFIP #23 — exercices à sous-questions liées (a, b, c... où chaque
     # partie s'appuie explicitement sur le résultat de la précédente), distinct
@@ -5400,9 +5529,11 @@ def generate_full_exam_from_suggestion():
     # "problème"...), susceptibles de chevaucher accidentellement une
     # formulation de sous-questions liées, restent exclus dans ce cas.
     _open_unambiguous = any(k in exam_type_lower for k in ['ouvert', 'open'])
-    _open_ambiguous    = any(k in exam_type_lower for k in ['développ', 'court', 'dissertation', 'synthèse', 'problème', 'cas', 'exercice', 'commentaire', 'calcul'])
+    _exam_type_open    = re.sub(r'r[ée]ponses? courtes?|classement|catégori|remise en ordre', '', exam_type_lower)
+    _open_ambiguous    = any(k in _exam_type_open for k in ['développ', 'court', 'dissertation', 'synthèse', 'problème', 'cas', 'exercice', 'commentaire', 'calcul'])
     has_open        = _open_unambiguous or (_open_ambiguous and not has_subopen)
-    selected_count  = sum([has_qcm, has_qcm_multi, has_vf, has_appariement, has_code, has_open, has_subopen])
+    selected_count  = sum([has_qcm, has_qcm_multi, has_vf, has_appariement, has_code, has_open, has_subopen,
+                           has_association, has_tri, has_ordre, has_trous, has_court, has_numerique])
     is_mixed        = selected_count >= 2 or any(k in exam_type_lower for k in ['mixte', 'mix', 'combiné', 'partiel', ',', '+'])
 
     # ── Templates avec marqueurs de type explicites ──────────────────────────
@@ -5450,6 +5581,55 @@ C. [Terme ou élément 3] → [Définition/correspondance 3]
 D. [Terme ou élément 4] → [Définition/correspondance 4]""",
             "chaque titre se termine par [APPARIEMENT] ; 4 à 6 paires \"A. Gauche → Droite\" (flèche → obligatoire, un seul \"→\" par ligne)",
             "  • Crédit proportionnel au nombre de paires correctes (la bonne réponse figure déjà dans l'énoncé)"),
+        'association': ("Association (avec propositions en trop)", 'ASSOCIATION',
+            """Question {n} — Associez chaque notion à sa définition ............. (X pts) [ASSOCIATION]
+- [Notion 1]
+- [Notion 2]
+- [Notion 3]
+- [Notion 4]
+A. [Définition correspondant à une notion — courte]
+B. [Définition correspondant à une notion]
+C. [Définition correspondant à une notion]
+D. [Définition correspondant à une notion]
+E. [Définition en trop, ne correspond à aucune notion — plausible]
+F. [Définition en trop, ne correspond à aucune notion — plausible]""",
+            "chaque titre se termine par [ASSOCIATION] ; 4 à 8 éléments « - notion » PUIS des propositions lettrées A. B. C. … avec 1 à 3 propositions de plus que d'éléments (leurres plausibles) ; les propositions ne sont PAS dans le même ordre que les éléments",
+            "  • Réponse : 1-C, 2-A, 3-D, 4-B  (numéro de l'élément, tiret, lettre de la proposition — une entrée par élément)"),
+        'tri': ("Classement en catégories", 'TRI',
+            """Question {n} — [Consigne de classement, ex. Droit privé ou droit public ?] ............. (X pts) [TRI]
+Catégories : [Catégorie 1] | [Catégorie 2]
+- [Situation / énoncé à classer 1]
+- [Situation / énoncé à classer 2]
+- [Situation / énoncé à classer 3]
+- [Situation / énoncé à classer 4]""",
+            "chaque titre se termine par [TRI] ; une ligne « Catégories : X | Y » (2 à 4 catégories séparées par | ) PUIS 3 à 8 éléments « - situation » sans ambiguïté",
+            "  • Réponse : 1-A, 2-B, 3-A, 4-B  (numéro de l'élément, tiret, lettre de la catégorie : A = première catégorie, B = deuxième…)"),
+        'ordre': ("Remise en ordre", 'ORDRE',
+            """Question {n} — [Consigne : classez dans l'ordre ...] ............. (X pts) [ORDRE]
+A. [Étape / élément 1 — donné en désordre]
+B. [Étape / élément 2]
+C. [Étape / élément 3]
+D. [Étape / élément 4]""",
+            "chaque titre se termine par [ORDRE] ; 3 à 6 éléments lettrés A. B. C. … donnés dans un ORDRE MÉLANGÉ (jamais déjà dans le bon ordre)",
+            "  • Ordre : C, A, D, B  (lettres des éléments du premier au dernier)"),
+        'trous': ("Texte à trous (menus déroulants)", 'TROUS',
+            """Question {n} — Complétez le texte ............. (X pts) [TROUS]
+[Texte avec des trous notés {{1}}, {{2}}, {{3}} — ex. : La {{1}} est la norme suprême ; la {{2}} vient ensuite.]
+A. [Proposition]
+B. [Proposition]
+C. [Proposition]
+D. [Proposition en trop, plausible]""",
+            "chaque titre se termine par [TROUS] ; un texte avec 2 à 5 trous {1} {2} {3}… PUIS des propositions lettrées A. B. C. … communes à tous les trous (au moins une de plus que de trous)",
+            "  • Réponse : 1-A, 2-C  (numéro du trou, tiret, lettre de la proposition)"),
+        'court': ("Réponse courte", 'COURT',
+            """Question {n} — [Question appelant UNE réponse très brève : un mot, un nom, une date] ............. (X pts) [COURT]""",
+            "chaque titre se termine par [COURT] ; la réponse attendue tient en 1 à 4 mots et ne souffre aucune ambiguïté ; aucune autre ligne sous le titre",
+            "  • Réponses acceptées : réponse principale | variante acceptable | autre variante"),
+        'numerique': ("Réponse numérique", 'NUMERIQUE',
+            """Question {n} — [Problème de calcul dont la réponse est UN nombre] ............. (X pts) [NUMERIQUE]
+[Données de l'énoncé si nécessaire]""",
+            "chaque titre se termine par [NUMERIQUE] ; la réponse attendue est un seul nombre (préciser l'unité et l'arrondi dans l'énoncé)",
+            "  • Valeur : 12,5 (± 0,1)  (valeur attendue et tolérance absolue ; ou « (± 2 %) »)"),
         'code': ("Maths et Programmation", 'CODE',
             """Question {n} — [Énoncé de l'exercice de calcul/algorithme] ............. (X pts) [CODE]
 [Énoncé complet — formule à démontrer, algorithme à écrire ou problème à résoudre pas à pas]""",
@@ -5470,8 +5650,9 @@ C) [Sous-question c) — DOIT s'appuyer sur b) (et/ou a)), poursuivant la même 
             "  • a) Z pts — [critère attendu] ; b) Z pts — [critère, ET préciser explicitement : si le résultat de a) est faux mais que la méthode de b) appliquée à CE résultat (celui de l'étudiant, pas le vrai) est correcte, accorder les points de b) intégralement — erreur reportée] ; c) idem en cascade"),
     }
     _selected = [k for k, sel in (('qcm', has_qcm), ('qcm_multi', has_qcm_multi), ('vf', has_vf),
-                                   ('appariement', has_appariement), ('code', has_code),
-                                   ('open', has_open), ('subopen', has_subopen)) if sel]
+                                   ('appariement', has_appariement), ('association', has_association), ('tri', has_tri),
+                                   ('ordre', has_ordre), ('trous', has_trous), ('court', has_court), ('numerique', has_numerique),
+                                   ('code', has_code), ('open', has_open), ('subopen', has_subopen)) if sel]
     if not _selected:
         _selected = ['open']  # comportement historique par défaut
 
@@ -5540,6 +5721,7 @@ C) [Sous-question c) — DOIT s'appuyer sur b) (et/ou a)), poursuivant la même 
         # plus aucun risque de trou, de titre corrompu ou de barème incohérent.
         _TOKENS_PER_TYPE = {
             'qcm': 180, 'qcm_multi': 220, 'vf': 130, 'appariement': 280,
+            'association': 360, 'tri': 280, 'ordre': 200, 'trous': 240, 'court': 100, 'numerique': 170,
             'code': 550, 'open': 550, 'subopen': 900,
         }
         _SAFE_BATCH_TOKENS = 5000  # budget de sortie par appel — bien en-deçà des plafonds réels observés (paliers gratuits Groq/OpenRouter, délai Ollama/gunicorn)
@@ -5757,7 +5939,11 @@ Réponds UNIQUEMENT avec les {n} questions puis "BARÈME:" puis leurs critères 
         _type_hints = []
         if has_qcm or has_qcm_multi: _type_hints.append("cochez la ou les bonnes réponses pour les questions à choix multiples")
         if has_vf: _type_hints.append("indiquez Vrai ou Faux pour les affirmations proposées")
-        if has_appariement: _type_hints.append("associez chaque élément à sa correspondance pour les questions d'appariement")
+        if has_appariement or has_association: _type_hints.append("associez chaque élément à sa correspondance pour les questions d'appariement ou d'association (certaines propositions sont en trop)")
+        if has_tri: _type_hints.append("classez chaque élément dans la bonne catégorie")
+        if has_ordre: _type_hints.append("donnez le rang de chaque élément pour les questions de remise en ordre")
+        if has_trous: _type_hints.append("complétez chaque trou avec la bonne proposition")
+        if has_court or has_numerique: _type_hints.append("donnez une réponse brève (un mot ou un nombre) aux questions à réponse courte ou numérique")
         if has_open or has_code: _type_hints.append("rédigez des réponses claires et complètes pour les questions ouvertes")
         if has_subopen: _type_hints.append("pour les exercices à sous-questions, appuyez-vous sur vos réponses précédentes lorsque c'est demandé")
         instructions_text = (
@@ -5900,6 +6086,8 @@ def generate_more_questions():
         'qcm': 'QCM', 'qcu': 'QCM', 'qcm multiple': 'QCM_MULTI', 'qcm (réponses multiples)': 'QCM_MULTI',
         'vrai/faux': 'VF', 'vrai / faux': 'VF', 'appariement': 'APPARIEMENT',
         'maths et programmation': 'CODE', 'maths / programmation': 'CODE', 'code': 'CODE',
+        'association': 'ASSOCIATION', 'classement': 'TRI', 'classement (tri)': 'TRI', 'remise en ordre': 'ORDRE',
+        'texte à trous': 'TROUS', 'réponse courte': 'COURT', 'réponse numérique': 'NUMERIQUE',
         'questions ouvertes': 'OUVERT', 'ouvert': 'OUVERT',
     }
     marker = _MARKER_BY_LABEL.get(question_type.lower(), 'QCM')

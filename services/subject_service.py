@@ -13,6 +13,7 @@ from repositories.subject_repository import SubjectRepository
 from routes.question_bank import _similarity, DUPLICATE_THRESHOLD
 from services.ai_service import call_ai as _call_ai
 from utils import allowed_file, extract_text_from_file
+from services.exam_normalizer import normalize_exam_text
 
 _UPLOAD_FOLDER = os.getenv('UPLOAD_FOLDER', 'static/uploads')
 
@@ -109,8 +110,20 @@ def _build_manual_rubric_skeleton(blocks: list[str], total_points: int = 20) -> 
     return '\n'.join(lines)
 
 
-def _build_rubric_prompt(question_types: str, total_points: int = 20) -> tuple[str, str]:
-    """Return (system_prompt, rubric_instruction) based on selected types."""
+_NEW_TYPE_RUBRIC = {
+    'ASSOCIATION': 'Pour chaque question [ASSOCIATION] : une ligne  "Réponse : 1-H, 2-E, 3-K, …"  (numéro de l\'élément « - » dans l\'ordre où ils sont listés, tiret, LETTRE de la proposition correspondante) — une entrée pour CHAQUE élément.',
+    'TRI': 'Pour chaque question [TRI] : une ligne  "Réponse : 1-A, 2-B, 3-A"  (numéro de l\'élément « - », tiret, lettre de sa catégorie : A = première catégorie de la ligne « Catégories : », B = deuxième, etc.) — une entrée pour CHAQUE élément.',
+    'TROUS': 'Pour chaque question [TROUS] : une ligne  "Réponse : 1-B, 2-A"  (numéro du trou {n}, tiret, lettre de la proposition).',
+    'ORDRE': 'Pour chaque question [ORDRE] : une ligne  "Ordre : C, A, B, D"  (lettres des éléments du premier au dernier).',
+    'COURT': 'Pour chaque question [COURT] : une ligne  "Réponses acceptées : réponse 1 | variante 2"  (formulations équivalentes séparées par « | »).',
+    'NUMERIQUE': 'Pour chaque question [NUMERIQUE] : une ligne  "Valeur : 12,5 (± 0,1)"  (valeur attendue et tolérance absolue, ou « (± 2 %) »).',
+}
+
+
+def _build_rubric_prompt(question_types: str, total_points: int = 20, content: str = '', has_corrige: bool = False) -> tuple[str, str]:
+    """Return (system_prompt, rubric_instruction) based on selected types.
+    `content` : sujet balisé — les types présents (balises [ASSOCIATION], [TRI]…) ajoutent leur format de clé.
+    `has_corrige` : un corrigé officiel est fourni — ses réponses sont recopiées, jamais devinées."""
     qt = question_types.lower()
     has_qcm  = 'qcm'   in qt
     has_vf   = 'vrai'  in qt or 'faux' in qt
@@ -148,6 +161,16 @@ def _build_rubric_prompt(question_types: str, total_points: int = 20) -> tuple[s
             '  • Critère 2 : Y pts — [attendu précis]'
         )
 
+    present = [m for m in _NEW_TYPE_RUBRIC if re.search(r'\[' + m + r'\]', content or '', re.I)]
+    if present:
+        instruction += '\n' + '\n'.join(_NEW_TYPE_RUBRIC[m] for m in present)
+    if content and re.search(r'\(\s*\d+(?:[.,]\d+)?\s*pts?\s*\)', content):
+        instruction += ('\nLes points de chaque question sont DÉJÀ indiqués dans son titre « (X pts) » : reprends-les exactement '
+                        'dans le barème (« Question N (X pts) : ») sans les modifier ni les redistribuer.')
+    if has_corrige:
+        instruction += ('\nUn CORRIGÉ OFFICIEL est fourni après le sujet : recopie ses réponses telles quelles pour les clés '
+                        '(lettres, Vrai/Faux, associations, valeurs). Ne devine jamais une réponse qui figure dans le corrigé ; '
+                        'pour les questions ouvertes, reprends ses critères et leurs points.')
     qt_label = question_types if question_types else 'Questions ouvertes'
     system_prompt = (
         f'Tu es un expert en évaluation pédagogique universitaire.\n'
@@ -286,6 +309,8 @@ class SubjectService:
         # qu'un document de professeur perdu.
         saved_paths = []
         content_parts = []
+        corrige_parts = []
+        norm_reports = []
         first_filename = None
         first_s3_key = None
         try:
@@ -300,7 +325,13 @@ class SubjectService:
                 part = extract_text_from_file(filepath)
                 if not part:
                     raise ValueError(f"Impossible d'extraire le texte du fichier « {f.filename} »")
-                content_parts.append(f"--- Fichier: {f.filename} ---\n{part}")
+                if re.search(r'corrig|correction|bar[eè]me|solution', f.filename, re.I):
+                    # Corrigé officiel : sert uniquement à écrire les clés du barème, jamais montré aux étudiants
+                    corrige_parts.append(f"--- Corrigé: {f.filename} ---\n{part}")
+                else:
+                    part, nrep = normalize_exam_text(part)
+                    norm_reports.append(nrep)
+                    content_parts.append((nrep['structured'], f"--- Fichier: {f.filename} ---\n{part}"))
 
                 from s3_client import upload_document
                 with open(filepath, 'rb') as fh:
@@ -318,13 +349,17 @@ class SubjectService:
             raise
 
         filename = first_filename
-        content = '\n\n'.join(content_parts)
+        if not content_parts:
+            raise ValueError("Seul un corrigé a été fourni : ajoutez aussi le fichier de l'épreuve")
 
-        # Annotate question markers (pure Python — no AI needed)
+        # Annotate question markers (pure Python — no AI needed) — sauf pour une épreuve déjà normalisée
+        # (balises posées par exam_normalizer : les ré-annoter ajouterait [OUVERT] aux titres de parties).
         qt = question_types.lower()
         has_qcm = 'qcm' in qt
         has_vf  = 'vrai' in qt or 'faux' in qt
-        annotated = annotate_markers(content, has_qcm, has_vf)
+        annotated = '\n\n'.join(txt if structured else annotate_markers(txt, has_qcm, has_vf)
+                                 for structured, txt in content_parts)
+        corrige_text = '\n\n'.join(corrige_parts)
 
         # Détection de doublons — contre TOUTE la banque de questions, puisque
         # ce document est un contenu neuf pour la plateforme (pas une extension
@@ -342,8 +377,9 @@ class SubjectService:
         else:
             rubric = ''
             try:
-                system_prompt, _ = _build_rubric_prompt(question_types, total_points)
-                rubric = _call_ai(system_prompt, annotated, temperature=0.1)
+                system_prompt, _ = _build_rubric_prompt(question_types, total_points, annotated, bool(corrige_text))
+                user_msg = annotated + (f"\n\n=== CORRIGÉ OFFICIEL (réponses à recopier) ===\n{corrige_text}" if corrige_text else '')
+                rubric = _call_ai(system_prompt, user_msg, temperature=0.1)
             except Exception as ai_err:
                 print(f'[SubjectService] AI unavailable for rubric: {ai_err}')
 
@@ -357,6 +393,8 @@ class SubjectService:
             s3_key=first_s3_key,
         )
         result['duplicates'] = duplicates
+        result['normalization'] = [r for r in norm_reports if r.get('structured')]
+        result['has_corrige'] = bool(corrige_text)
         return result
 
     # ── Delete ────────────────────────────────────────────────────────────────

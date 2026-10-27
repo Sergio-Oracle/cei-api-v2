@@ -31,7 +31,7 @@ def check(nom, ok, detail=''):
 
 
 def questions(blocks):
-    return [b for b in blocks if b.get('type') not in ('section', 'text')]
+    return [b for b in blocks if b.get('type') not in ('section', 'text', 'description')]
 
 
 # ── Parseur navigateur exécuté via node (TypeScript transpilé à la volée) ─────────────────────────────────────────
@@ -61,7 +61,7 @@ def signature(blocks):
     out = []
     for b in questions(blocks):
         ch = b.get('choices') or []
-        out.append((b.get('type'), str(b.get('num')), len(ch)))
+        out.append((b.get('type'), str(b.get('num')), len(ch), len(b.get('items') or []), len(b.get('options') or [])))
     return out
 
 
@@ -98,7 +98,10 @@ B. b1
 C. c1
 D. d1
 """
+with open(os.path.join(ROOT, 'scripts', 'fixtures', 'sujet_types_moodle.txt'), encoding='utf-8') as f:
+    SUJET_TYPES = f.read()
 CORPUS = {
+    'types Moodle (association, tri, ordre, trous, réponse courte, numérique, description)': (SUJET_TYPES, 7, None),
     'sujet réel examen 127 (PDF, marqueur collé, propositions coupées)': (SUJET_127, 20, 4),
     'format classique (Question 1. … [QCM], parties)': (CLASSIQUE, 3, None),
     'vrai/faux': (VF, 2, None),

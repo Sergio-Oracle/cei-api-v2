@@ -375,9 +375,20 @@ def run():
     last_summary        = time.time()
     total_alerts_session = 0
 
+    # Le heartbeat est écrit par un fil dédié : un cycle d'analyse peut durer
+    # plusieurs minutes quand l'API est chargée (un appel par étudiant à
+    # risque) et l'agent apparaîtrait « hors ligne » alors qu'il travaille.
+    _hb = {"exams": 0, "alerts": 0}
+    def _hb_loop():
+        while True:
+            _write_heartbeat(_hb["exams"], _hb["alerts"])
+            time.sleep(CHECK_INTERVAL)
+    threading.Thread(target=_hb_loop, daemon=True).start()
+
     while True:
         try:
             exams = _get_active_exams()
+            _hb["exams"] = len(exams) if exams else 0
             if exams:
                 print(f"[{datetime.now().strftime('%H:%M:%S')}] "
                       f"Analyse de {len(exams)} examen(s) actif(s)…")
@@ -385,6 +396,7 @@ def run():
                     _process_exam(exam)
                 with _lock:
                     total_alerts_session = sum(s.get("alerts", 0) for s in _exam_stats.values())
+                    _hb["alerts"] = total_alerts_session
             else:
                 print(f"[{datetime.now().strftime('%H:%M:%S')}] "
                       "Aucun examen actif.")

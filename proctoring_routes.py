@@ -99,7 +99,9 @@ def get_student_livekit_token(attempt_id):
             assigned = session.query(ProctorAssignment).filter_by(
                 proctor_id=user_id, attempt_id=attempt_id
             ).first()
-            if not assigned:
+            # idem send_warning : surveillant de l'examen = autorisé (répartition mouvante)
+            if not assigned and not session.query(ExamProctor).filter_by(
+                    exam_id=attempt.exam_id, proctor_id=user_id).first():
                 return jsonify({'error': 'Cet étudiant ne vous est pas affecté'}), 403
 
         room_name = f'exam-{attempt.exam_id}'
@@ -743,7 +745,13 @@ def send_proctoring_warning(attempt_id):
                 (ProctorAssignment.attempt_id == attempt_id) |
                 (ProctorAssignment.student_id == attempt.student_id)
             ).first()
-            if not assigned:
+            # Répondre à un message/avertir reste permis à tout surveillant de l'examen :
+            # la répartition peut changer en cours d'examen (redistribution automatique
+            # quand un surveillant est vu déconnecté) alors que le message de l'étudiant
+            # est déjà affiché chez un autre. Bannir / valider l'identité / code de
+            # reprise restent, eux, réservés au surveillant affecté.
+            if not assigned and not session.query(ExamProctor).filter_by(
+                    exam_id=attempt.exam_id, proctor_id=user_id).first():
                 return jsonify({'error': 'Cet étudiant ne vous est pas affecté'}), 403
 
         data = request.get_json() or {}

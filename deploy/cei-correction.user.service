@@ -1,0 +1,19 @@
+[Unit]
+Description=CEI — Correction IA des copies en parallèle (file d attente Redis)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/serge/projet-cei/cei-api-v2
+EnvironmentFile=-/home/serge/projet-cei/cei-api-v2/.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/serge/projet-cei/cei-api-v2/.venv-base/bin/python /home/serge/projet-cei/cei-api-v2/correction_worker.py
+Restart=always
+RestartSec=10
+TimeoutStopSec=150
+Nice=10
+StandardOutput=append:/home/serge/correction_worker.log
+StandardError=append:/home/serge/correction_worker.log
+
+[Install]
+WantedBy=default.target

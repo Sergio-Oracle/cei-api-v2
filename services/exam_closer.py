@@ -206,6 +206,12 @@ def tick() -> None:
         print(f"[exam_closer] {stats['submitted']} copie(s) soumise(s), {stats['closed']} examen(s) clos, "
               f"{stats['rooms']} salle(s) fermée(s)")
     rebalance_active_exams()
+    if cache_set_nx('cei:certwatch:daily', 24 * 3600):
+        try:
+            from services import cert_watch
+            cert_watch.check()
+        except Exception as e:
+            print(f"[exam_closer] certificats : {e}")
 
 
 def _loop() -> None:

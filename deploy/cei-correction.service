@@ -2,7 +2,8 @@
 # Installation (une fois, en root) :
 #   sudo cp /home/serge/projet-cei/cei-api-v2/deploy/cei-correction.service /etc/systemd/system/
 #   sudo systemctl daemon-reload && sudo systemctl enable --now cei-correction
-# Nombre de copies corrigées en même temps : CORRECTION_WORKERS dans .env (8 par défaut : au-delà, les fournisseurs IA refusent des appels et la correction ralentit).
+# Nombre de copies corrigées en même temps : CORRECTION_WORKERS dans .env (24 par défaut ; Xelia plafonne vers 70 copies/min).
+# Les corrections passent d'abord par Xelia (AI_PRIMARY=xelia), puis par les autres fournisseurs si Xelia échoue.
 [Unit]
 Description=CEI — Correction IA des copies en parallèle (file d'attente Redis)
 After=network.target postgresql.service redis-server.service cei-api-v2.service

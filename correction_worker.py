@@ -2,7 +2,7 @@
 """Service de correction IA en parallèle (processus à part, voir deploy/cei-correction.service).
 
 Prend les copies déposées dans la file (services/correction_queue.py) et les corrige avec N travailleurs en même
-temps (CORRECTION_WORKERS, 8 par défaut). La correction elle-même est celle de l'API, inchangée.
+temps (CORRECTION_WORKERS, 24 par défaut). La correction elle-même est celle de l'API, inchangée.
 
     cd cei-api-v2 && .venv-base/bin/python correction_worker.py
 """
@@ -20,11 +20,13 @@ try:
 except Exception:
     pass
 
-WORKERS = max(1, int(os.getenv('CORRECTION_WORKERS', '8')))
+WORKERS = max(1, int(os.getenv('CORRECTION_WORKERS', '24')))
 # Le client IA limite les appels simultanés par processus (2 par défaut, pour protéger les workers de l'API) :
 # ce processus-ci est fait pour en lancer beaucoup, et attend son tour au lieu d'échouer.
 os.environ['AI_CONCURRENCY'] = str(WORKERS)
 os.environ['AI_ACQUIRE_TIMEOUT'] = '900'
+# Xelia d'abord : capacité propre à l'UNCHK, sans limite de débit ; la chaîne habituelle prend le relais en cas d'échec.
+os.environ.setdefault('AI_PRIMARY', 'xelia')
 # Chaque travailleur garde une connexion à la base pendant l'appel IA : le réservoir doit suivre.
 os.environ['DB_POOL_SIZE'] = str(WORKERS + 4)
 os.environ['DB_MAX_OVERFLOW'] = '4'

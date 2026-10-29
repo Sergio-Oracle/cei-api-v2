@@ -170,7 +170,10 @@ def pop_batch(exam_id: int):
     c = _get_client()
     if c is None or pending_count(exam_id) > 0:
         return None
-    raw = c.getdel(f'cei:corr:batch:{exam_id}')
+    pipe = c.pipeline()                                   # GETDEL n'existe pas avant Redis 6.2 (production)
+    pipe.get(f'cei:corr:batch:{exam_id}')
+    pipe.delete(f'cei:corr:batch:{exam_id}')
+    raw = pipe.execute()[0]
     return int(raw) if raw else None
 
 

@@ -1,0 +1,25 @@
+# Service de correction IA en parallèle (production et préprod, mêmes chemins que cei-moodle-sync.service).
+# Installation (une fois, en root) :
+#   sudo cp /home/serge/projet-cei/cei-api-v2/deploy/cei-correction.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now cei-correction
+# Nombre de copies corrigées en même temps : CORRECTION_WORKERS dans .env (8 par défaut : au-delà, les fournisseurs IA refusent des appels et la correction ralentit).
+[Unit]
+Description=CEI — Correction IA des copies en parallèle (file d'attente Redis)
+After=network.target postgresql.service redis-server.service cei-api-v2.service
+Wants=cei-api-v2.service
+
+[Service]
+Type=simple
+User=serge
+WorkingDirectory=/home/serge/projet-cei/cei-api-v2
+EnvironmentFile=/home/serge/projet-cei/cei-api-v2/.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/serge/projet-cei/cei-api-v2/.venv-base/bin/python /home/serge/projet-cei/cei-api-v2/correction_worker.py
+Restart=always
+RestartSec=10
+TimeoutStopSec=150
+# Service de fond : jamais prioritaire sur l'API web ni sur la base.
+Nice=10
+
+[Install]
+WantedBy=multi-user.target

@@ -115,6 +115,7 @@ def close_expired(grace=LOOP_GRACE_SECONDS) -> dict:
     stats = {'submitted': 0, 'closed': 0, 'rooms': 0}
     session = get_session()
     after_commit = []                      # appels LiveKit à faire une fois la base à jour
+    to_correct = []                        # (examen, copies) à confier au service de correction
     try:
         now = _now()
         from sqlalchemy import exists
@@ -139,6 +140,8 @@ def close_expired(grace=LOOP_GRACE_SECONDS) -> dict:
                 a.status = AttemptStatus.AUTO_SUBMITTED
                 a.submitted_at = now
             stats['submitted'] += len(expired)
+            if expired and exam.auto_correct:
+                to_correct.append((exam.id, [a.id for a in expired]))
             if exam.status == ExamStatus.ACTIVE and exam.end_time < now:
                 exam.status = ExamStatus.CLOSED
                 stats['closed'] += 1
@@ -153,6 +156,14 @@ def close_expired(grace=LOOP_GRACE_SECONDS) -> dict:
         print(f"[exam_closer] clôture : {e}")
     finally:
         session.close()
+    if to_correct:
+        try:
+            from services import correction_queue as _cq
+            if _cq.worker_alive():
+                for exam_id, ids in to_correct:
+                    _cq.enqueue(ids, exam_id)
+        except Exception as e:
+            print(f"[exam_closer] file de correction : {e}")
     for kind, exam_id, student_id in after_commit:
         if kind == 'room':
             close_room(exam_id)

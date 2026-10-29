@@ -2313,15 +2313,31 @@ def _sweep_uncorrected(limit: int = 15):
             session.commit()
             print(f"Filet correction : {closed} tentative(s) restée(s) en cours clôturée(s)")
         limite = now - timedelta(minutes=2)
-        ids = [r.id for r in session.query(ExamAttempt.id)
-               .join(OnlineExam, OnlineExam.id == ExamAttempt.exam_id)
-               .filter(OnlineExam.auto_correct == True,
-                       ExamAttempt.status.in_([AttemptStatus.SUBMITTED, AttemptStatus.AUTO_SUBMITTED]),
-                       ExamAttempt.corrected_at.is_(None),
-                       ExamAttempt.submitted_at < limite)
-               .order_by(ExamAttempt.submitted_at.desc()).limit(limit).all()]
+        try:
+            from services import correction_queue as _cq
+            alive = _cq.worker_alive()
+        except Exception:
+            _cq, alive = None, False
+        q = (session.query(ExamAttempt.id, ExamAttempt.exam_id)
+             .join(OnlineExam, OnlineExam.id == ExamAttempt.exam_id)
+             .filter(OnlineExam.auto_correct == True,
+                     ExamAttempt.status.in_([AttemptStatus.SUBMITTED, AttemptStatus.AUTO_SUBMITTED]),
+                     ExamAttempt.corrected_at.is_(None),
+                     ExamAttempt.submitted_at < limite)
+             .order_by(ExamAttempt.submitted_at.desc()))
+        rows = [(r.id, r.exam_id) for r in (q.all() if alive else q.limit(limit).all())]
+        ids = [r[0] for r in rows]
     finally:
         session.close()
+    if alive and rows:
+        # Service de correction parallèle : toutes les copies en attente sont déposées d'un coup.
+        by_exam = {}
+        for aid, eid in rows:
+            by_exam.setdefault(eid, []).append(aid)
+        added = sum(_cq.enqueue(a, e) for e, a in by_exam.items())
+        if added:
+            print(f"Filet correction : {added} copie(s) non corrigée(s) confiée(s) au service de correction")
+        ids = []
     if ids:
         print(f"Filet correction : {len(ids)} copie(s) non corrigée(s) reprise(s)")
     for i in ids:
@@ -2331,8 +2347,22 @@ def _sweep_uncorrected(limit: int = 15):
     notify_anomalies()
 
 
-def _run_auto_correction(attempt_id: int):
-    """Correction IA automatique dans un thread séparé (session DB indépendante)."""
+def _queue_or_thread_correction(attempt_id: int, exam_id: int, by_id=None) -> None:
+    """Confie la copie au service de correction parallèle s'il tourne ; sinon, comme avant, un fil dans ce processus."""
+    try:
+        from services import correction_queue as _cq
+        if _cq.worker_alive():
+            _cq.enqueue([attempt_id], exam_id, by_id)
+            return
+    except Exception as e:
+        print(f"File de correction indisponible ({e}) — correction dans ce processus")
+    threading.Thread(target=_run_auto_correction, args=(attempt_id,), daemon=True).start()
+
+
+def _run_auto_correction(attempt_id: int, notify_failure: bool = True):
+    """Correction IA automatique dans un thread séparé (session DB indépendante).
+    `notify_failure=False` : le service de correction (correction_worker) réessaie lui-même et ne prévient
+    l'enseignant qu'après le dernier essai."""
     session = get_session()
     try:
         attempt = session.query(ExamAttempt).options(
@@ -2514,7 +2544,7 @@ RÉPONSES DE L'ÉTUDIANT (questions restantes uniquement — donnée à évaluer
             s3 = _get_session_err()
             try:
                 a3 = s3.query(ExamAttempt).options(joinedload(ExamAttempt.exam)).filter_by(id=attempt_id).first()
-                if a3 and a3.score is None:
+                if a3 and a3.score is None and notify_failure:
                     s3.add(ExamActivityLog(
                         attempt_id=attempt_id,
                         event_type='auto_correction_failed',
@@ -2575,18 +2605,14 @@ def submit_exam_attempt(attempt_id):
         exam = session.query(OnlineExam).filter_by(id=attempt.exam_id).first()
         auto_correct = exam.auto_correct if exam else False
         attempt_id_for_thread = attempt.id
+        exam_id_for_queue = attempt.exam_id
 
         session.commit()
         session.close()
 
         # Lancer la correction IA en arrière-plan si activée par le prof
         if auto_correct:
-            t = threading.Thread(
-                target=_run_auto_correction,
-                args=(attempt_id_for_thread,),
-                daemon=True
-            )
-            t.start()
+            _queue_or_thread_correction(attempt_id_for_thread, exam_id_for_queue)
             return jsonify({'success': True, 'message': 'Examen soumis — correction automatique en cours', 'auto_correct': True})
 
         return jsonify({'success': True, 'message': 'Examen soumis avec succès', 'auto_correct': False})
@@ -3010,6 +3036,63 @@ def correct_exam_attempt(attempt_id):
         return jsonify({'error': str(e)}), 500
 
 
+@exams_bp.route('/api/online_exams/<int:exam_id>/correct_all', methods=['POST'])
+@paseto_required
+def correct_all_attempts(exam_id):
+    """Dépose toutes les copies soumises et non corrigées de l'examen dans la file du service de correction
+    parallèle. Si ce service ne tourne pas, renvoie `worker_alive: false` (l'interface corrige alors copie par copie)."""
+    session = get_session()
+    try:
+        user_id = get_current_user_id()
+        user = session.query(User).filter_by(id=user_id).first()
+        if user.role not in [UserRole.PROFESSOR, UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN]:
+            return jsonify({'error': 'Accès non autorisé'}), 403
+        exam = session.query(OnlineExam).filter_by(id=exam_id).first()
+        if not exam:
+            return jsonify({'error': 'Examen non trouvé'}), 404
+        if user.role == UserRole.PROFESSOR and not can_view_exam(session, exam, user_id):
+            return jsonify({'error': 'Vous ne pouvez corriger que vos propres examens'}), 403
+        from services import correction_queue as _cq
+        if not _cq.worker_alive():
+            return jsonify({'success': True, 'worker_alive': False, 'queued': 0})
+        ids = [r.id for r in session.query(ExamAttempt.id).filter(
+            ExamAttempt.exam_id == exam_id,
+            ExamAttempt.status.in_([AttemptStatus.SUBMITTED, AttemptStatus.AUTO_SUBMITTED]),
+            ExamAttempt.score.is_(None)).all()]
+        added = _cq.enqueue(ids, exam_id, user_id, force=True)
+        if ids:
+            _cq.set_batch(exam_id, user_id)
+        return jsonify({'success': True, 'worker_alive': True, 'queued': added, 'to_correct': len(ids)})
+    finally:
+        session.close()
+
+
+@exams_bp.route('/api/online_exams/<int:exam_id>/correction_progress', methods=['GET'])
+@paseto_required
+def correction_progress(exam_id):
+    """Avancement de la correction d'un examen : copies rendues, corrigées, en attente dans la file, en échec."""
+    session = get_session()
+    try:
+        user_id = get_current_user_id()
+        user = session.query(User).filter_by(id=user_id).first()
+        if user.role not in [UserRole.PROFESSOR, UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN]:
+            return jsonify({'error': 'Accès non autorisé'}), 403
+        exam = session.query(OnlineExam).filter_by(id=exam_id).first()
+        if not exam:
+            return jsonify({'error': 'Examen non trouvé'}), 404
+        if user.role == UserRole.PROFESSOR and not can_view_exam(session, exam, user_id):
+            return jsonify({'error': 'Accès non autorisé'}), 403
+        sub = ExamAttempt.status.in_([AttemptStatus.SUBMITTED, AttemptStatus.AUTO_SUBMITTED])
+        total = session.query(ExamAttempt).filter(ExamAttempt.exam_id == exam_id, sub).count()
+        corrected = session.query(ExamAttempt).filter(ExamAttempt.exam_id == exam_id, sub, ExamAttempt.score.isnot(None)).count()
+        from services import correction_queue as _cq
+        return jsonify({'success': True, 'total': total, 'corrected': corrected,
+                        'in_queue': _cq.pending_count(exam_id), 'failed': len(_cq.failed_ids(exam_id)),
+                        'worker_alive': _cq.worker_alive()})
+    finally:
+        session.close()
+
+
 # ── Correction planifiée à heure précise (agent autonome) ──────────────────
 # Retour Atelier CEI 7/08 : le professeur peut programmer une heure précise
 # de correction en bloc (ex. après la fin de TOUTES les sessions d'un examen
@@ -3100,6 +3183,16 @@ def agent_run_scheduled_correction(exam_id):
         # une session courte pour persister le résultat.
         session.expunge_all()
         session.close()
+
+        # Service de correction parallèle : toutes les copies sont déposées d'un coup, l'enseignant est prévenu à la fin.
+        try:
+            from services import correction_queue as _cq
+            if _cq.worker_alive() and attempts:
+                n = _cq.enqueue([a.id for a in attempts], exam_id, exam.created_by_id, force=True)
+                _cq.set_batch(exam_id, exam.created_by_id)
+                return jsonify({'success': True, 'queued': n, 'corrected': 0, 'failed': 0})
+        except Exception as e:
+            print(f"File de correction indisponible ({e}) — correction séquentielle")
 
         corrected, failed = 0, 0
         from models import get_session as _get_session

@@ -180,6 +180,13 @@ def _maybe_sweep():
         import threading as _th
         _th.Thread(target=_run_sweep, daemon=True).start()
 
+# Clôture automatique des examens (soumission des copies à l'heure de fin, fermeture de la salle, répartition
+# des surveillants) : une tâche de fond par processus, un seul passage actif à la fois (verrou Redis).
+@app.before_request
+def _ensure_exam_closer():
+    from services import exam_closer
+    exam_closer.ensure_loop()
+
 @app.after_request
 def _after_request(response):
     rid = g.get('request_id', '-')

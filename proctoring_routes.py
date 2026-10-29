@@ -1811,8 +1811,9 @@ def _check_disconnected_proctors(exam_id, session):
       l'examen commencé depuis plus de 5 min) voit ses étudiants passer aux présents ;
     - un surveillant qui revient ou qui est ajouté en cours d'examen reçoit sa part.
     N'agit que lorsque l'ensemble des présents CHANGE (pas à chaque heartbeat), au plus
-    une fois par minute, et jamais si moins de 30 % des surveillants semblent présents
-    (c'est alors la plateforme qui est lente, pas eux)."""
+    une fois par minute. Appelée aussi par la tâche de fond (services.exam_closer) : la
+    répartition ne dépend jamais de l'arrivée d'un heartbeat. Rien n'étant supprimé, un
+    surveillant qui revient reprend sa part au passage suivant."""
     from services.proctor_service import present_proctor_ids, rebalance_exam_proctors
     exam = session.get(OnlineExam, exam_id)
     if not exam or exam.status != ExamStatus.ACTIVE:
@@ -1822,7 +1823,7 @@ def _check_disconnected_proctors(exam_id, session):
     if not ids:
         return []
     present = present_proctor_ids(exam, ids)
-    if len(present) * 10 < len(ids) * 3:
+    if not present:
         return []
     key = ','.join(str(i) for i in sorted(present))
     hash_key = f'cei:proctor_presenthash:{exam_id}'

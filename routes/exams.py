@@ -1102,6 +1102,14 @@ def save_exam_answers(attempt_id):
                             'already_submitted': attempt.status != AttemptStatus.BANNED,
                             'banned': attempt.status == AttemptStatus.BANNED}), 400
         
+        # Échéance dépassée : la copie est soumise par le serveur, plus rien n'est accepté.
+        from services.exam_closer import autosubmit_if_expired
+        if autosubmit_if_expired(session, attempt):
+            session.commit()
+            session.close()
+            return jsonify({'error': 'Le temps est écoulé : votre copie a été soumise automatiquement',
+                            'already_submitted': True, 'banned': False}), 400
+
         data = request.get_json(silent=True) or {}
         incoming = data.get('answers', '{}')
         # Un envoi vide (page rechargée, état pas encore restauré) n'efface
@@ -1425,9 +1433,14 @@ def get_exam_attempt_subject(attempt_id):
             session.close()
             return jsonify({'error': 'Tentative non trouvée'}), 404
         
+        from services.exam_closer import autosubmit_if_expired
+        if attempt.status == AttemptStatus.IN_PROGRESS and autosubmit_if_expired(session, attempt):
+            session.commit()
         if attempt.status != AttemptStatus.IN_PROGRESS:
+            already = attempt.status != AttemptStatus.BANNED
             session.close()
-            return jsonify({'error': 'Cette tentative n\'est plus active'}), 400
+            return jsonify({'error': 'Cette tentative n\'est plus active',
+                            'already_submitted': already, 'banned': not already}), 400
         
         subject = attempt.exam.subject
         if not subject:

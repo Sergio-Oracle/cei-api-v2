@@ -117,12 +117,15 @@ try:
     check("D reçoit sa part, tout est équilibré (±1)", len(L) == 4 and max(L.values()) - min(L.values()) <= 1, L)
     check("toujours aucune suppression", s.query(ProctorAssignment).filter_by(exam_id=ex.id).count() == len(ids_before))
 
-    print('\n== Panne plateforme : presque personne ne répond ==')
+    print('\n== Panne : presque personne ne répond, puis tout revient ==')
     for p in (A_, B_, C_):
         cache_delete(f'cei:proctor_present:{ex.id}:{p.id}')
     live(D_); cache_delete(f'cei:proctor_presenthash:{ex.id}')
-    before = loads(('run',)); tick(); after = loads(('run',))
-    check("aucun déplacement quand 3 surveillants sur 4 semblent absents", before == after, (before, after))
+    tick(); L = loads(('run',))
+    check("la répartition continue : D prend tout, rien n'est supprimé", L == {D_.id: 30} and s.query(ProctorAssignment).filter_by(exam_id=ex.id).count() == len(ids_before), L)
+    live(A_, B_, C_, D_); tick(); L = loads(('run',))
+    check("quand les autres reviennent, chacun reprend sa part (±1)", len(L) == 4 and max(L.values()) - min(L.values()) <= 1, L)
+    check("toujours aucune suppression", s.query(ProctorAssignment).filter_by(exam_id=ex.id).count() == len(ids_before))
 
     print('\n== Réponse réservée au surveillant affecté ==')
     pa = s.query(ProctorAssignment).filter_by(exam_id=ex.id, proctor_id=A_.id).filter(ProctorAssignment.attempt_id.isnot(None)).first()

@@ -12,6 +12,7 @@ Surveillance ») — un « renfort » s'ajoute désormais au groupe permanent, p
 from datetime import datetime, timedelta
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
+from cache import cache_get
 from models import (
     EC, Subject, OnlineExam, ExamStatus, ExamProctor, ProctorAssignment, ExamAttempt,
     ProctorGroup, ProctorGroupEC, ProctorGroupExam, ProctorGroupMember,
@@ -51,6 +52,116 @@ def _wave_positions(session, exam_id) -> dict:
     return {sid: pos for sid, pos in rows}
 
 
+# ── Présence des surveillants et rééquilibrage SANS perte ────────────────────
+# Un surveillant est « présent » tant que son heartbeat a moins de PRESENCE_TTL
+# secondes (4 min : une coupure brève ou un serveur chargé n'en fait pas un
+# absent). Avant le début de l'examen + PRESENCE_GRACE_SECONDS, un surveillant
+# qui ne s'est encore jamais connecté est compté présent (on lui laisse le temps
+# d'arriver). Passé ce délai, il est absent : ses étudiants vont aux autres.
+PRESENCE_TTL = 240
+PRESENCE_GRACE_SECONDS = 300
+
+
+def present_proctor_ids(exam, proctor_ids) -> list:
+    """Parmi `proctor_ids`, ceux considérés présents sur cet examen."""
+    now = datetime.utcnow()
+    started_long_enough = bool(exam.start_time and (now - exam.start_time).total_seconds() > PRESENCE_GRACE_SECONDS)
+    out = []
+    for pid in proctor_ids:
+        if cache_get(f'cei:proctor_present:{exam.id}:{pid}'):
+            out.append(pid)
+        elif not cache_get(f'cei:proctor_seen:{exam.id}:{pid}') and not started_long_enough:
+            out.append(pid)
+    return out
+
+
+def _open_population(session, exam_id):
+    """Affectations à répartir : étudiants en cours d'examen (clé 'run') et pas
+    encore entrés (clé = rang de vague). Les copies rendues/exclues ne bougent jamais."""
+    from models import AttemptStatus
+    attempts = {}
+    for a in session.query(ExamAttempt).filter_by(exam_id=exam_id).all():
+        attempts[a.student_id] = a
+    wave_pos = _wave_positions(session, exam_id)
+    groups = {}
+    for pa in session.query(ProctorAssignment).filter_by(exam_id=exam_id).order_by(ProctorAssignment.id).all():
+        a = attempts.get(pa.student_id)
+        if a is None:
+            groups.setdefault(('wait', wave_pos.get(pa.student_id, 0)), []).append((pa, None))
+        elif a.status == AttemptStatus.IN_PROGRESS:
+            groups.setdefault(('run', 0), []).append((pa, a))
+        # sinon : copie rendue, exclue... on n'y touche pas
+    return groups
+
+
+def rebalance_exam_proctors(session, exam, present_ids) -> dict:
+    """Répartit les étudiants de l'examen entre les surveillants PRÉSENTS, sans
+    jamais supprimer d'affectation : on ne fait que changer le surveillant d'une
+    ligne existante (et on en crée une pour un étudiant en cours qui n'en a pas).
+
+    1. les étudiants d'un surveillant absent passent aux présents (le moins chargé d'abord) ;
+    2. si l'écart de charge entre présents dépasse 1 (surveillant revenu ou ajouté
+       en cours d'examen), on déplace des étudiants du plus chargé vers le moins chargé.
+    Les messages restent attachés à la tentative : le nouveau surveillant les voit.
+    Renvoie {'moved': n, 'orphans': n, 'loads': {surveillant: n}} ; {} si rien à faire."""
+    exam_proctors = [ep.proctor_id for ep in session.query(ExamProctor).filter_by(exam_id=exam.id).all()]
+    present = [pid for pid in exam_proctors if pid in set(present_ids)]
+    if not present:
+        return {}
+    now = datetime.utcnow()
+    groups = _open_population(session, exam.id)
+
+    # étudiants en cours sans aucune ligne d'affectation : on leur en donne une
+    from models import AttemptStatus
+    have = {pa.student_id for items in groups.values() for pa, _ in items}
+    have |= {pa.student_id for pa in session.query(ProctorAssignment).filter_by(exam_id=exam.id).all()}
+    for a in session.query(ExamAttempt).filter_by(exam_id=exam.id, status=AttemptStatus.IN_PROGRESS).all():
+        if a.student_id not in have:
+            pa = ProctorAssignment(exam_id=exam.id, proctor_id=present[0], student_id=a.student_id, attempt_id=a.id)
+            session.add(pa)
+            groups.setdefault(('run', 0), []).append((pa, a))
+
+    moved = orphans = 0
+    for items in groups.values():
+        load = {pid: 0 for pid in present}
+        for pa, _a in items:
+            if pa.proctor_id in load:
+                load[pa.proctor_id] += 1
+
+        def move(pa, a, target):
+            pa.proctor_id = target
+            pa.assigned_at = now
+            if a is not None and not pa.attempt_id:
+                pa.attempt_id = a.id
+
+        for pa, a in items:                        # 1. orphelins
+            if pa.proctor_id not in load:
+                target = min(load, key=load.get)
+                move(pa, a, target)
+                load[target] += 1
+                orphans += 1
+                moved += 1
+        for _ in range(len(items)):                # 2. équilibrage
+            hi = max(load, key=load.get)
+            lo = min(load, key=load.get)
+            if load[hi] - load[lo] < 2:
+                break
+            pa, a = next(((p, x) for p, x in reversed(items) if p.proctor_id == hi), (None, None))
+            if pa is None:
+                break
+            move(pa, a, lo)
+            load[hi] -= 1
+            load[lo] += 1
+            moved += 1
+    if moved:
+        session.commit()
+    loads = {}
+    for items in groups.values():
+        for pa, _a in items:
+            loads[pa.proctor_id] = loads.get(pa.proctor_id, 0) + 1
+    return {'moved': moved, 'orphans': orphans, 'loads': loads}
+
+
 def _extend_active_exam(session, exam, target_ids) -> list:
     """Examen DÉJÀ COMMENCÉ : on peut y AJOUTER des surveillants à tout moment
     (nouveau membre du groupe, groupe rattaché en retard...), jamais en
@@ -70,6 +181,10 @@ def _extend_active_exam(session, exam, target_ids) -> list:
         })
     session.commit()
     rebalance_unstarted(session, exam, force=bool(new_ids))
+    if new_ids:
+        # Le nouveau surveillant reçoit sa part dès sa première connexion (voir _check_disconnected_proctors).
+        from cache import cache_delete
+        cache_delete(f'cei:proctor_presenthash:{exam.id}')
     return to_notify
 
 
@@ -311,11 +426,24 @@ def assign_single_attempt(session, exam_id, student_id, attempt_id):
     if already:
         if not already.attempt_id:
             already.attempt_id = attempt_id
+        # Pré-affecté à un surveillant qui n'est pas là : l'étudiant va à un présent.
+        exam = session.get(OnlineExam, exam_id)
+        all_ids = [ep.proctor_id for ep in session.query(ExamProctor).filter_by(exam_id=exam_id).all()]
+        present = present_proctor_ids(exam, all_ids) if exam else []
+        if present and already.proctor_id not in present:
+            load = {pid: 0 for pid in present}
+            for pa in session.query(ProctorAssignment).filter_by(exam_id=exam_id).all():
+                if pa.proctor_id in load:
+                    load[pa.proctor_id] += 1
+            already.proctor_id = min(load, key=load.get)
+            already.assigned_at = datetime.utcnow()
         return
 
     proctor_ids = [ep.proctor_id for ep in session.query(ExamProctor).filter_by(exam_id=exam_id).all()]
     if not proctor_ids:
         return
+    exam = session.get(OnlineExam, exam_id)
+    proctor_ids = (present_proctor_ids(exam, proctor_ids) if exam else []) or proctor_ids
 
     counts = {pid: 0 for pid in proctor_ids}
     wave_pos = _wave_positions(session, exam_id)

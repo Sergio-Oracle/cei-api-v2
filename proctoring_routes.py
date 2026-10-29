@@ -99,9 +99,7 @@ def get_student_livekit_token(attempt_id):
             assigned = session.query(ProctorAssignment).filter_by(
                 proctor_id=user_id, attempt_id=attempt_id
             ).first()
-            # idem send_warning : surveillant de l'examen = autorisé (répartition mouvante)
-            if not assigned and not session.query(ExamProctor).filter_by(
-                    exam_id=attempt.exam_id, proctor_id=user_id).first():
+            if not assigned:
                 return jsonify({'error': 'Cet étudiant ne vous est pas affecté'}), 403
 
         room_name = f'exam-{attempt.exam_id}'
@@ -745,13 +743,7 @@ def send_proctoring_warning(attempt_id):
                 (ProctorAssignment.attempt_id == attempt_id) |
                 (ProctorAssignment.student_id == attempt.student_id)
             ).first()
-            # Répondre à un message/avertir reste permis à tout surveillant de l'examen :
-            # la répartition peut changer en cours d'examen (redistribution automatique
-            # quand un surveillant est vu déconnecté) alors que le message de l'étudiant
-            # est déjà affiché chez un autre. Bannir / valider l'identité / code de
-            # reprise restent, eux, réservés au surveillant affecté.
-            if not assigned and not session.query(ExamProctor).filter_by(
-                    exam_id=attempt.exam_id, proctor_id=user_id).first():
+            if not assigned:
                 return jsonify({'error': 'Cet étudiant ne vous est pas affecté'}), 403
 
         data = request.get_json() or {}
@@ -1306,7 +1298,21 @@ def get_student_messages(exam_id):
 
         since = _parse_since(since_str)
         if since is not None:
-            query = query.filter(ExamActivityLog.timestamp > since)
+            recent = []
+            if role == 'surveillant':
+                # Étudiants qui viennent de lui être confiés (surveillant absent, ajouté ou revenu) :
+                # leurs messages des 30 dernières minutes lui sont montrés même s'ils datent d'avant
+                # son dernier relevé, pour qu'aucun message en attente ne soit perdu au changement.
+                moved_at = datetime.utcnow() - timedelta(minutes=30)
+                recent = [r.attempt_id for r in session.query(ProctorAssignment.attempt_id).filter(
+                    ProctorAssignment.exam_id == exam_id, ProctorAssignment.proctor_id == user_id,
+                    ProctorAssignment.assigned_at > since, ProctorAssignment.attempt_id.isnot(None))]
+            if recent:
+                query = query.filter(
+                    (ExamActivityLog.timestamp > since)
+                    | (ExamActivityLog.attempt_id.in_(recent) & (ExamActivityLog.timestamp > moved_at)))
+            else:
+                query = query.filter(ExamActivityLog.timestamp > since)
 
         logs = query.order_by(ExamActivityLog.timestamp.desc()).limit(50).all()
         messages = []
@@ -1798,64 +1804,51 @@ def get_active_proctor_ids():
         return set()
 
 
-def _redistribute_attempts_excluding(exam_id, session, exclude_proctor_ids):
-    """Réaffecte les tentatives en cours aux surveillants encore actifs sur cet
-    examen (exclut ceux de exclude_proctor_ids). Retourne True si effectué."""
+def _check_disconnected_proctors(exam_id, session):
+    """Suit les surveillants présents de l'examen et répartit les étudiants entre eux
+    SANS jamais supprimer d'affectation (voir services.proctor_service.rebalance_exam_proctors) :
+    - un surveillant absent (aucun heartbeat depuis 4 min, ou jamais venu une fois
+      l'examen commencé depuis plus de 5 min) voit ses étudiants passer aux présents ;
+    - un surveillant qui revient ou qui est ajouté en cours d'examen reçoit sa part.
+    N'agit que lorsque l'ensemble des présents CHANGE (pas à chaque heartbeat), au plus
+    une fois par minute, et jamais si moins de 30 % des surveillants semblent présents
+    (c'est alors la plateforme qui est lente, pas eux)."""
+    from services.proctor_service import present_proctor_ids, rebalance_exam_proctors
+    exam = session.get(OnlineExam, exam_id)
+    if not exam or exam.status != ExamStatus.ACTIVE:
+        return []
     proctors = session.query(ExamProctor).filter_by(exam_id=exam_id).all()
-    active_ids = [ep.proctor_id for ep in proctors if ep.proctor_id not in exclude_proctor_ids]
-    if not active_ids:
-        return False
-    attempts = session.query(ExamAttempt).filter_by(exam_id=exam_id, status=AttemptStatus.IN_PROGRESS).all()
-    if not attempts:
-        return False
-    session.query(ProctorAssignment).filter_by(exam_id=exam_id).delete()
-    for i, attempt in enumerate(attempts):
-        pid = active_ids[i % len(active_ids)]
-        session.add(ProctorAssignment(exam_id=exam_id, proctor_id=pid, student_id=attempt.student_id, attempt_id=attempt.id))
-    # Défense en profondeur : le verrou NX dans _check_disconnected_proctors
-    # empêche déjà les redistributions concurrentes pour le MÊME surveillant
-    # déconnecté, mais deux surveillants DIFFÉRENTS détectés déconnectés en
-    # même temps déclencheraient encore deux redistributions simultanées sur
-    # le même examen. Isole ce commit pour dégrader proprement (la
-    # redistribution est réessayée au prochain heartbeat) plutôt qu'un 500.
+    ids = [p.proctor_id for p in proctors]
+    if not ids:
+        return []
+    present = present_proctor_ids(exam, ids)
+    if len(present) * 10 < len(ids) * 3:
+        return []
+    key = ','.join(str(i) for i in sorted(present))
+    hash_key = f'cei:proctor_presenthash:{exam_id}'
+    if cache_get(hash_key) == key:
+        return []
+    # Un seul appelant à la fois ; si le verrou est pris, le prochain heartbeat réessaiera
+    # (le hash n'est enregistré qu'après un rééquilibrage réussi).
+    if not cache_set_nx(f'cei:proctor_rebalance_lock:{exam_id}', 60):
+        return []
     try:
-        session.commit()
+        result = rebalance_exam_proctors(session, exam, present)
     except IntegrityError:
         session.rollback()
-        return False
-    return True
-
-
-def _check_disconnected_proctors(exam_id, session):
-    """Détecte, parmi les surveillants affectés à l'examen, ceux dont le
-    heartbeat a expiré alors qu'ils avaient déjà été vus en ligne, et
-    déclenche automatiquement la redistribution de leurs étudiants."""
-    proctors = session.query(ExamProctor).filter_by(exam_id=exam_id).all()
-    notifications = []
-    for p in proctors:
-        seen_key     = f'cei:proctor_seen:{exam_id}:{p.proctor_id}'
-        live_key     = f'cei:proctor_live:{exam_id}:{p.proctor_id}'
-        cooldown_key = f'cei:proctor_redistributed:{exam_id}:{p.proctor_id}'
-        # Verrou atomique (SET NX) : sous charge, plusieurs heartbeats de
-        # surveillants différents arrivent quasi simultanément et détectent
-        # tous le même collègue déconnecté. Un simple get-puis-set laissait
-        # passer plusieurs redistributions concurrentes sur les mêmes lignes
-        # ProctorAssignment, qui se percutaient sur la contrainte unique
-        # (unique_exam_student_proctor) — vécu en test de charge : 500 sur
-        # /proctor_heartbeat corrélés seconde pour seconde avec ces violations
-        # dans les logs Postgres. Seul le premier appelant qui pose le verrou
-        # agit ; les autres le trouvent déjà pris et passent leur tour.
-        if cache_get(seen_key) and not cache_get(live_key) and cache_set_nx(cooldown_key, REDISTRIBUTE_COOLDOWN):
-            redistributed = _redistribute_attempts_excluding(exam_id, session, {p.proctor_id})
-            if redistributed:
-                notifications.append({
-                    'exam_id': exam_id,
-                    'title': 'Surveillant déconnecté',
-                    'message': f"{p.proctor.full_name if p.proctor else 'Un surveillant'} semble déconnecté — ses étudiants ont été réaffectés automatiquement.",
-                    'priority': 'high',
-                    'tags': ['warning'],
-                })
-    return notifications
+        return []
+    cache_set(hash_key, key, ttl=86400)
+    if not result or not result.get('moved'):
+        return []
+    names = {p.proctor_id: (p.proctor.full_name if p.proctor else 'Un surveillant') for p in proctors}
+    absent = [names[i] for i in ids if i not in present]
+    if result.get('orphans') and absent:
+        message = f"{', '.join(absent)} semble(nt) absent(s) — {result['orphans']} étudiant(s) réaffecté(s) aux surveillants présents."
+        title = 'Surveillant absent'
+    else:
+        message = f"Répartition rééquilibrée entre les surveillants présents ({result['moved']} étudiant(s) déplacé(s))."
+        title = 'Répartition rééquilibrée'
+    return [{'exam_id': exam_id, 'title': title, 'message': message, 'priority': 'high', 'tags': ['warning']}]
 
 
 @proctoring_bp.route('/api/online_exams/<int:exam_id>/proctor_heartbeat', methods=['POST'])
@@ -1874,6 +1867,7 @@ def proctor_heartbeat(exam_id):
         proctor_id = get_current_user_id()
         cache_set(f'cei:proctor_live:{exam_id}:{proctor_id}', '1', ttl=HEARTBEAT_TTL)
         cache_set(f'cei:proctor_seen:{exam_id}:{proctor_id}', '1', ttl=86400)
+        cache_set(f'cei:proctor_present:{exam_id}:{proctor_id}', '1', ttl=240)
         # Index inversé (29/08, audit montée en charge) : get_proctor_status
         # faisait un SCAN de tout le keyspace 'cei:proctor_live:*' à CHAQUE
         # appel pour retrouver les examens d'un surveillant donné (le motif

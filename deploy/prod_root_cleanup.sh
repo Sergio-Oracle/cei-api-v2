@@ -8,8 +8,11 @@ echo "== 1. ancien LiveKit"
 systemctl disable --now livekit
 echo "   livekit : $(systemctl is-active livekit || true)"
 echo "== 2. mesures pour la supervision (cei.unchk.sn/node-metrics et /pg-metrics)"
-F=/etc/nginx/sites-enabled/cei
-cp -a "$F" "$F.bak_supervision_29oct"
+# sites-enabled contient des liens vers sites-available : on édite le vrai fichier et la sauvegarde va hors de nginx.
+rm -f /etc/nginx/sites-enabled/cei.bak_supervision_29oct
+F=$(readlink -f /etc/nginx/sites-enabled/cei)
+BAK=/root/cei.nginx.avant_supervision_$(date +%Y%m%d_%H%M)
+cp "$F" "$BAK"
 python3 - "$F" <<'PY'
 import sys
 p = sys.argv[1]
@@ -39,6 +42,6 @@ block = '''
 '''
 open(p, 'w').write(s[:i] + block + s[i:])
 PY
-if nginx -t; then systemctl reload nginx; echo "   nginx rechargé"; else cp -a "$F.bak_supervision_29oct" "$F"; nginx -t; echo "   ÉCHEC : ancienne configuration remise"; exit 1; fi
+if nginx -t; then systemctl reload nginx; echo "   nginx rechargé"; else cp "$BAK" "$F"; nginx -t; echo "   ÉCHEC : ancienne configuration remise"; exit 1; fi
 curl -sk -o /dev/null -w "   /node-metrics en local : %{http_code}\n" --resolve cei.unchk.sn:443:127.0.0.1 https://cei.unchk.sn/node-metrics
 echo "TERMINÉ"

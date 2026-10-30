@@ -356,6 +356,18 @@ try:
     check("brouillon de l'IA : titre, 3 questions, types garantis (QCM même sans balise)", _d and _d['title'] == 'Examen test' and _d['report']['by_type'] == {'qcm': 1, 'vf': 1, 'open': 1}, _d and _d['report'])
     check("barème de l'IA nettoyé (« QCM : « … » » retiré) et lisible par le correcteur", _d and 'QCM :' not in _d['rubric'] and 'Bonne réponse : A)' in _d['rubric'])
     check("brouillon de l'IA corrigé par le correcteur automatique : copie juste = 3/3", _d and _deterministic_grade(_d['content'], _d['rubric'], {'pq_1': 'A', 'pq_2': 'Faux'}, seed=1)[0] == 3.0)
+    _calls = []
+    def _fake(system, user_msg, **k):
+        _calls.append(user_msg)
+        if len(_calls) == 1:
+            return "Je dois reproduire le sujet existant.\n<<<REPRODUIRE 1>>>"       # l'IA se trompe d'intention
+        return ("Voici de nouvelles questions.\n<<<SUJET>>>\nNouvel examen\n" + "\n".join(
+            f"Question {i} — Notion {i} ({'1'} pt) [QCM]\nÉnoncé nouveau {i}\nA) a\nB) b\nC) c\nD) d\n" for i in range(1, 7))
+            + "<<<BAREME>>>\n" + "\n".join(f"Question {i} — Notion {i} (1 pt)\n  • Bonne réponse : A) a" for i in range(1, 7)) + "\nTOTAL : 6 / 6 points\n<<<FIN>>>")
+    _AI.call_ai = _fake
+    _r3 = _SC.chat(4242, [{'role': 'user', 'content': 'Je veux que tu me crées 6 questions à partir de ces fichiers.'}], [f['id'] for f in _files])
+    check("« créer 6 questions » : l'IA qui répond « reproduire » est recadrée → nouveau brouillon de 6 questions",
+          len(_calls) == 2 and _r3['draft'] and _r3['draft']['report']['blocks'] == 6 and _r3['draft']['title'] == 'Nouvel examen', (len(_calls), _r3['draft'] and _r3['draft']['report']))
     _AI.call_ai = lambda *a, **k: "Combien de questions souhaitez-vous ?"
     check("question de l'IA : pas de brouillon", _SC.chat(4242, [{'role': 'user', 'content': 'Fais un examen'}], [])['draft'] is None)
 finally:

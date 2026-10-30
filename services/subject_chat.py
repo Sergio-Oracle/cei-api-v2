@@ -73,8 +73,18 @@ reprendre fidèlement un sujet existant, transformer des questions (ouvertes →
 
 COMMENT RÉPONDRE
 - En français, court et concret. Si un point ESSENTIEL manque (nombre de questions, types de questions, total de points) ET qu'on ne peut pas raisonnablement le déduire, pose UNE seule question courte. Sinon, produis le brouillon.
-- N'invente jamais de contenu quand l'enseignant veut REPRODUIRE un document : pour cela écris exactement <<<REPRODUIRE n>>> (n = numéro du fichier « Fichier n ») sur sa propre ligne, rien d'autre
-  dans le brouillon : le serveur insère alors le sujet et le barème exacts, déjà reconnus par la plateforme. Tu peux ensuite proposer des modifications.
+- DEUX INTENTIONS À NE JAMAIS CONFONDRE :
+  1) REPRODUIRE / REPRENDRE / IMPORTER un fichier (mots : « reprends », « reproduis », « tel quel », « à l'identique », « importe », « garde ce sujet ») :
+     écris exactement <<<REPRODUIRE n>>> (n = numéro du fichier « Fichier n ») sur sa propre ligne, rien d'autre dans le brouillon : le serveur insère alors le sujet et le barème exacts,
+     déjà reconnus par la plateforme. Tu ne réécris jamais ce sujet toi-même.
+  2) CRÉER de nouvelles questions « à partir de » fichiers (mots : « crée », « génère », « fais », « construis », « N questions », « différents types ») : les fichiers sont ta MATIÈRE
+     (cours, ancien sujet, corrigé). Tu écris alors un NOUVEAU sujet complet, du nombre EXACT de questions demandé, sur les mêmes notions, avec la variété de types demandée
+     (si on te demande « différents types » ou « tous les types » : répartis sur au moins 6 types parmi QCM, QCM à réponses multiples, vrai/faux, association, remise en ordre,
+     texte à trous, champs à compléter, réponse courte, question ouverte). Tu peux reprendre des questions du fichier, mais tu dois atteindre le nombre demandé avec du contenu NOUVEAU.
+     N'écris JAMAIS <<<REPRODUIRE>>> dans ce cas.
+     Les questions du fichier ne sont qu'un MODÈLE de style et de contenu : n'en recopie AUCUNE mot pour mot (reformule, change les situations, les propositions, les exemples).
+     Le TITRE (première ligne du cadre) est un titre court de ton cru (80 caractères maximum), jamais l'en-tête ni le nom du fichier.
+     Le total des points vaut 20 sauf si l'enseignant en demande un autre : répartis les points pour que la somme soit exactement ce total.
 - Pour créer ou modifier un sujet, donne TOUJOURS le sujet COMPLET (jamais seulement les changements), dans ce cadre exact :
 <<<SUJET>>>
 (titre sur la première ligne, puis les questions)
@@ -129,9 +139,27 @@ def _history_text(messages, limit=10):
 
 _BLOCK_RE = re.compile(r'<<<SUJET>>>\s*(.*?)\s*<<<BAREME>>>\s*(.*?)\s*<<<FIN>>>', re.S)
 _REPRO_RE = re.compile(r'<<<REPRODUIRE\s+(\d+)\s*>>>')
+_WANTS_REPRO_RE = re.compile(r"reprend|reprod|tel\s+quel|à\s+l['’]identique|identique|importe|garde\s+(?:ce|cet|le)\s+sujet|même\s+sujet|recopie", re.I)
+_WANTS_COUNT_RE = re.compile(r'(\d{1,3})\s*(?:nouvelles\s+)?questions', re.I)
 
 
 _BULLET_FIX_RE = re.compile(r'^(\s*[•\-*]\s*)(?:QCM_MULTI|QCM|VF|ASSOCIATION|TRI|TROUS|ORDRE|COURT|NUMERIQUE|CLOZE|CALCULEE|OUVERT|CODE|SUBOPEN)[ \t]*:[ \t]*[«"][ \t]*(.*?)[ \t]*[»"][ \t]*(.*)$', re.M)
+
+
+def _norm(t):
+    return re.sub(r'[^a-z0-9]+', ' ', (t or '').lower()).strip()
+
+
+def _verbatim(content, recs):
+    """Nombre de questions du brouillon dont l'énoncé est recopié mot pour mot dans un fichier joint."""
+    from routes.exams import _parse_subject_blocks_ordered
+    src = _norm(' '.join(r.get('annotated', '') for r in recs if not r.get('corrige')))
+    n = 0
+    for b in _parse_subject_blocks_ordered(content):
+        t = _norm(b.get('text') or '')
+        if b.get('type') not in ('section', 'description') and len(t) >= 25 and t in src:
+            n += 1
+    return n
 
 
 def clean_rubric(rubric):
@@ -146,7 +174,8 @@ def _report(content):
     blocks = _parse_subject_blocks_ordered(content)
     total, by_type = count_units(blocks)
     rep = analyze(content)
-    return {'questions': total, 'by_type': by_type, 'ok': rep['ok'], 'issues': [i['message'] for i in rep['issues']][:6]}
+    n_blocks = sum(1 for b in blocks if b.get('type') not in ('section', 'description', 'text'))
+    return {'questions': total, 'blocks': n_blocks, 'by_type': by_type, 'ok': rep['ok'], 'issues': [i['message'] for i in rep['issues']][:6]}
 
 
 def chat(user_id, messages, file_ids, context='', draft=None):
@@ -176,7 +205,44 @@ def chat(user_id, messages, file_ids, context='', draft=None):
                  f"{draft.get('title', '')}\n{str(draft['content'])[:40000]}\n<<<BAREME>>>\n{str(draft.get('rubric', ''))[:20000]}\n<<<FIN>>>\n\n")
     user += "CONVERSATION :\n" + _history_text(messages)
 
+    last = messages[-1].get('content', '') if messages else ''
     raw = call_ai(_SYSTEM, user, temperature=0.3, max_tokens=8000, label='subject-chat') or ''
+
+    # Garde-fou 1 : l'IA a répondu « reproduire » alors que l'enseignant demande de CRÉER des questions
+    if _REPRO_RE.search(raw) and not _WANTS_REPRO_RE.search(last):
+        raw = call_ai(_SYSTEM, user + "\n\nCORRECTION : l'enseignant demande de CRÉER de nouvelles questions à partir des fichiers, pas de les reproduire. "
+                      "Écris maintenant le sujet COMPLET dans le cadre <<<SUJET>>> / <<<BAREME>>> / <<<FIN>>>, avec le nombre exact de questions demandé.",
+                      temperature=0.3, max_tokens=8000, label='subject-chat') or raw
+
+    # Garde-fou 1 bis : création demandée, mais le brouillon recopie les questions du fichier
+    if not _WANTS_REPRO_RE.search(last) and recs and _BLOCK_RE.search(raw):
+        try:
+            _b0 = _BLOCK_RE.search(raw).group(1)
+            _c0 = _b0 if re.match(r'^\s*(?:Question\s+)?\d', _b0) else _b0.partition('\n')[2]
+            _v = _verbatim(detect_and_annotate(_c0)[0], recs)
+            _tot = max(1, _report(detect_and_annotate(_c0)[0])['blocks'])
+            if _v / _tot > 0.25:
+                raw = call_ai(_SYSTEM, user + f"\n\nCORRECTION : {_v} question(s) de ton brouillon sont recopiées mot pour mot du fichier. L'enseignant veut de NOUVELLES questions : "
+                              "réécris le sujet COMPLET avec des énoncés, situations et propositions NOUVEAUX (mêmes notions, formulations différentes), même nombre de questions.",
+                              temperature=0.5, max_tokens=8000, label='subject-chat') or raw
+        except Exception:
+            pass
+
+    # Garde-fou 2 : nombre de questions demandé (« 30 questions ») non respecté → une relance chiffrée
+    want_n = None
+    if not _WANTS_REPRO_RE.search(last):
+        mn = _WANTS_COUNT_RE.search(last)
+        want_n = int(mn.group(1)) if mn and 2 <= int(mn.group(1)) <= 150 else None
+    if want_n and _BLOCK_RE.search(raw):
+        try:
+            c0 = detect_and_annotate(_BLOCK_RE.search(raw).group(1).partition('\n')[2] if not re.match(r'^\s*Question\s+\d', _BLOCK_RE.search(raw).group(1)) else _BLOCK_RE.search(raw).group(1))[0]
+            r0 = _report(c0)
+            if want_n not in (r0['blocks'], r0['questions']):
+                raw = call_ai(_SYSTEM, user + f"\n\nTON BROUILLON PRÉCÉDENT CONTIENT {r0['blocks']} question(s) alors que l'enseignant en demande EXACTEMENT {want_n}. "
+                              f"Réécris le sujet COMPLET et son barème avec exactement {want_n} questions numérotées de 1 à {want_n}.",
+                              temperature=0.3, max_tokens=8000, label='subject-chat') or raw
+        except Exception:
+            pass
 
     # 1) reproduction exacte demandée
     m = _REPRO_RE.search(raw)

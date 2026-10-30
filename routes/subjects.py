@@ -20,6 +20,7 @@ from auth_paseto import paseto_required, get_current_user_id
 from models import get_session, User, UserRole
 from schemas.subject_schemas import validate_upload_form, SubjectCreateInput
 from services.subject_service import SubjectService
+from extensions import limiter
 
 subjects_bp = Blueprint('subjects', __name__)
 
@@ -146,6 +147,56 @@ def create_subject():
         print(f'ERROR create_subject: {e}')
         import traceback; traceback.print_exc()
         return jsonify({'error': str(e)}), 500
+
+
+# ── Assistant de création par discussion (chat) ────────────────────────────────
+
+def _chat_user():
+    user = _get_user(get_current_user_id())
+    if not user or user.role not in (UserRole.PROFESSOR, UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN):
+        return None
+    return user
+
+
+@subjects_bp.route('/api/subjects/chat/files', methods=['POST'])
+@paseto_required
+@limiter.limit('60 per hour')
+def subject_chat_files():
+    """Joint des fichiers à la discussion : lus, convertis au format CEI, gardés 2 h pour la conversation."""
+    try:
+        user = _chat_user()
+        if not user:
+            return jsonify({'error': 'Accès non autorisé'}), 403
+        files = request.files.getlist('files')
+        if not files:
+            return jsonify({'error': "Aucun fichier"}), 400
+        from services.subject_chat import store_files
+        return jsonify({'success': True, 'files': store_files(user.id, files)})
+    except Exception as e:
+        print(f'ERROR subject_chat_files: {e}')
+        return jsonify({'error': 'Lecture des fichiers impossible'}), 500
+
+
+@subjects_bp.route('/api/subjects/chat', methods=['POST'])
+@paseto_required
+@limiter.limit('40 per hour')
+def subject_chat():
+    """Un tour de discussion : {messages, file_ids, context, draft} → {reply, draft?}."""
+    try:
+        user = _chat_user()
+        if not user:
+            return jsonify({'error': 'Accès non autorisé'}), 403
+        data = request.get_json(silent=True) or {}
+        messages = [m for m in (data.get('messages') or []) if isinstance(m, dict) and m.get('content')]
+        if not messages or messages[-1].get('role') != 'user':
+            return jsonify({'error': 'Message vide'}), 400
+        from services.subject_chat import chat
+        out = chat(user.id, messages, data.get('file_ids') or [], str(data.get('context') or ''), data.get('draft') if isinstance(data.get('draft'), dict) else None)
+        return jsonify({'success': True, **out})
+    except Exception as e:
+        print(f'ERROR subject_chat: {e}')
+        import traceback; traceback.print_exc()
+        return jsonify({'error': "L'assistant est momentanément indisponible, réessayez dans un instant"}), 500
 
 
 # ── Upload ─────────────────────────────────────────────────────────────────────

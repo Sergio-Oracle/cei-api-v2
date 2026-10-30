@@ -337,6 +337,30 @@ try:
 except ImportError:
     pass
 
+print('\n== assistant de création par discussion (chat) ==')
+import services.ai_service as _AI
+from services import subject_chat as _SC
+_files = _SC.store_files(4242, [_FS(open(_ep, 'rb'), filename='Epreuve.docx'), _FS(open(_co, 'rb'), filename='Corrigé.docx')])
+check("fichiers joints lus et gardés (épreuve + corrigé reconnu)", len(_files) == 2 and all(f.get('id') for f in _files) and _files[1]['corrige'] is True, _files)
+_orig_call = _AI.call_ai
+try:
+    _AI.call_ai = lambda *a, **k: "Je reproduis ce sujet à l'identique.\n<<<REPRODUIRE 1>>>"
+    _r = _SC.chat(4242, [{'role': 'user', 'content': 'Reprends ce sujet tel quel'}], [f['id'] for f in _files])
+    check("« reproduire » : sujet exact (25 questions, grille) sans que l'IA ne réécrive", _r['draft'] and _r['draft']['report']['questions'] == 25 and 'Grille :' in _r['draft']['content'])
+    check("« reproduire » : barème écrit depuis le corrigé (20 points)", _r['draft'] and 'TOTAL : 20 / 20' in _r['draft']['rubric'])
+    _AI.call_ai = lambda *a, **k: ("Voici le brouillon.\n<<<SUJET>>>\nExamen test\nQuestion 1 — Offre (2 pts)\nQu'est-ce qu'une offre ?\nA) Un engagement ferme\nB) Une opinion\nC) Un fait\nD) Une coutume\n\n"
+                                   "Question 2 — Capacité (1 pt) [VF]\nUn mineur peut contracter seul.\n\nQuestion 3 — Dol (1 pt) [OUVERT]\nDéfinissez le dol.\n"
+                                   "<<<BAREME>>>\nQuestion 1 — Offre (2 pts)\n  • QCM : « Bonne réponse : A) Un engagement ferme »\nQuestion 2 — Capacité (1 pt)\n  • Réponse : Faux\nQuestion 3 — Dol (1 pt)\n  • Critère : 1 pt — définition\nTOTAL : 4 / 4 points\n<<<FIN>>>")
+    _r2 = _SC.chat(4242, [{'role': 'user', 'content': 'Crée un petit examen'}], [])
+    _d = _r2['draft']
+    check("brouillon de l'IA : titre, 3 questions, types garantis (QCM même sans balise)", _d and _d['title'] == 'Examen test' and _d['report']['by_type'] == {'qcm': 1, 'vf': 1, 'open': 1}, _d and _d['report'])
+    check("barème de l'IA nettoyé (« QCM : « … » » retiré) et lisible par le correcteur", _d and 'QCM :' not in _d['rubric'] and 'Bonne réponse : A)' in _d['rubric'])
+    check("brouillon de l'IA corrigé par le correcteur automatique : copie juste = 3/3", _d and _deterministic_grade(_d['content'], _d['rubric'], {'pq_1': 'A', 'pq_2': 'Faux'}, seed=1)[0] == 3.0)
+    _AI.call_ai = lambda *a, **k: "Combien de questions souhaitez-vous ?"
+    check("question de l'IA : pas de brouillon", _SC.chat(4242, [{'role': 'user', 'content': 'Fais un examen'}], [])['draft'] is None)
+finally:
+    _AI.call_ai = _orig_call
+
 print('\n== sujets défectueux : le contrôle doit protester ==')
 VIDE = "Sujet sans aucune question numérotée.\nRépondez librement."
 CASSE = "Question 1 [QCM]\nÉnoncé\nA. seule proposition\nQuestion 2 [QCM]\nÉnoncé\nA. a\nB. b\nQuestion 3 [QCM]\nÉnoncé\nA. a\nB. b\nC. c\nQuestion 4 [QCM]\nÉnoncé\nA. a\nB. b\nC. c\nD. d\n"

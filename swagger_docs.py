@@ -2408,6 +2408,21 @@ OPENAPI_SPEC = {
             }}}},
             "responses": {"200": {"description": "Sauvegardé"}}
         }},
+        "/api/subjects/chat/files": {"post": {
+            "tags": ["Sujets"], "summary": "Assistant de création : joindre des fichiers à la discussion",
+            "description": "Lit chaque fichier (Word, PDF, texte), le convertit au format CEI (types détectés, grille de mots croisés, clés du corrigé) et le garde 2 h pour la conversation. Enseignant, administrateur, responsable d'examen.",
+            "requestBody": {"content": {"multipart/form-data": {"schema": {"type": "object", "required": ["files"], "properties": {"files": {"type": "array", "items": {"type": "string", "format": "binary"}}}}}}},
+            "responses": {"200": {"description": "{success, files: [{id, name, chars, corrige}]}"}, "403": {"description": "Accès non autorisé"}}
+        }},
+        "/api/subjects/chat": {"post": {
+            "tags": ["Sujets"], "summary": "Assistant de création : un tour de discussion",
+            "description": "L'enseignant dit ce qu'il veut (créer depuis un cours, reproduire un fichier tel quel, transformer, ajouter des questions…). Retourne la réponse et, si un sujet est produit, un brouillon {title, content, rubric, report{questions, by_type, ok, issues}}. Une reproduction fidèle ne passe pas par l'écriture de l'IA : le sujet reconnu par la plateforme et le barème du corrigé sont insérés tels quels.",
+            "requestBody": {"content": {"application/json": {"schema": {"type": "object", "required": ["messages"], "properties": {
+                "messages": {"type": "array", "items": {"type": "object", "properties": {"role": {"type": "string", "enum": ["user", "assistant"]}, "content": {"type": "string"}}}},
+                "file_ids": {"type": "array", "items": {"type": "string"}}, "context": {"type": "string"},
+                "draft": {"type": "object", "nullable": True, "properties": {"title": {"type": "string"}, "content": {"type": "string"}, "rubric": {"type": "string"}}}}}}}},
+            "responses": {"200": {"description": "{success, reply, draft}"}, "400": {"description": "Message vide"}, "403": {"description": "Accès non autorisé"}, "429": {"description": "40 tours par heure maximum"}}
+        }},
         "/api/subjects/count-questions": {"post": {
             "tags": ["Sujets"], "summary": "Compter les questions d'un fichier (sans rien enregistrer)",
             "description": "Lit les fichiers (Word, PDF, texte), reconnaît le type de chaque question et retourne le nombre de questions notées (association de 5 notions = 5, grille de 5 mots = 5). `declared` = total annoncé par le document (« Total 25 questions »).",

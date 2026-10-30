@@ -160,7 +160,7 @@ def _chat_user():
 
 @subjects_bp.route('/api/subjects/chat/files', methods=['POST'])
 @paseto_required
-@limiter.limit('60 per hour')
+@limiter.exempt
 def subject_chat_files():
     """Joint des fichiers à la discussion : lus, convertis au format CEI, gardés 2 h pour la conversation."""
     try:
@@ -179,7 +179,7 @@ def subject_chat_files():
 
 @subjects_bp.route('/api/subjects/chat', methods=['POST'])
 @paseto_required
-@limiter.limit('40 per hour')
+@limiter.exempt
 def subject_chat():
     """Un tour de discussion : {messages, file_ids, context, draft} → {reply, draft?}."""
     try:

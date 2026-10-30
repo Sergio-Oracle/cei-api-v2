@@ -471,7 +471,7 @@ def call_ai(system_prompt: str, user_message: str,
     try:
         # Service de correction : Xelia d'abord (capacité propre à l'UNCHK, sans limite de débit ni coupure), puis la
         # chaîne habituelle de fournisseurs si Xelia échoue. Réglé par AI_PRIMARY=xelia dans ce seul processus.
-        if os.getenv('AI_PRIMARY', '').lower() == 'xelia' and _xelia_key and _xelia_url:
+        if (os.getenv('AI_PRIMARY', '').lower() == 'xelia' or label.startswith('subject-')) and _xelia_key and _xelia_url:   # assistant de création de sujets : Xelia d'abord, sans limite
             _t0 = time.monotonic()
             try:
                 result = _call_xelia(system_prompt, user_message, temperature, max_tokens, fast=fast)

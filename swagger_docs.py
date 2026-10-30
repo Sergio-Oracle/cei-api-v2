@@ -2421,7 +2421,7 @@ OPENAPI_SPEC = {
                 "messages": {"type": "array", "items": {"type": "object", "properties": {"role": {"type": "string", "enum": ["user", "assistant"]}, "content": {"type": "string"}}}},
                 "file_ids": {"type": "array", "items": {"type": "string"}}, "context": {"type": "string"},
                 "draft": {"type": "object", "nullable": True, "properties": {"title": {"type": "string"}, "content": {"type": "string"}, "rubric": {"type": "string"}}}}}}}},
-            "responses": {"200": {"description": "{success, reply, draft}"}, "400": {"description": "Message vide"}, "403": {"description": "Accès non autorisé"}, "429": {"description": "40 tours par heure maximum"}}
+            "responses": {"200": {"description": "{success, reply, draft}"}, "400": {"description": "Message vide"}, "403": {"description": "Accès non autorisé"}}
         }},
         "/api/subjects/count-questions": {"post": {
             "tags": ["Sujets"], "summary": "Compter les questions d'un fichier (sans rien enregistrer)",

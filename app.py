@@ -134,6 +134,7 @@ from routes.exams          import exams_bp;           app.register_blueprint(exa
 from routes.exam_waves     import exam_waves_bp;      app.register_blueprint(exam_waves_bp)
 from routes.subject_check   import subject_check_bp;   app.register_blueprint(subject_check_bp)
 from routes.audit          import audit_bp;           app.register_blueprint(audit_bp)
+from services import subject_normalizer as _subject_normalizer;  _subject_normalizer.install()   # sujets de PDF : tableaux Vrai/Faux lus, numérotation continue
 from services import audit as _audit;  _audit.install(app)   # journal d'activité des comptes à privilèges (discret)
 from routes.transcripts    import transcripts_bp;     app.register_blueprint(transcripts_bp)
 from routes.superviseur    import superviseur_bp;     app.register_blueprint(superviseur_bp)

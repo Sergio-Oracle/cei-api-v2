@@ -40,6 +40,8 @@ def strip_bareme_from_content(content: str) -> str:
     """Retirer la section barème du contenu du sujet (pour les étudiants)."""
     if not content:
         return content
+    # Ligne de corrigé oubliée dans l'énoncé (« Bonne réponse : d ») : jamais montrée à l'étudiant
+    content = re.sub(r'^[ \t]*(?:Bonne\s+)?[Rr][ée]ponse(?:\s+(?:correcte|attendue|exacte))?\s*:?\s*\(?[A-Fa-f]\)?\s*[.)]?[ \t]*$\n?', '', content, flags=re.M)
     m = re.search(r'\n[═=─]{5,}[^\n]*\n[^\n]*[Bb]ar[eè]me', content)
     if m:
         return content[:m.start()].rstrip()

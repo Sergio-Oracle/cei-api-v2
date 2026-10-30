@@ -315,6 +315,7 @@ class SubjectService:
         corrige_parts = []
         corrige_raw = []
         norm_reports = []
+        loose_key, loose_n = {}, 0   # clés « Bonne réponse » d'énoncés sans numéros (voir subject_normalizer.loose_mcq)
         first_filename = None
         first_s3_key = None
         try:
@@ -335,6 +336,12 @@ class SubjectService:
                     corrige_raw.append(part)
                 else:
                     part, nrep = normalize_exam_text(part)
+                    if not nrep.get('structured'):
+                        # Énoncés « A. B. C. D. / Bonne réponse : d » sans numéros : mis au format CEI, clés mises à part
+                        from services.subject_normalizer import loose_mcq
+                        part, _k, _n = loose_mcq(part, loose_n + 1)
+                        loose_key.update(_k)
+                        loose_n += _n
                     norm_reports.append(nrep)
                     content_parts.append((nrep['structured'], f"--- Fichier: {f.filename} ---\n{part}"))
 
@@ -398,6 +405,12 @@ class SubjectService:
                 rubric = _call_ai(system_prompt, user_msg, temperature=0.1)
             except Exception as ai_err:
                 print(f'[SubjectService] AI unavailable for rubric: {ai_err}')
+
+        if loose_key:
+            from services.subject_normalizer import rubric_from_key
+            _kr = rubric_from_key(annotated, loose_key, total_points)
+            if _kr:
+                rubric, rubric_source = _kr, 'corrigé'
 
         result = SubjectRepository.create(
             title=title,

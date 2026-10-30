@@ -160,6 +160,38 @@ for nom, ep, co in (('PDF à tableaux', 'epreuve_droit_pdf_tableaux.txt', 'corri
     total = sum(float(p.replace(',', '.')) for p in re.findall(r'^Question \d+ \((\d+(?:,\d+)?) pts\)', rub, re.M))
     check(f"{nom} : barème 20/20 sans avertissement", abs(total - 20) < 1e-6 and not warns, f"{total} pts, {warns[:3]}")
 
+print('\n== sujet de PDF à exercices (examen 142, 30/10/2026) : rien ne doit disparaître ==')
+from services.subject_normalizer import normalize as _normalize_subject
+_brut = _fx('epreuve_exercices_tableau_vf.txt')
+_rep = analyze(_brut)
+check("avant remise au format : le contrôle signale l'exercice Vrai/Faux vide",
+      (not _rep['ok']) and any('Vrai ou faux' in i['message'] for i in _rep['issues']), _rep['issues'])
+_net, _notes = _normalize_subject(_brut)
+_q = questions(_parse_subject_blocks_ordered(_net))
+check("après remise au format : les 25 questions annoncées sont lues", len(_q) == 25, f"{len(_q)}")
+check("5 affirmations Vrai/Faux lues", sum(1 for b in _q if b['type'] == 'vf') == 5)
+check("numéros uniques (les réponses sont rangées par numéro)", len({b['num'] for b in _q}) == len(_q))
+check("sujet accepté par le contrôle", analyze(_net)['ok'], analyze(_net)['issues'])
+check("remise au format idempotente", _normalize_subject(_net) == (_net, []))
+_ok_deja = CORPUS[next(iter(CORPUS))][0]
+check("un sujet déjà au bon format n'est pas touché", _normalize_subject(_ok_deja)[0] == _ok_deja)
+
+print('\n== énoncés Word sans numéros « A. B. C. D. / Bonne réponse : d » (30/10/2026) ==')
+from services.subject_normalizer import loose_mcq, rubric_from_key
+from services.subject_service import annotate_markers
+from helpers import strip_bareme_from_content
+_w = "--- Fichier: Enonce 1.docx ---\nEnonce 1\nA. je suis\nB. tu es\nC. il est\nD. il a\n\nBonne réponse : d\n\nEnonce 2\nA. a\nB. b\nBonne réponse : B\n"
+_wn, _wk, _wc = loose_mcq(_w)
+_wq = questions(_parse_subject_blocks_ordered(annotate_markers(_wn, True, False)))
+check("2 QCM reconnus (et non une zone de réponse libre)", len(_wq) == 2 and all(b['type'] == 'qcm' for b in _wq), [(b['type'], b['num']) for b in _wq])
+check("4 propositions puis 2 propositions lues", [len(b['choices']) for b in _wq] == [4, 2])
+check("clés de réponse extraites", _wk == {1: 'D', 2: 'B'}, _wk)
+check("la ligne « Bonne réponse » n'est plus dans l'énoncé", 'Bonne réponse' not in _wn)
+check("barème écrit depuis les clés", 'Bonne réponse : D) il a' in rubric_from_key(_wn, _wk, 20))
+check("jamais montrée à l'étudiant même si elle reste dans un sujet", 'Bonne réponse' not in strip_bareme_from_content(_w))
+_ex = "Exercice 1\nEnoncé du problème.\na) Définir X\nb) Calculer Y\n"
+check("sous-questions a) b) d'un exercice ouvert non prises pour un QCM", loose_mcq(_ex)[0] == _ex)
+
 print('\n== sujets défectueux : le contrôle doit protester ==')
 VIDE = "Sujet sans aucune question numérotée.\nRépondez librement."
 CASSE = "Question 1 [QCM]\nÉnoncé\nA. seule proposition\nQuestion 2 [QCM]\nÉnoncé\nA. a\nB. b\nQuestion 3 [QCM]\nÉnoncé\nA. a\nB. b\nC. c\nQuestion 4 [QCM]\nÉnoncé\nA. a\nB. b\nC. c\nD. d\n"

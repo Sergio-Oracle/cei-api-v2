@@ -23,7 +23,19 @@ def analyze(content: str) -> dict:
         return {'ok': False, 'questions': 0, 'by_type': {}, 'issues': [
             {'level': 'error', 'message': "Le sujet est vide : les étudiants n'auront aucune question."}]}
 
-    blocks = [b for b in _parse_subject_blocks_ordered(content) if b.get('type') not in ('section', 'text')]
+    all_blocks = _parse_subject_blocks_ordered(content)
+    blocks = [b for b in all_blocks if b.get('type') not in ('section', 'text')]
+    # Un exercice / une partie sans AUCUNE question lue (tableau Vrai/Faux, grille…) : l'étudiant verrait un titre vide
+    # (incident du 30/10/2026, examen 142). Sections consécutives = la première est vide.
+    for idx, b in enumerate(all_blocks):
+        if b.get('type') != 'section':
+            continue
+        nxt = all_blocks[idx + 1] if idx + 1 < len(all_blocks) else None
+        # (un récapitulatif de fin de document donne aussi des titres consécutifs : seuls comptent ceux suivis plus loin d'une question)
+        if nxt is not None and nxt.get('type') == 'section' and any(x.get('type') != 'section' for x in all_blocks[idx + 1:]):
+            issues.append({'level': 'error', 'message':
+                f"« {b.get('title')} » : aucune question reconnue sous ce titre, l'étudiant verrait un exercice vide. "
+                "Mettez les questions au format « 1. énoncé » avec les propositions « A. … » (un tableau n'est pas lu)."})
     by_type = {}
     for b in blocks:
         by_type[b['type']] = by_type.get(b['type'], 0) + 1

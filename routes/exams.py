@@ -1502,6 +1502,9 @@ def _build_exam_pages(exam, seed) -> dict:
             b.pop('vars_line', None)   # jamais envoyé à l'étudiant
     p1_blocks = [b for b in blocks if b['type'] in p1_types]
     p2_items  = [b for b in blocks if b['type'] in p2_types]
+    # Titre d'exercice dont les questions sont en partie 1 (QCM, Vrai/Faux…) : en partie 2 il resterait un titre orphelin
+    p2_items = [b for k, b in enumerate(p2_items)
+                if not (b['type'] == 'section' and (k + 1 == len(p2_items) or p2_items[k + 1]['type'] == 'section'))]
 
     if exam and exam.randomize_questions:
         p1_blocks = _seeded_shuffle(p1_blocks, seed)
@@ -6011,6 +6014,7 @@ C) [Sous-question c) — DOIT s'appuyer sur b) (et/ou a)), poursuivant la même 
         _BARE_NUMBER_TITLE_RE = re.compile(r'^Question\s+\d{1,3}\s*$', re.I)
         _TITLE_EXTRACT_RE = re.compile(r'^(.*?)(?:\s*\.{3,}|\s*\(\s*[\d.]+\s*pts?\s*\)|\s*\[)', re.S)
         _POINTS_PAREN_RE = re.compile(r'\(\s*[\d.]+\s*pts?\s*\)', re.I)
+        _ANY_TYPE_MARKER_RE = re.compile(r'\[(?:QCM_MULTI|QCM|VF|OUVERT|SUBOPEN|APPARIEMENT|CODE|ASSOCIATION|TRI|ORDRE|TROUS|CLOZE|ZONES|COURT|NUMERIQUE|CALCULEE)\]', re.I)
 
         def _split_question_blocks(text):
             return [p.strip() for p in _Q_BLOCK_SPLIT_RE.split(text or '') if p.strip()]
@@ -6165,6 +6169,13 @@ Réponds UNIQUEMENT avec les {n} questions puis "BARÈME:" puis leurs critères 
                     first_line = _POINTS_PAREN_RE.sub(f'({pts_str} pts)', first_line, count=1)
                 else:
                     first_line = f"{first_line} ({pts_str} pts)"
+                # Marqueur de type imposé par le serveur (jamais laissé à l'IA) : sans lui l'aperçu et l'examen
+                # devinent le type et une question sans propositions lisibles devient « ouverte » (signalé le 30/10/2026).
+                _mk = _TEMPLATES[_k][1]
+                if _ANY_TYPE_MARKER_RE.search(first_line):
+                    first_line = _ANY_TYPE_MARKER_RE.sub('', first_line)           # retire tous les marqueurs écrits par l'IA
+                    first_line = re.sub(r'\s{2,}', ' ', first_line).rstrip()
+                first_line = f"{first_line} [{_mk}]"
                 body = first_line + ('\n' + rest_body if rest_body else '')
                 content_sections.append(f"Question {global_num} — {body}")
 
@@ -6245,6 +6256,23 @@ QUESTIONS
             from services.rag_grounding import verify_answers
             grounding = verify_answers(content, rubric, passages)
 
+        # Contrôle de fidélité : le sujet généré, relu comme le verra l'étudiant, doit contenir les types demandés
+        # (une question QCM lue « ouverte » = propositions absentes ou illisibles). Jamais d'erreur silencieuse.
+        type_warnings = []
+        try:
+            _read = {}
+            for _b in _parse_subject_blocks_ordered(content):
+                _read[_b['type']] = _read.get(_b['type'], 0) + 1
+            for _k in _selected:
+                _want = sum(1 for _q in all_questions if _q['type_key'] == _k)
+                if _want and _read.get(_k, 0) < _want:
+                    type_warnings.append(f"{_want} question(s) « {_TEMPLATES[_k][0]} » demandée(s) mais seulement {_read.get(_k, 0)} lue(s) comme telle(s) "
+                                         "par la plateforme : vérifiez-les dans la prévisualisation avant d'enregistrer.")
+            if type_warnings:
+                print(f"WARNING generate-full-exam : types non conformes {type_warnings}")
+        except Exception as _e:
+            print(f"WARNING generate-full-exam : contrôle de types impossible : {_e}")
+
         return jsonify({
             'success': True,
             'title': title,
@@ -6253,6 +6281,7 @@ QUESTIONS
             'full_text': full_exam_text,
             'duplicates': duplicates,
             'grounding': grounding,
+            'type_warnings': type_warnings,
         })
 
     except Exception as e:
@@ -6406,6 +6435,13 @@ RÈGLES ABSOLUES :
             subject_total_points = int(data.get('total_points') or 0) or (_existing_total if _existing_total > 0 else 20)
         except (TypeError, ValueError):
             subject_total_points = _existing_total if _existing_total > 0 else 20
+
+        # Marqueur de type garanti par le serveur sur chaque nouvelle question (voir generate-full-exam)
+        _mk_any = re.compile(r'\[(?:QCM_MULTI|QCM|VF|OUVERT|SUBOPEN|APPARIEMENT|CODE|ASSOCIATION|TRI|ORDRE|TROUS|CLOZE|ZONES|COURT|NUMERIQUE|CALCULEE)\]', re.I)
+        _q_head = re.compile(r'^\s*Question\s+\d{1,3}\s*[—\-–:.]')
+        new_questions_text = '\n'.join(
+            (f"{_mk_any.sub('', l).rstrip()} [{marker}]" if _q_head.match(l) else l)
+            for l in new_questions_text.split('\n'))
 
         full_content = existing_content
         full_rubric  = existing_rubric

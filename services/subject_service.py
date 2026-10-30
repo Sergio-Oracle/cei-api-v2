@@ -267,6 +267,7 @@ class SubjectService:
         question_types: str,
         rubric_mode: str = 'ai',
         total_points: int = 20,
+        expected_questions: Optional[int] = None,
     ) -> dict:
         # Authorization check
         if role not in (UserRole.PROFESSOR, UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN):
@@ -316,6 +317,7 @@ class SubjectService:
         corrige_raw = []
         norm_reports = []
         crosswords = []
+        corrige_keys = []
         orig_texts = []   # texte extrait des fichiers d'épreuve (sans corrigé), pour contrôler la fidélité de la reproduction
         loose_key, loose_n = {}, 0   # clés « Bonne réponse » d'énoncés sans numéros (voir subject_normalizer.loose_mcq)
         first_filename = None
@@ -332,12 +334,14 @@ class SubjectService:
                 part = extract_text_from_file(filepath)
                 if not part:
                     raise ValueError(f"Impossible d'extraire le texte du fichier « {f.filename} »")
-                if filepath.lower().endswith('.pdf'):
+                if filepath.lower().endswith(('.pdf', '.docx')):
                     from services.crossword_pdf import extract_crosswords
                     crosswords += extract_crosswords(filepath)      # grilles de mots croisés dessinées (absentes du texte)
                 if re.search(r'corrig|correction|bar[eè]me|solution', f.filename, re.I):
                     # Corrigé officiel : sert uniquement à écrire les clés du barème, jamais montré aux étudiants
                     corrige_parts.append(f"--- Corrigé: {f.filename} ---\n{part}")
+                    from services.corrige_reader import read_corrige_file
+                    corrige_keys.append(read_corrige_file(filepath, part))   # clés lues dans le corrigé (gras, tableaux, grille remplie)
                     corrige_raw.append(part)
                 else:
                     orig_texts.append(part)
@@ -442,6 +446,13 @@ class SubjectService:
             except Exception as ai_err:
                 print(f'[SubjectService] AI unavailable for rubric: {ai_err}')
 
+        if corrige_keys and not (det_rubric and not det_warns):
+            from services.corrige_reader import merge as _merge_keys, rubric_from_exercise_key
+            _ex_rubric, _ex_warns = rubric_from_exercise_key(annotated, _merge_keys(corrige_keys))
+            if _ex_rubric:
+                rubric, rubric_source, det_warns = _ex_rubric, 'corrigé', []
+            elif _ex_warns:
+                det_warns = list(det_warns) + _ex_warns
         if loose_key:
             from services.subject_normalizer import rubric_from_key
             _kr = rubric_from_key(annotated, loose_key, total_points)
@@ -460,6 +471,20 @@ class SubjectService:
         result['duplicates'] = duplicates
         _review_thread.join(timeout=90)
         detection['lost_lines'] = _lost
+        from services.subject_count import count_units, declared_total
+        from routes.exams import _parse_subject_blocks_ordered as _psb
+        _found, _by = count_units(_psb(annotated))
+        detection['questions_found'] = _found
+        detection['declared'] = declared_total(_orig_all)
+        if expected_questions:
+            detection['expected'] = int(expected_questions)
+            if int(expected_questions) != _found:
+                detection['warnings'].append(
+                    f"Vous attendiez {int(expected_questions)} question(s), la plateforme en a reconnu {_found}"
+                    + (f" (le document annonce {detection['declared']})" if detection['declared'] else '')
+                    + " : vérifiez l'aperçu avant d'enregistrer.")
+        elif detection['declared'] and detection['declared'] != _found:
+            detection['warnings'].append(f"Le document annonce {detection['declared']} questions, la plateforme en a reconnu {_found} : vérifiez l'aperçu.")
         detection['review'] = dict(_review)
         result['detection'] = detection
         result['normalization'] = [r for r in norm_reports if r.get('structured')]

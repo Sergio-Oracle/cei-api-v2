@@ -1850,8 +1850,13 @@ def _parse_subject_blocks_ordered(raw: str) -> list:
     blocks = []
     i = 0
     n = len(lines)
+    last_sect = None
     while i < n and not is_q(lines[i]):
+        if is_sect(lines[i]):
+            last_sect = i
         i += 1
+    if last_sect is not None:
+        blocks.append({'type': 'section', 'title': strip(lines[last_sect])})   # titre du PREMIER exercice (juste avant la question 1)
     # préambule ignoré ici (déjà affiché intégralement via le panneau "sujet complet")
 
     while i < n:

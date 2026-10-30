@@ -284,6 +284,59 @@ _ud, _ur = detect_and_annotate("1. Rédigez une note de synthèse puis joignez v
 check("« joignez votre rapport » → réponse rédigée avec dépôt de fichier", questions(_parse_subject_blocks_ordered(_ud))[0].get('upload') == 'allowed', _ud)
 check("liste des fichiers joints lue dans la copie", _attachment_list({'pq_3_files': '[{"key":"k1","name":"a.pdf","size":10}]'})[0]['name'] == 'a.pdf')
 
+print('\n== épreuve et corrigé Word du Pr Corréa (exercices, tableaux, grille de mots croisés) ==')
+from services.crossword_pdf import extract_crosswords as _xw
+from services.corrige_reader import read_corrige_file, rubric_from_exercise_key
+from services.subject_count import count_from_files
+from utils import extract_text_from_file as _etf
+from werkzeug.datastructures import FileStorage as _FS
+_FX = os.path.join(ROOT, 'scripts', 'fixtures')
+_ep, _co = os.path.join(_FX, 'epreuve_methodologie_exercices.docx'), os.path.join(_FX, 'corrige_methodologie_exercices.docx')
+_g = _xw(_ep)
+check("grille lue dans le tableau Word (10 × 12, 5 mots)", len(_g) == 1 and (_g[0]['rows'], _g[0]['cols'], len(_g[0]['words'])) == (10, 12, 5), _g)
+_wt, _wr = detect_and_annotate(_etf(_ep), _g)
+_wq = questions(_parse_subject_blocks_ordered(_wt))
+check("Word : 5 QCM, 5 Vrai/Faux, 1 association, 5 trous, 1 grille", [b['type'] for b in _wq].count('qcm') == 5 and [b['type'] for b in _wq].count('vf') == 5
+      and [b['type'] for b in _wq].count('association') == 1 and [b['type'] for b in _wq].count('cloze') == 6 and sum(1 for b in _wq if b.get('grid')) == 1, _wr['counts'])
+_key = read_corrige_file(_co, _etf(_co))
+check("corrigé Word : 5 QCM, 5 Vrai/Faux, 5 associations, 5 trous (gras), 5 mots croisés",
+      (len(_key['qcm']), len(_key['vf']), len(_key['assoc']), len(_key['trous']), len(_key['cw'])) == (5, 5, 5, 5, 5), {k: v for k, v in _key.items() if k != 'warnings'})
+_rub, _rw = rubric_from_exercise_key(_wt, _key)
+check("barème écrit depuis le corrigé : complet, 20 points, sans avertissement", bool(_rub) and not _rw and 'TOTAL : 20 / 20' in _rub, _rw)
+_ans = {}
+for _i, _l in enumerate(_key['qcm'], 1): _ans[f'pq_{_i}'] = _l
+for _i, _v in enumerate(_key['vf'], 6): _ans[f'pq_{_i}'] = _v
+for _i in range(1, 6): _ans[f'pq_11_{_i - 1}'] = _key['assoc'][_i]
+for _i, _a in enumerate(_key['trous'], 12): _ans[f'pq_{_i}_0'] = _a[0].strip('()')
+for _j, _o in enumerate([('H', 3), ('H', 4), ('H', 5), ('V', 1), ('V', 2)]): _ans[f'pq_17_{_j}'] = _key['cw'][_o]
+check("copie parfaite = 20 / 20", _deterministic_grade(_wt, _rub, _ans, seed=1)[0] == 20.0)
+_bad = dict(_ans, pq_1='A', pq_6='Vrai', pq_17_0='AUTRE')
+check("trois erreurs = 17,6 / 20", abs(_deterministic_grade(_wt, _rub, _bad, seed=1)[0] - 17.6) < 1e-6)
+check("copie vide = 0", _deterministic_grade(_wt, _rub, {}, seed=1)[0] == 0.0)
+_cnt = count_from_files([_FS(open(_ep, 'rb'), filename='ep.docx'), _FS(open(_co, 'rb'), filename='Corrigé.docx')])
+check("comptage : 25 questions, comme annoncé par le document", _cnt['questions'] == 25 and _cnt['declared'] == 25, _cnt)
+
+try:
+    from reportlab.lib.pagesizes import A4
+    from reportlab.pdfgen import canvas as _cv
+    import tempfile as _tf
+    _tmp = os.path.join(_tf.mkdtemp(), 'corrige.pdf')
+    _c = _cv.Canvas(_tmp, pagesize=A4)
+    _y = [800]
+    def _ln(parts):
+        _x = 40
+        for _t, _b in parts:
+            _f = 'Helvetica-Bold' if _b else 'Helvetica'
+            _c.setFont(_f, 11); _c.drawString(_x, _y[0], _t); _x += _c.stringWidth(_t, _f, 11)
+        _y[0] -= 18
+    _ln([("Exercice 4. Texte à trous (4 points)", True)])
+    _ln([("1. Le latin signifie conduire ", False), ("dedans", True), (" L'introduction conduit.", False)])
+    _ln([("2. Dans la dissertation, la ", False), ("problématique", True), (" est la question centrale.", False)])
+    _c.save()
+    check("corrigé PDF : réponses des trous lues dans le gras", read_corrige_file(_tmp, '')['trous'] == [['dedans'], ['problématique']])
+except ImportError:
+    pass
+
 print('\n== sujets défectueux : le contrôle doit protester ==')
 VIDE = "Sujet sans aucune question numérotée.\nRépondez librement."
 CASSE = "Question 1 [QCM]\nÉnoncé\nA. seule proposition\nQuestion 2 [QCM]\nÉnoncé\nA. a\nB. b\nQuestion 3 [QCM]\nÉnoncé\nA. a\nB. b\nC. c\nQuestion 4 [QCM]\nÉnoncé\nA. a\nB. b\nC. c\nD. d\n"

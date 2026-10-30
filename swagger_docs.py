@@ -2408,6 +2408,12 @@ OPENAPI_SPEC = {
             }}}},
             "responses": {"200": {"description": "Sauvegardé"}}
         }},
+        "/api/subjects/count-questions": {"post": {
+            "tags": ["Sujets"], "summary": "Compter les questions d'un fichier (sans rien enregistrer)",
+            "description": "Lit les fichiers (Word, PDF, texte), reconnaît le type de chaque question et retourne le nombre de questions notées (association de 5 notions = 5, grille de 5 mots = 5). `declared` = total annoncé par le document (« Total 25 questions »).",
+            "requestBody": {"content": {"multipart/form-data": {"schema": {"type": "object", "required": ["files"], "properties": {"files": {"type": "array", "items": {"type": "string", "format": "binary"}}}}}}},
+            "responses": {"200": {"description": "{success, questions, by_type, declared}"}, "400": {"description": "Aucun fichier"}}
+        }},
         "/api/exam_attempts/{attempt_id}/attachments": {"post": {
             "tags": ["Examens en ligne"], "summary": "Joindre un fichier à une réponse rédigée (question « Fichier : oui »)",
             "description": "Étudiant auteur, tentative en cours, avant l'échéance. 10 Mo maximum, 5 fichiers par question, formats : PDF, Word, Excel, PowerPoint, images, texte, code, ZIP. Retourne la clé à ranger dans la réponse `pq_<n>_files`.",

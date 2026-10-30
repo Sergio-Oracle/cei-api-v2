@@ -150,6 +150,33 @@ def create_subject():
 
 # ── Upload ─────────────────────────────────────────────────────────────────────
 
+def _expected_questions(form):
+    """Nombre de questions que l'enseignant attend (facultatif) : sert à CONTRÔLER la lecture du document."""
+    try:
+        n = int(form.get('expected_questions') or 0)
+    except (TypeError, ValueError):
+        return None
+    return n if 1 <= n <= 300 else None
+
+
+@subjects_bp.route('/api/subjects/count-questions', methods=['POST'])
+@paseto_required
+def count_subject_questions():
+    """Compte les questions des fichiers déposés SANS rien enregistrer (bouton « Compter » de la page de création)."""
+    try:
+        user = _get_user(get_current_user_id())
+        if user.role not in (UserRole.PROFESSOR, UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN):
+            return jsonify({'error': 'Accès non autorisé'}), 403
+        from services.subject_count import count_from_files
+        files = request.files.getlist('files')
+        if not files:
+            return jsonify({'error': 'Ajoutez d\'abord votre fichier'}), 400
+        return jsonify({'success': True, **count_from_files(files)})
+    except Exception as e:
+        print(f'ERROR count_subject_questions: {e}')
+        return jsonify({'error': 'Comptage impossible, vérifiez le fichier'}), 500
+
+
 @subjects_bp.route('/api/subjects/upload', methods=['POST'])
 @paseto_required
 def upload_subject():
@@ -175,6 +202,7 @@ def upload_subject():
             question_types=data.question_types,
             rubric_mode=data.rubric_mode,
             total_points=data.total_points,
+            expected_questions=_expected_questions(request.form),
         )
 
         # 3. Return response

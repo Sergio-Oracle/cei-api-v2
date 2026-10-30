@@ -38,7 +38,7 @@ def _cells(page):
     return (cells, pitch, x0, y0) if cells else None
 
 
-def extract_crosswords(path):
+def extract_crosswords_pdf(path):
     try:
         import pdfplumber
     except Exception:
@@ -81,3 +81,75 @@ def extract_crosswords(path):
     except Exception:
         return []
     return grids
+
+
+# ── Word (.docx) : la grille est un TABLEAU dont les cases de jeu ont une bordure visible, les autres aucune ─────────────
+
+_W = '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}'
+
+
+def _visible_cell(tc):
+    pr = tc.tcPr
+    b = pr.find(_W + 'tcBorders') if pr is not None else None
+    if b is None:
+        return False
+    return any((side.get(_W + 'val') or 'none') not in ('none', 'nil', '') for side in b)
+
+
+def _cell_lines(cell):
+    return [t.strip() for t in cell.text.split('\n') if t.strip()]
+
+
+def extract_crosswords_docx(path):
+    """Grilles d'un Word. Un corrigé donne aussi la solution (lettre de chaque case) : words[i]['answer']."""
+    try:
+        import docx
+        doc = docx.Document(path)
+    except Exception:
+        return []
+    grids = []
+    for ti, table in enumerate(doc.tables):
+        try:
+            nrows, ncols = len(table.rows), len(table.columns)
+            if nrows < 5 or ncols < 5:
+                continue
+            cells, labels, letters = set(), {}, {}
+            for r, row in enumerate(table.rows):
+                for c, cell in enumerate(row.cells):
+                    if not _visible_cell(cell._tc):
+                        continue
+                    cells.add((r, c))
+                    lines = _cell_lines(cell)
+                    for ln in lines:
+                        if ln.isdigit():
+                            labels[(r, c)] = int(ln)
+                        elif len(ln) == 1 and ln.isalpha():
+                            letters[(r, c)] = ln.upper()
+            if len(cells) < 8 or len(cells) > nrows * ncols * 0.8 or not labels:
+                continue
+            words = []
+            for (r, c), num in sorted(labels.items(), key=lambda kv: kv[1]):
+                for d, (dr, dc) in (('H', (0, 1)), ('V', (1, 0))):
+                    if (r - dr, c - dc) not in cells and (r + dr, c + dc) in cells:
+                        n = 0
+                        while (r + n * dr, c + n * dc) in cells:
+                            n += 1
+                        w = {'num': num, 'dir': d, 'row': r, 'col': c, 'len': n}
+                        if all((r + k * dr, c + k * dc) in letters for k in range(n)):
+                            w['answer'] = ''.join(letters[(r + k * dr, c + k * dc)] for k in range(n))
+                        words.append(w)
+            if words:
+                grids.append({'page': ti, 'rows': nrows, 'cols': ncols, 'words': words})
+        except Exception:
+            continue
+    return grids
+
+
+def extract_crosswords(path):
+    """PDF ou Word → grilles (voir ci-dessus). Toute autre extension : aucune."""
+    p = (path or '').lower()
+    if p.endswith('.pdf'):
+        return extract_crosswords_pdf(path)
+    if p.endswith('.docx'):
+        return extract_crosswords_docx(path)
+    return []

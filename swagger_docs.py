@@ -2429,6 +2429,12 @@ OPENAPI_SPEC = {
             "requestBody": {"content": {"multipart/form-data": {"schema": {"type": "object", "required": ["files"], "properties": {"files": {"type": "array", "items": {"type": "string", "format": "binary"}}}}}}},
             "responses": {"200": {"description": "{success, questions, by_type, declared}"}, "400": {"description": "Aucun fichier"}}
         }},
+        "/api/admin/online_exams/{exam_id}/settings": {"get": {
+            "tags": ["Examens en ligne"], "summary": "Réglages d'un examen et ce qui est modifiable à son état",
+            "description": "Retourne les valeurs actuelles de tous les réglages de création, l'état (draft/scheduled/active/closed), le nombre de copies commencées et `locked` : {réglage: raison} pour chaque réglage verrouillé. Planifié : tout est modifiable. En cours : sujet, début, pagination, ordre aléatoire, minuteur par page, vérification d'identité et scan de l'environnement sont verrouillés ; la fin ne peut qu'être repoussée. Terminé : tout est verrouillé.",
+            "parameters": [{"name": "exam_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+            "responses": {"200": {"description": "{success, status, attempts, by_waves, locked, values}"}, "403": {"description": "Accès non autorisé"}, "404": {"description": "Examen introuvable"}}
+        }},
         "/api/exam_attempts/{attempt_id}/attachments": {"post": {
             "tags": ["Examens en ligne"], "summary": "Joindre un fichier à une réponse rédigée (question « Fichier : oui »)",
             "description": "Étudiant auteur, tentative en cours, avant l'échéance. 10 Mo maximum, 5 fichiers par question, formats : PDF, Word, Excel, PowerPoint, images, texte, code, ZIP. Retourne la clé à ranger dans la réponse `pq_<n>_files`.",

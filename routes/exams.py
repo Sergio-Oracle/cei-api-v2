@@ -561,10 +561,37 @@ def close_online_exam(exam_id):
         print(f"Erreur close_online_exam: {e}")
         return jsonify({'error': str(e)}), 500
 
+@exams_bp.route('/api/admin/online_exams/<int:exam_id>/settings', methods=['GET'])
+@paseto_required
+def get_online_exam_settings(exam_id):
+    """Réglages actuels d'un examen + ce qui est modifiable à son état (Planifié / En cours / Terminé)."""
+    session = get_session()
+    try:
+        user = session.query(User).filter_by(id=get_current_user_id()).first()
+        if not user or user.role not in [UserRole.PROFESSOR, UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN]:
+            return jsonify({'error': 'Accès non autorisé'}), 403
+        exam = session.query(OnlineExam).filter_by(id=exam_id).first()
+        if not exam:
+            return jsonify({'error': 'Examen non trouvé'}), 404
+        if user.role == UserRole.PROFESSOR and not can_manage_exam(session, exam, user.id):
+            return jsonify({'error': 'Vous ne pouvez modifier que vos propres examens'}), 403
+        from services.exam_settings import policy, FIELD_RULES
+        pol = policy(session, exam)
+        values = {k: getattr(exam, k) for k in FIELD_RULES}
+        values.update({'subject_id': exam.subject_id,
+                       'start_time': exam.start_time.isoformat() + 'Z' if exam.start_time else None,
+                       'end_time': exam.end_time.isoformat() + 'Z' if exam.end_time else None,
+                       'duration_minutes': exam.duration_minutes,
+                       'scheduled_correction_at': exam.scheduled_correction_at.isoformat() + 'Z' if exam.scheduled_correction_at else None})
+        return jsonify({'success': True, 'values': values, **pol})
+    finally:
+        session.close()
+
+
 @exams_bp.route('/api/admin/online_exams/<int:exam_id>', methods=['PUT'])
 @paseto_required
 def edit_online_exam(exam_id):
-    """Modifier le titre, la date de début et la durée d'un examen (draft/scheduled)"""
+    """Modifier les réglages d'un examen Planifié ou En cours, selon les règles de services/exam_settings.py."""
     session = None
     try:
         user_id = get_current_user_id()
@@ -580,98 +607,140 @@ def edit_online_exam(exam_id):
         if user.role == UserRole.PROFESSOR and not can_manage_exam(session, exam, user_id):
             session.close()
             return jsonify({'error': 'Vous ne pouvez modifier que vos propres examens'}), 403
-        if exam.status not in [ExamStatus.DRAFT, ExamStatus.SCHEDULED]:
+        if exam.status not in [ExamStatus.DRAFT, ExamStatus.SCHEDULED, ExamStatus.ACTIVE]:
             session.close()
-            return jsonify({'error': 'Seuls les examens en brouillon ou planifiés peuvent être modifiés'}), 400
+            return jsonify({'error': 'Un examen terminé ne peut plus être modifié'}), 400
         data = request.get_json() or {}
+        from services.exam_settings import policy, FIELD_RULES
         from services.exam_waves import exam_has_waves as _has_waves
-        _by_waves = _has_waves(session, exam_id)
-        if _by_waves and any(data.get(k) for k in ('start_time', 'end_time', 'duration_minutes')):
-            # Par vagues : la date de début décale TOUTES les vagues ensemble (écarts conservés),
-            # une nouvelle durée recale les fenêtres. Avant le premier démarrage seulement.
-            from services import exam_waves as _W
+        pol = policy(session, exam)
+        locked = pol['locked']
+        was_active = exam.status == ExamStatus.ACTIVE
+        _by_waves = pol['by_waves']
+        changes = []
+
+        # 1) Réglages simples : validés champ par champ ; un champ verrouillé n'est refusé que s'il CHANGE réellement
+        updates = {}
+        for k, rule in FIELD_RULES.items():
+            if k not in data:
+                continue
             try:
-                new_start = _parse_utc_naive(data['start_time']) if data.get('start_time') else None
-                if data.get('end_time') and not data.get('start_time') and not data.get('duration_minutes'):
-                    raise _W.WaveError("Cet examen est organisé par vagues : changez la date de début (toutes les vagues se "
-                                       "décalent) ou modifiez le créneau d'une vague depuis la gestion des vagues.")
-                _W.reschedule_waves(session, exam, new_start=new_start,
-                                    new_duration=data.get('duration_minutes') or None)
-                _W.queue_notices(session, exam.id, [sid for (sid,) in session.query(ExamWaveStudent.student_id).filter_by(exam_id=exam.id)], 'changed')
-            except (ValueError, TypeError) as e:
-                session.rollback(); session.close()
-                return jsonify({'error': str(e)}), 400
-            data = {k: v for k, v in data.items() if k not in ('start_time', 'end_time', 'duration_minutes')}
-        if 'title' in data and data['title']:
-            exam.title = data['title'].strip()
-        if 'start_time' in data and data['start_time'] and not _by_waves:
-            from datetime import datetime
+                new = rule(data[k])
+            except ValueError as ve:
+                session.close()
+                return jsonify({'error': str(ve), 'field': k}), 400
+            old = getattr(exam, k)
+            if new == old or (new in (None, 0) and old in (None, 0)):
+                continue
+            if k in locked:
+                session.close()
+                return jsonify({'error': f"« {k} » ne peut plus être modifié : {locked[k]}", 'field': k, 'locked': locked}), 409
+            updates[k] = (old, new)
+
+        # 2) Sujet (planifié, sans copie)
+        if 'subject_id' in data and data['subject_id'] and int(data['subject_id']) != exam.subject_id:
+            if 'subject_id' in locked:
+                session.close()
+                return jsonify({'error': f"Le sujet ne peut plus être changé : {locked['subject_id']}", 'field': 'subject_id', 'locked': locked}), 409
+            new_subject = session.query(Subject).filter_by(id=int(data['subject_id'])).first()
+            if not new_subject:
+                session.close()
+                return jsonify({'error': "Le sujet sélectionné n'existe pas", 'field': 'subject_id'}), 404
+            from services.ec_rights import require_exam_author
             try:
-                exam.start_time = _parse_utc_naive(data['start_time'])
-            except ValueError:
-                pass
-        # Retour #6 — reprogrammation par édition : end_time peut être fourni
-        # explicitement (priorité, durée recalculée à partir de lui) ou dérivé
-        # de duration_minutes comme avant — jamais désynchronisé de la
-        # nouvelle date/durée, sinon l'examen reste accessible sur la
-        # mauvaise fenêtre horaire.
-        end_time_set = _by_waves   # par vagues : l'enveloppe est gérée par les vagues, jamais recalculée ici
-        if 'end_time' in data and data['end_time'] and not _by_waves:
-            from datetime import datetime
-            try:
-                new_end = _parse_utc_naive(data['end_time'])
-                if new_end <= exam.start_time:
+                require_exam_author(session, new_subject, user)
+            except PermissionError as _pe:
+                session.close()
+                return jsonify({'error': str(_pe), 'field': 'subject_id'}), 403
+            from services.subject_check import analyze as _sa
+            _chk = _sa(new_subject.content or '')
+            if not _chk['ok'] and not data.get('force'):
+                session.close()
+                return jsonify({'error': 'Le sujet contient des problèmes de lecture : ' + ' | '.join(i['message'] for i in _chk['issues'] if i['level'] == 'error'),
+                                'needs_confirmation': True, 'field': 'subject_id'}), 409
+            changes.append(f"sujet : {exam.subject_id} → {new_subject.id}")
+            exam.subject_id = new_subject.id
+
+        # 3) Dates / durée
+        time_keys = ('start_time', 'end_time', 'duration_minutes')
+        if any(data.get(k) for k in time_keys):
+            if _by_waves and not was_active:
+                from services import exam_waves as _W
+                try:
+                    new_start = _parse_utc_naive(data['start_time']) if data.get('start_time') else None
+                    if data.get('end_time') and not data.get('start_time') and not data.get('duration_minutes'):
+                        raise _W.WaveError("Cet examen est organisé par vagues : changez la date de début (toutes les vagues se "
+                                           "décalent) ou modifiez le créneau d'une vague depuis la gestion des vagues.")
+                    _W.reschedule_waves(session, exam, new_start=new_start, new_duration=data.get('duration_minutes') or None)
+                    _W.queue_notices(session, exam.id, [sid for (sid,) in session.query(ExamWaveStudent.student_id).filter_by(exam_id=exam.id)], 'changed')
+                except (ValueError, TypeError) as e:
+                    session.rollback(); session.close()
+                    return jsonify({'error': str(e)}), 400
+                changes.append('créneaux des vagues décalés')
+            elif _by_waves and was_active:
+                session.close()
+                return jsonify({'error': locked.get('end_time', 'Examen par vagues : utilisez la gestion des vagues'), 'field': 'end_time', 'locked': locked}), 409
+            else:
+                try:
+                    new_start = _parse_utc_naive(data['start_time']) if data.get('start_time') else exam.start_time
+                except ValueError:
                     session.close()
-                    return jsonify({'error': 'La date de fin doit être après la date de début'}), 400
-                exam.end_time = new_end
-                exam.duration_minutes = max(5, int((new_end - exam.start_time).total_seconds() / 60))
-                end_time_set = True
-            except ValueError:
-                pass
-        if not end_time_set:
-            if 'duration_minutes' in data:
-                exam.duration_minutes = max(5, int(data['duration_minutes']))
-            exam.end_time = exam.start_time + timedelta(minutes=exam.duration_minutes)
-        if 'enable_file_download' in data:
-            exam.enable_file_download = bool(data['enable_file_download'])
-        if 'enable_calculator' in data:
-            exam.enable_calculator = bool(data['enable_calculator'])
-        if 'allow_secondary_camera' in data:
-            exam.allow_secondary_camera = bool(data['allow_secondary_camera'])
-        if 'require_biometric' in data:
-            exam.require_biometric = bool(data['require_biometric'])
-        if 'run_environment_scan' in data:
-            exam.run_environment_scan = bool(data['run_environment_scan'])
-        if 'randomize_questions' in data:
-            exam.randomize_questions = bool(data['randomize_questions'])
-        if 'questions_per_page' in data:
-            try:
-                exam.questions_per_page = max(0, min(50, int(data['questions_per_page'])))
-            except (TypeError, ValueError):
-                pass
-        if 'time_per_question_seconds' in data:
-            try:
-                v = data['time_per_question_seconds']
-                exam.time_per_question_seconds = max(0, min(3600, int(v))) if v else None
-            except (TypeError, ValueError):
-                pass
+                    return jsonify({'error': 'Date de début invalide', 'field': 'start_time'}), 400
+                if was_active and new_start != exam.start_time:
+                    session.close()
+                    return jsonify({'error': f"La date de début ne peut plus changer : {locked['start_time']}", 'field': 'start_time', 'locked': locked}), 409
+                new_end = None
+                if data.get('end_time'):
+                    try:
+                        new_end = _parse_utc_naive(data['end_time'])
+                    except ValueError:
+                        session.close()
+                        return jsonify({'error': 'Date de fin invalide', 'field': 'end_time'}), 400
+                elif data.get('duration_minutes'):
+                    try:
+                        new_end = new_start + timedelta(minutes=max(5, int(data['duration_minutes'])))
+                    except (TypeError, ValueError):
+                        session.close()
+                        return jsonify({'error': 'Durée invalide', 'field': 'duration_minutes'}), 400
+                else:
+                    new_end = new_start + timedelta(minutes=exam.duration_minutes)
+                if new_end <= new_start:
+                    session.close()
+                    return jsonify({'error': 'La date de fin doit être après la date de début', 'field': 'end_time'}), 400
+                new_dur = int((new_end - new_start).total_seconds() / 60)
+                if new_dur < 1 or new_dur > 1440:
+                    session.close()
+                    return jsonify({'error': 'Durée invalide (entre 1 minute et 24 h)', 'field': 'end_time'}), 400
+                if was_active and new_end < exam.end_time:
+                    session.close()
+                    return jsonify({'error': "En cours d'examen, la fin ne peut qu'être repoussée (prolongation) : jamais raccourcie", 'field': 'end_time'}), 409
+                if (new_start, new_end) != (exam.start_time, exam.end_time):
+                    changes.append(f"horaire : {exam.start_time:%d/%m %H:%M}–{exam.end_time:%H:%M} → {new_start:%d/%m %H:%M}–{new_end:%H:%M} (UTC)")
+                    exam.start_time, exam.end_time, exam.duration_minutes = new_start, new_end, max(5, new_dur)
+
+        # 4) Correction planifiée
         if 'scheduled_correction_at' in data:
-            raw_sched_corr = data['scheduled_correction_at']
-            if not raw_sched_corr:
+            raw = data['scheduled_correction_at']
+            if not raw:
+                if exam.scheduled_correction_at is not None:
+                    changes.append('correction planifiée retirée')
                 exam.scheduled_correction_at = None
                 exam.correction_triggered_at = None
             else:
                 try:
-                    # « Z » du navigateur accepté (fromisoformat < 3.11 le refuse, d'où l'ancien « Z+00:00 » invalide)
-                    new_sched = _parse_utc_naive(raw_sched_corr)
-                    # Une nouvelle heure planifiée relance l'éligibilité même si
-                    # une correction avait déjà été déclenchée précédemment.
-                    if new_sched != exam.scheduled_correction_at:
-                        exam.correction_triggered_at = None
-                    exam.scheduled_correction_at = new_sched
+                    new_sched = _parse_utc_naive(raw)
                 except ValueError:
                     session.close()
-                    return jsonify({'error': 'Format de date de correction planifiée invalide'}), 400
+                    return jsonify({'error': 'Format de date de correction planifiée invalide', 'field': 'scheduled_correction_at'}), 400
+                if new_sched != exam.scheduled_correction_at:
+                    exam.correction_triggered_at = None
+                    changes.append(f"correction planifiée : {new_sched:%d/%m %H:%M} (UTC)")
+                exam.scheduled_correction_at = new_sched
+
+        # 5) Application des réglages simples
+        for k, (old, new) in updates.items():
+            setattr(exam, k, new)
+            changes.append(f"{k} : {old} → {new}")
         session.commit()
         result = exam.to_dict()
         try:
@@ -679,16 +748,25 @@ def edit_online_exam(exam_id):
             result['proctor_conflicts'] = exam_proctor_conflicts(session, exam)
         except Exception:
             result['proctor_conflicts'] = []
+        title, exam_id_ = exam.title, exam.id
         session.close()
+        # Examen EN COURS : le personnel est prévenu de ce qui a changé (les étudiants n'ont rien d'autre à faire : ils reçoivent la prolongation,
+        # les autres réglages s'appliquent à leur prochain chargement de page).
+        if was_active and changes:
+            try:
+                import notif_bus
+                notif_bus.notify_exam(exam_id_, 'exam_settings_changed', 'Réglages modifiés en cours d\'examen',
+                                      f"« {title} » : " + ' ; '.join(changes)[:600], priority='normal')
+            except Exception:
+                pass
         from services.moodle_calendar import schedule_sync; schedule_sync(exam_id)  # date publiée dans le calendrier Moodle (arrière-plan)
-        return jsonify({'success': True, 'exam': result})
+        return jsonify({'success': True, 'exam': result, 'changes': changes})
     except Exception as e:
         if session:
             session.rollback()
             session.close()
         print(f"Erreur edit_online_exam: {e}")
         return jsonify({'error': str(e)}), 500
-
 
 @exams_bp.route('/api/online_exams/<int:exam_id>', methods=['DELETE'])
 @paseto_required

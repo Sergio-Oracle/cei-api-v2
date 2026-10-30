@@ -192,6 +192,32 @@ check("jamais montrée à l'étudiant même si elle reste dans un sujet", 'Bonne
 _ex = "Exercice 1\nEnoncé du problème.\na) Définir X\nb) Calculer Y\n"
 check("sous-questions a) b) d'un exercice ouvert non prises pour un QCM", loose_mcq(_ex)[0] == _ex)
 
+print('\n== détection automatique des types, sans cocher aucune case (30/10/2026) ==')
+from services.type_detector import detect_and_annotate
+_dt, _dr = detect_and_annotate(_fx('epreuve_exercices_tableau_vf.txt'))
+_dq = questions(_parse_subject_blocks_ordered(_dt))
+_types = [b['type'] for b in _dq]
+check("5 QCM, 5 Vrai/Faux, 1 association, 5 textes à trous, 5 réponses courtes",
+      (_types.count('qcm'), _types.count('vf'), _types.count('association'), _types.count('cloze'), _types.count('court')) == (5, 5, 1, 5, 5), _dr['counts'])
+_a = next(b for b in _dq if b['type'] == 'association')
+check("association : 5 notions et 6 définitions lues", len(_a.get('items') or []) == 5 and len(_a.get('options') or []) == 6)
+check("textes à trous : un champ chacun, blancs remplacés", all(len(b.get('items') or []) == 1 for b in _dq if b['type'] == 'cloze') and '……' not in _dt)
+check("récapitulatif de notation et indices retirés du sujet", 'Récapitulatif' not in _dt and 'Page d\'indices' not in _dt)
+check("numéros uniques", len({b['num'] for b in _dq}) == len(_dq))
+check("détection idempotente", detect_and_annotate(_dt)[0] == _dt)
+for _nom, (_c, _n, _ch) in CORPUS.items():
+    _o, _ = detect_and_annotate(_c)
+    _av = [(b['type'], b.get('num'), len(b.get('choices') or [])) for b in _parse_subject_blocks_ordered(_c) if b['type'] not in ('section', 'description')]
+    _ap = [(b['type'], b.get('num'), len(b.get('choices') or [])) for b in _parse_subject_blocks_ordered(_o) if b['type'] not in ('section', 'description')]
+    check(f"sujet déjà correct inchangé : {_nom[:40]}", _av == _ap)
+_wd, _ = detect_and_annotate(loose_mcq(_w)[0])
+check("QCM Word sans numéros : 2 QCM", [b['type'] for b in questions(_parse_subject_blocks_ordered(_wd))] == ['qcm', 'qcm'])
+_multi = "Exercice 1. Plusieurs réponses possibles\nCochez toutes les bonnes réponses.\n1. Quels sont des fleuves ?\nA. Sénégal\nB. Gambie\nC. Everest\n"
+check("consigne « toutes les bonnes réponses » → QCM à réponses multiples",
+      [b['type'] for b in questions(_parse_subject_blocks_ordered(detect_and_annotate(_multi)[0]))] == ['qcm_multi'])
+_etc = "1. Citez les sources du droit : loi, coutume, etc... et expliquez-les.\n"
+check("« etc... » dans une phrase n'est pas un trou", [b['type'] for b in questions(_parse_subject_blocks_ordered(detect_and_annotate(_etc)[0]))] == ['open'])
+
 print('\n== sujets défectueux : le contrôle doit protester ==')
 VIDE = "Sujet sans aucune question numérotée.\nRépondez librement."
 CASSE = "Question 1 [QCM]\nÉnoncé\nA. seule proposition\nQuestion 2 [QCM]\nÉnoncé\nA. a\nB. b\nQuestion 3 [QCM]\nÉnoncé\nA. a\nB. b\nC. c\nQuestion 4 [QCM]\nÉnoncé\nA. a\nB. b\nC. c\nD. d\n"

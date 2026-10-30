@@ -1,0 +1,182 @@
+"""Détection automatique du type de CHAQUE question d'un document (Word, PDF) — sans rien demander à l'enseignant.
+
+Incident du 30/10/2026 : selon les cases de types cochées à l'import, des QCM devenaient « ouverts » ; les tableaux
+Vrai/Faux, les associations et les textes à trous d'un PDF n'étaient pas reconnus. Ici le type vient de la STRUCTURE
+du document, jamais des cases :
+
+  QCM            ≥ 2 propositions lettrées A. B. C…           QCM_MULTI : la consigne dit « plusieurs / toutes les bonnes réponses »
+  VF             tableau « Vrai ☐ Faux ☐ », titre « Vrai ou faux », ou propositions Vrai / Faux
+  ASSOCIATION    consigne « Associez… » + lignes « 1. notion  a. définition »
+  CLOZE          énoncé avec des blancs (………, ____) : un champ par blanc
+  COURT          réponse d'un mot (« (12 lettres) », mots croisés)
+  OUVERT         tout le reste (développement, cas pratique)
+
+  detect_and_annotate(content) -> (contenu_annoté, rapport)   idempotent ; une balise déjà posée par l'enseignant est respectée
+                                                              sauf si elle contredit la structure (QCM balisé « ouvert »).
+"""
+import re
+
+from services.subject_normalizer import (
+    normalize, loose_mcq, _Q_RE, _SECT_RE, _CHOICE_RE, _question_numbers)
+
+_MARK = r'QCM_MULTI|QCM|VF|OUVERT|SUBOPEN|APPARIEMENT|CODE|ASSOCIATION|TRI|ORDRE|TROUS|CLOZE|ZONES|COURT|NUMERIQUE|CALCULEE'
+_MARK_RE = re.compile(r'\[(%s)\]' % _MARK, re.I)
+_GAP_RE = re.compile(r'(?<!\w)[….]{3,}|[….]{5,}|_{3,}')           # « ………. » ; jamais « etc... » collé à un mot
+_NOISE_RE = re.compile(r'^\s*[\d\s]{1,14}$')                                  # « 1 2 3 4 5 » : grille de réponse sans texte
+_FOOTER_RE = re.compile(r'^.{4,140}\s·\s.{2,140}\bpage\s+\d+\s*$', re.I)       # « Matière · Épreuve · page 2 »
+_RECAP_RE = re.compile(r'^\s*R[ée]capitulatif\s+de\s+la\s+note', re.I)
+_DIRECTION_RE = re.compile(r'^\s*(?:Horizontalement|Verticalement)\s*:?\s*$', re.I)
+_HINT_RE = re.compile(r'\s*[☐□▢]\s*indice\s*$', re.I)
+_MULTI_RE = re.compile(r'plusieurs\s+(?:bonnes?\s+)?r[ée]ponses|toutes\s+les\s+(?:bonnes?\s+)?r[ée]ponses|une\s+ou\s+plusieurs|cochez\s+toutes', re.I)
+_VF_TITLE_RE = re.compile(r'vrai\s*(?:ou|/|-)\s*faux|\bV\s*/\s*F\b', re.I)
+_ASSOC_ROW_RE = re.compile(r'^\s*(\d{1,2})[.)]\s+(.+?)\s+([a-f])[.)]\s+(.+)$')
+_LETTER_SPLIT_RE = re.compile(r'\s([a-f])[.)]\s+')
+_LETTERS_LEN_RE = re.compile(r'\(\s*\d{1,2}\s+lettres?\s*\)', re.I)
+
+
+def _is_q(l):
+    s = l.strip()
+    if not s or _CHOICE_RE.match(s) or _SECT_RE.match(s):
+        return False
+    m = _Q_RE.match(l)
+    return bool(m and m.group(4).strip())
+
+
+def _clean_noise(lines):
+    """Pieds de page, grilles de chiffres seuls et cases « indice » : du bruit de mise en page, jamais du sujet."""
+    out = []
+    for l in lines:
+        if _RECAP_RE.match(l):
+            break           # récapitulatif de notation et pages d'indices : jamais destinés à l'étudiant
+        if _DIRECTION_RE.match(l):
+            continue
+        if _FOOTER_RE.match(l) or (l.strip() and _NOISE_RE.match(l)):
+            continue
+        out.append(_HINT_RE.sub('', l))
+    return out
+
+
+def _collapse_associations(lines, report):
+    """« Associez… » + lignes « N. notion  a. définition » (plusieurs lettres possibles sur une ligne) → UNE question [ASSOCIATION]."""
+    out, i, n = [], 0, len(lines)
+    while i < n:
+        m = _ASSOC_ROW_RE.match(lines[i])
+        if not m:
+            out.append(lines[i]); i += 1; continue
+        # remonte : la consigne doit parler d'association dans les 8 lignes précédentes
+        recent = ' '.join(out[-8:])
+        if not re.search(r'associ|relie|apparie|corresp', recent, re.I):
+            out.append(lines[i]); i += 1; continue
+        j, rows, defs = i, [], {}
+        first_num = m.group(1)
+        while j < n:
+            mm = _ASSOC_ROW_RE.match(lines[j])
+            if not mm:
+                break
+            notion = mm.group(2).strip()
+            tail = ' '.join(filter(None, [mm.group(3) + '. ' + mm.group(4)]))
+            parts = re.split(_LETTER_SPLIT_RE, ' ' + tail)       # ['', 'a', 'texte', 'e', 'texte', ...]
+            for k in range(1, len(parts) - 1, 2):
+                defs[parts[k].upper()] = parts[k + 1].strip()
+            rows.append(notion)
+            j += 1
+        letters = sorted(defs)
+        if len(rows) >= 2 and len(letters) >= 2 and letters[0] == 'A':
+            out.append(f"{first_num}. Associez chaque notion à sa définition. [ASSOCIATION]")
+            out += [f"- {r}" for r in rows]
+            out += [f"{L}. {defs[L]}" for L in letters]
+            report['converted'].append(f"association de {len(rows)} notions ({len(letters)} définitions)")
+            i = j
+        else:
+            out.append(lines[i]); i += 1
+    return out
+
+
+def _blocks(lines):
+    """[(index_début, index_fin_exclu)] de chaque question (jusqu'à la suivante ou au titre de partie suivant)."""
+    starts = [k for k, l in enumerate(lines) if _is_q(l)]
+    res = []
+    for idx, s in enumerate(starts):
+        e = starts[idx + 1] if idx + 1 < len(starts) else len(lines)
+        for k in range(s + 1, e):
+            if _SECT_RE.match(lines[k].strip()):
+                e = k
+                break
+        res.append((s, e))
+    return res
+
+
+def _section_context(lines):
+    """Pour chaque ligne : (titre, consigne) de la partie qui la contient."""
+    ctx, title, consigne = [], '', ''
+    seen_q = False
+    for l in lines:
+        if _SECT_RE.match(l.strip()):
+            title, consigne, seen_q = l.strip(), '', False
+        elif _is_q(l):
+            seen_q = True
+        elif not seen_q and l.strip():
+            consigne += ' ' + l.strip()
+        ctx.append((title, consigne))
+    return ctx
+
+
+def detect_and_annotate(content):
+    report = {'counts': {}, 'converted': [], 'warnings': [], 'changed': 0}
+    if not content or not isinstance(content, str):
+        return content, report
+    lines = content.split('\n')
+    lines = _clean_noise(lines)
+    lines = _collapse_associations(lines, report)
+    content2, _notes = normalize('\n'.join(lines))             # tableaux Vrai/Faux, numérotation continue
+    lines = content2.split('\n')
+    ctx = _section_context(lines)
+
+    for (s, e) in reversed(_blocks(lines)):          # de la fin vers le début : les remplacements ne décalent pas les blocs à venir
+        head = lines[s]
+        title, consigne = ctx[s]
+        body = lines[s + 1:e]
+        choices = [l for l in body if _CHOICE_RE.match(l.strip())]
+        has_marker = bool(_MARK_RE.search(head))
+        cur = _MARK_RE.search(head).group(1).upper() if has_marker else None
+        text_all = ' '.join([head] + [b for b in body if b.strip()])
+        want = None
+        if cur in ('ASSOCIATION', 'TRI', 'ORDRE', 'TROUS', 'CLOZE', 'ZONES', 'COURT', 'NUMERIQUE', 'CALCULEE', 'VF', 'APPARIEMENT', 'CODE', 'SUBOPEN') \
+                and not (cur == 'VF' and len(choices) >= 2 and not _VF_TITLE_RE.search(text_all + title)):
+            want = cur                                         # structure déjà exprimée : respectée
+        elif len(choices) >= 2:
+            want = 'QCM_MULTI' if _MULTI_RE.search(consigne + ' ' + text_all) else 'QCM'
+        elif _VF_TITLE_RE.search(title) or _VF_TITLE_RE.search(head):
+            want = 'VF'
+        elif _GAP_RE.search(text_all) and not _LETTERS_LEN_RE.search(text_all):
+            want = 'CLOZE'
+        elif _LETTERS_LEN_RE.search(text_all):
+            want = 'COURT'
+        else:
+            want = cur or 'OUVERT'
+        if want == 'CLOZE' and cur != 'CLOZE':
+            k = [0]
+            def _fill(mo):
+                k[0] += 1
+                return '{%d}' % k[0]
+            new_head = _GAP_RE.sub(_fill, head)
+            new_body = [(_GAP_RE.sub(_fill, b)) for b in body if b.strip()]
+            fields = [f"- {i} COURT" for i in range(1, k[0] + 1)]
+            if not fields:
+                want = 'OUVERT'
+            else:
+                lines[s:e] = [_MARK_RE.sub('', new_head).rstrip() + ' [CLOZE]'] + new_body + fields
+                report['converted'].append(f"texte à trous : {k[0]} champ(s)")
+                continue
+        if cur != want:
+            lines[s] = (_MARK_RE.sub('', head).rstrip() + f' [{want}]')
+            report['changed'] += 1
+    out = '\n'.join(lines)
+    from routes.exams import _parse_subject_blocks_ordered
+    for b in _parse_subject_blocks_ordered(out):
+        if b['type'] != 'section':
+            report['counts'][b['type']] = report['counts'].get(b['type'], 0) + 1
+    if _LETTERS_LEN_RE.search(out) and re.search(r'mots?\s+crois', out, re.I):
+        report['warnings'].append("Mots croisés : la grille dessinée n'existe pas dans le texte du document — les définitions sont posées "
+                                  "comme des réponses courtes ; ajoutez la grille en image si elle est nécessaire.")
+    return out, report

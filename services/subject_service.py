@@ -369,8 +369,22 @@ class SubjectService:
         qt = question_types.lower()
         has_qcm = 'qcm' in qt
         has_vf  = 'vrai' in qt or 'faux' in qt
-        annotated = '\n\n'.join(txt if structured else annotate_markers(txt, has_qcm, has_vf)
-                                 for structured, txt in content_parts)
+        # Le type de CHAQUE question est détecté d'après le document lui-même (QCM, plusieurs réponses, Vrai/Faux,
+        # association, texte à trous, réponse courte, ouverte) — les cases de types cochées ne décident plus de rien.
+        from services.type_detector import detect_and_annotate
+        _detect_reports, _parts = [], []
+        for structured, txt in content_parts:
+            if structured:
+                _parts.append(txt)
+            else:
+                _t, _r = detect_and_annotate(txt)
+                _parts.append(_t); _detect_reports.append(_r)
+        annotated = '\n\n'.join(_parts)
+        detection = {'counts': {}, 'converted': [], 'warnings': []}
+        for _r in _detect_reports:
+            for _k, _v in _r['counts'].items():
+                detection['counts'][_k] = detection['counts'].get(_k, 0) + _v
+            detection['converted'] += _r['converted']; detection['warnings'] += _r['warnings']
         corrige_text = '\n\n'.join(corrige_parts)
 
         # Détection de doublons — contre TOUTE la banque de questions, puisque
@@ -422,6 +436,7 @@ class SubjectService:
             s3_key=first_s3_key,
         )
         result['duplicates'] = duplicates
+        result['detection'] = detection
         result['normalization'] = [r for r in norm_reports if r.get('structured')]
         result['has_corrige'] = bool(corrige_text)
         result['rubric_source'] = rubric_source

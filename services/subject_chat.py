@@ -82,7 +82,9 @@ COMMENT RÉPONDRE
      (si on te demande « différents types » ou « tous les types » : répartis sur au moins 6 types parmi QCM, QCM à réponses multiples, vrai/faux, association, remise en ordre,
      texte à trous, champs à compléter, réponse courte, question ouverte). Tu peux reprendre des questions du fichier, mais tu dois atteindre le nombre demandé avec du contenu NOUVEAU.
      N'écris JAMAIS <<<REPRODUIRE>>> dans ce cas.
-     Les questions du fichier ne sont qu'un MODÈLE de style et de contenu : n'en recopie AUCUNE mot pour mot (reformule, change les situations, les propositions, les exemples).
+     Les fichiers sont ta source de CONNAISSANCES (notions, règles, justifications du corrigé) : écris des questions NOUVELLES qui portent sur des points DIFFÉRENTS de ceux déjà posés
+     (au plus 20 % des questions peuvent reprendre un point déjà posé, avec une formulation et des propositions clairement différentes). N'en recopie AUCUNE, même légèrement reformulée.
+     Tu ne peux pas créer de grille de mots croisés dans la discussion : n'écris jamais « Horizontalement », « Verticalement » ni « (N lettres) » ; utilise à la place des champs à compléter ou des réponses courtes.
      Le TITRE (première ligne du cadre) est un titre court de ton cru (80 caractères maximum), jamais l'en-tête ni le nom du fichier.
      Le total des points vaut 20 sauf si l'enseignant en demande un autre : répartis les points pour que la somme soit exactement ce total.
 - Pour créer ou modifier un sujet, donne TOUJOURS le sujet COMPLET (jamais seulement les changements), dans ce cadre exact :
@@ -126,7 +128,7 @@ FORMAT DU BARÈME : une entrée par question, mêmes numéros et mêmes points, 
     • Formule : a*b/100 (± 1)                                           (CALCULEE)
     • Critère : X pts — attendu précis   (une ou plusieurs lignes)      (OUVERT, CODE, SUBOPEN)
   Termine par « TOTAL : T / T points ». La somme des points des questions = T. Si l'enseignant ne dit pas le total, vise 20.
-Les types demandés par l'enseignant sont ceux à produire (il peut en mélanger plusieurs). Respecte EXACTEMENT le nombre de questions demandé."""
+Les types demandés par l'enseignant sont ceux à produire (il peut en mélanger plusieurs). Respecte EXACTEMENT le nombre de questions demandé, en comptant chaque ÉLÉMENT NOTÉ comme une question : une association de 5 notions = 5 questions, un texte à 3 trous = 3 questions, des mots croisés de 5 mots = 5 questions, un QCM = 1. Mieux vaut plusieurs petites associations/trous qu'une seule très grande."""
 
 
 def _history_text(messages, limit=10):
@@ -151,13 +153,25 @@ def _norm(t):
 
 
 def _verbatim(content, recs):
-    """Nombre de questions du brouillon dont l'énoncé est recopié mot pour mot dans un fichier joint."""
+    """Nombre de questions du brouillon qui reprennent un énoncé d'un fichier (mot pour mot OU à peine reformulé), ou qui
+    contiennent des restes de mots croisés (« Horizontalement 3 — … »)."""
+    import difflib
     from routes.exams import _parse_subject_blocks_ordered
-    src = _norm(' '.join(r.get('annotated', '') for r in recs if not r.get('corrige')))
+    src = []
+    for r in recs:
+        if not r.get('corrige'):
+            src += [_norm(b.get('text') or '') for b in _parse_subject_blocks_ordered(r.get('annotated', ''))
+                    if b.get('type') not in ('section', 'description') and len(_norm(b.get('text') or '')) >= 25]
     n = 0
     for b in _parse_subject_blocks_ordered(content):
-        t = _norm(b.get('text') or '')
-        if b.get('type') not in ('section', 'description') and len(t) >= 25 and t in src:
+        if b.get('type') in ('section', 'description'):
+            continue
+        raw = b.get('text') or ''
+        t = _norm(raw)
+        if re.match(r'^\s*(?:Horizontalement|Verticalement)\b', raw) or re.search(r'\(\s*\d+\s+lettres?\s*\)', raw):
+            n += 1
+            continue
+        if len(t) >= 25 and any(t == x or difflib.SequenceMatcher(None, t, x).ratio() >= 0.8 for x in src):
             n += 1
     return n
 
@@ -172,10 +186,20 @@ def _report(content):
     from services.subject_check import analyze
     from services.subject_count import count_units
     blocks = _parse_subject_blocks_ordered(content)
-    total, by_type = count_units(blocks)
+    units, by_units = count_units(blocks)
+    qs = [b for b in blocks if b.get('type') not in ('section', 'description', 'text')]
+    by_blocks = {}
+    for b in qs:
+        by_blocks[b['type']] = by_blocks.get(b['type'], 0) + 1
     rep = analyze(content)
-    n_blocks = sum(1 for b in blocks if b.get('type') not in ('section', 'description', 'text'))
-    return {'questions': total, 'blocks': n_blocks, 'by_type': by_type, 'ok': rep['ok'], 'issues': [i['message'] for i in rep['issues']][:6]}
+    outline = []
+    for b in qs:
+        n_items = len(b.get('items') or b.get('pairs') or [])
+        outline.append({'num': b.get('num'), 'type': b['type'], 'text': (b.get('text') or '')[:200],
+                        'choices': [f"{c['letter']}. {c['text']}"[:140] for c in (b.get('choices') or [])][:6],
+                        'items': n_items})
+    return {'questions': units, 'units': units, 'blocks': len(qs), 'by_type': by_units, 'by_type_blocks': by_blocks,
+            'ok': rep['ok'], 'issues': [i['message'] for i in rep['issues']][:6], 'outline': outline}
 
 
 def chat(user_id, messages, file_ids, context='', draft=None):
@@ -214,35 +238,41 @@ def chat(user_id, messages, file_ids, context='', draft=None):
                       "Écris maintenant le sujet COMPLET dans le cadre <<<SUJET>>> / <<<BAREME>>> / <<<FIN>>>, avec le nombre exact de questions demandé.",
                       temperature=0.3, max_tokens=8000, label='subject-chat') or raw
 
-    # Garde-fou 1 bis : création demandée, mais le brouillon recopie les questions du fichier
-    if not _WANTS_REPRO_RE.search(last) and recs and _BLOCK_RE.search(raw):
-        try:
-            _b0 = _BLOCK_RE.search(raw).group(1)
-            _c0 = _b0 if re.match(r'^\s*(?:Question\s+)?\d', _b0) else _b0.partition('\n')[2]
-            _v = _verbatim(detect_and_annotate(_c0)[0], recs)
-            _tot = max(1, _report(detect_and_annotate(_c0)[0])['blocks'])
-            if _v / _tot > 0.25:
-                raw = call_ai(_SYSTEM, user + f"\n\nCORRECTION : {_v} question(s) de ton brouillon sont recopiées mot pour mot du fichier. L'enseignant veut de NOUVELLES questions : "
-                              "réécris le sujet COMPLET avec des énoncés, situations et propositions NOUVEAUX (mêmes notions, formulations différentes), même nombre de questions.",
-                              temperature=0.5, max_tokens=8000, label='subject-chat') or raw
-        except Exception:
-            pass
-
-    # Garde-fou 2 : nombre de questions demandé (« 30 questions ») non respecté → une relance chiffrée
+    # Garde-fous de CRÉATION (jusqu'à 2 relances) : nombre exact demandé, aucune question reprise du fichier, pas de restes de mots croisés
     want_n = None
     if not _WANTS_REPRO_RE.search(last):
         mn = _WANTS_COUNT_RE.search(last)
         want_n = int(mn.group(1)) if mn and 2 <= int(mn.group(1)) <= 150 else None
-    if want_n and _BLOCK_RE.search(raw):
-        try:
-            c0 = detect_and_annotate(_BLOCK_RE.search(raw).group(1).partition('\n')[2] if not re.match(r'^\s*Question\s+\d', _BLOCK_RE.search(raw).group(1)) else _BLOCK_RE.search(raw).group(1))[0]
-            r0 = _report(c0)
-            if want_n not in (r0['blocks'], r0['questions']):
-                raw = call_ai(_SYSTEM, user + f"\n\nTON BROUILLON PRÉCÉDENT CONTIENT {r0['blocks']} question(s) alors que l'enseignant en demande EXACTEMENT {want_n}. "
-                              f"Réécris le sujet COMPLET et son barème avec exactement {want_n} questions numérotées de 1 à {want_n}.",
-                              temperature=0.3, max_tokens=8000, label='subject-chat') or raw
-        except Exception:
-            pass
+
+    def _content_of(txt):
+        bm = _BLOCK_RE.search(txt or '')
+        if not bm:
+            return None
+        body = bm.group(1)
+        return detect_and_annotate(body if re.match(r'^\s*(?:Question\s+)?\d', body) else body.partition('\n')[2])[0]
+
+    if not _WANTS_REPRO_RE.search(last) and _BLOCK_RE.search(raw):
+        for _round in range(1):          # une seule relance automatique (durée) ; le reste se règle par les boutons « Ajuster » / « Remplacer »
+            try:
+                c0 = _content_of(raw)
+                r0 = _report(c0)
+                reused = _verbatim(c0, recs) if recs else 0
+                problems = []
+                if want_n and r0['questions'] != want_n:
+                    problems.append(f"le brouillon contient {r0['questions']} question(s) notée(s) ({r0['blocks']} énoncés ; une association de N notions compte N, un texte à N trous compte N) "
+                                    f"alors que l'enseignant en demande EXACTEMENT {want_n}")
+                if recs and reused / max(1, r0['blocks']) > 0.25:
+                    problems.append(f"{reused} question(s) reprennent (même reformulées) une question du fichier ou contiennent des restes de mots croisés : écris des questions NOUVELLES sur d'autres points")
+                if not problems:
+                    break
+                _prev = raw
+                raw = call_ai(_SYSTEM, user + "\n\nCORRECTION : " + " ; ".join(problems) + ". Réécris le sujet COMPLET et son barème en corrigeant ces points.",
+                              temperature=0.5, max_tokens=8000, label='subject-chat') or raw
+                if not _BLOCK_RE.search(raw):
+                    raw = _prev              # la relance n'a rien donné d'exploitable : on garde le brouillon précédent (jamais rien)
+                    break
+            except Exception:
+                break
 
     # 1) reproduction exacte demandée
     m = _REPRO_RE.search(raw)
@@ -272,4 +302,9 @@ def chat(user_id, messages, file_ids, context='', draft=None):
     if re.match(r'^\s*Question\s+\d', title):        # pas de titre : la première ligne est déjà une question
         title, content = '', body
     content, _rep = detect_and_annotate(content.strip())      # marqueurs de type garantis, numérotation continue
-    return {'reply': reply or "Voici le brouillon.", 'draft': {'title': title.strip()[:200], 'content': content, 'rubric': rubric, 'report': _report(content)}}
+    rep = _report(content)
+    if want_n:
+        rep['requested'] = want_n
+    if recs and not _WANTS_REPRO_RE.search(last):
+        rep['reused'] = _verbatim(content, recs)
+    return {'reply': reply or "Voici le brouillon.", 'draft': {'title': title.strip()[:200], 'content': content, 'rubric': rubric, 'report': rep}}

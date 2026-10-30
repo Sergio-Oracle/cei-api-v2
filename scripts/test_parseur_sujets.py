@@ -238,6 +238,52 @@ if _jsb is not None:
     _jg = [b for b in _jsb[0] if b.get('grid')]
     check("navigateur = serveur : même grille", len(_jg) == 1 and len(_jg[0]['grid']) == 5 and len(_jg[0].get('items') or []) == 5)
 
+print('\n== autres types lus depuis Word/PDF : ordre, trous avec liste de mots, classement ==')
+def _types_of(txt):
+    return [b['type'] for b in questions(_parse_subject_blocks_ordered(detect_and_annotate(txt)[0]))]
+check("« remettez dans l'ordre chronologique » + A. B. C. D. → remise en ordre",
+      _types_of("1. Remettez dans l'ordre chronologique les étapes :\nA. Le vote\nB. La promulgation\nC. Le dépôt\nD. La publication\n") == ['ordre'])
+check("trous + « Mots : a, b, c » → texte à trous avec 2 trous et 3 mots",
+      (lambda b: b['type'] == 'trous' and len(b['items']) == 2 and len(b['options']) == 3)(
+          questions(_parse_subject_blocks_ordered(detect_and_annotate("1. Le droit ……… est un ensemble de règles ……… par l'État.\nMots : public, positif, édictées\n")[0]))[0]))
+check("deux trous + propositions lettrées → texte à trous (et non QCM)",
+      _types_of("1. Le ……… est le siège du ……… exécutif.\nA. palais\nB. pouvoir\nC. code\n") == ['trous'])
+check("un seul trou + propositions → reste un QCM", _types_of("1. La capitale est ………\nA. Dakar\nB. Thiès\n") == ['qcm'])
+check("catégories + éléments à puces → classement",
+      _types_of("1. Classez ces éléments.\nCatégories : Droit public, Droit privé\n- Le droit pénal\n- Le droit civil\n") == ['tri'])
+
+print('\n== QCM calculé (calculatedmulti de Moodle) : valeurs propres à chaque étudiant ==')
+from routes.exams import _build_exam_pages
+class _Sub:   # faux sujet / examen minimal pour la pagination
+    def __init__(self, c): self.content = c
+class _Ex:
+    def __init__(self, c): self.subject = _Sub(c); self.randomize_questions = False; self.questions_per_page = 0
+_cq = "1. Un capital de {a} F placé à {b} % pendant un an rapporte : [QCM]\nVariables : a = 1000..5000 pas 1000 | b = 2..8\nA. {={a}*{b}/100} F\nB. {={a}*{b}} F\nC. {={a}/{b}} F\nBonne réponse : A\n"
+_p1 = _build_exam_pages(_Ex(_cq), 11)['p1_blocks'][0]
+_p2 = _build_exam_pages(_Ex(_cq), 12)['p1_blocks'][0]
+check("type QCM affiché normalement avec 3 propositions", _p1['type'] == 'qcm' and len(_p1['choices']) == 3)
+check("aucune formule ni « Variables » visible par l'étudiant", '{' not in _p1['text'] and all('{' not in c['text'] for c in _p1['choices']) and not any('Variables' in l for l in (_p1.get('extraLines') or [])))
+check("valeurs différentes selon l'étudiant", _p1['text'] != _p2['text'] or _p1['choices'][0]['text'] != _p2['choices'][0]['text'], (_p1['text'], _p2['text']))
+import re as _re
+_a = int(_re.search(r'de ([\d\u202f]+) F', _p1['text']).group(1).replace('\u202f', '')); _b = int(_re.search(r'à (\d+) %', _p1['text']).group(1))
+check("proposition A = a × b / 100 pour CET étudiant", _p1['choices'][0]['text'].replace('\u202f', '').startswith(str(_a * _b // 100) if (_a * _b) % 100 == 0 else str(round(_a * _b / 100, 6)).replace('.', ',')), (_a, _b, _p1['choices'][0]['text']))
+
+print('\n== appariement aléatoire et fichier joint (Moodle : randomsamatch, essay avec pièces jointes) ==')
+from routes.exams import _deterministic_grade, _attachment_list
+_ap = "1. Associez chaque pays à sa capitale. [APPARIEMENT]\nTirage : 3\nA. Sénégal → Dakar\nB. Mali → Bamako\nC. Niger → Niamey\nD. Guinée → Conakry\nE. Ghana → Accra\nF. Togo → Lomé\n"
+_sets = {tuple(p['left'] for p in _build_exam_pages(_Ex(_ap), sd)['p1_blocks'][0]['pairs']) for sd in range(1, 12)}
+check("3 paires tirées parmi 6, différentes selon l'étudiant", all(len(x) == 3 for x in _sets) and len(_sets) > 1, _sets)
+_b = _build_exam_pages(_Ex(_ap), 5)['p1_blocks'][0]
+check("même tirage à l'affichage et à la correction (copie juste = 6/6)",
+      _deterministic_grade(_ap, "Question 1 (6 pts) :\n  • Réponse : par paires\n", {f'pq_1_{i}': p['right'] for i, p in enumerate(_b['pairs'])}, seed=5)[0] == 6.0)
+check("ligne « Tirage » jamais montrée à l'étudiant", not any('Tirage' in l for l in (_b.get('extraLines') or [])) and 'draw' in _b)
+_up = "3. Rédigez votre rapport puis joignez-le. [OUVERT]\nFichier : obligatoire\nConsigne : 2 pages.\n"
+_ub = _build_exam_pages(_Ex(_up), 1)['p2_items'][0]
+check("question avec fichier joint reconnue (obligatoire), ligne de réglage masquée", _ub.get('upload') == 'required' and not any('Fichier' in l for l in (_ub.get('extraLines') or [])))
+_ud, _ur = detect_and_annotate("1. Rédigez une note de synthèse puis joignez votre rapport au format PDF.\n")
+check("« joignez votre rapport » → réponse rédigée avec dépôt de fichier", questions(_parse_subject_blocks_ordered(_ud))[0].get('upload') == 'allowed', _ud)
+check("liste des fichiers joints lue dans la copie", _attachment_list({'pq_3_files': '[{"key":"k1","name":"a.pdf","size":10}]'})[0]['name'] == 'a.pdf')
+
 print('\n== sujets défectueux : le contrôle doit protester ==')
 VIDE = "Sujet sans aucune question numérotée.\nRépondez librement."
 CASSE = "Question 1 [QCM]\nÉnoncé\nA. seule proposition\nQuestion 2 [QCM]\nÉnoncé\nA. a\nB. b\nQuestion 3 [QCM]\nÉnoncé\nA. a\nB. b\nC. c\nQuestion 4 [QCM]\nÉnoncé\nA. a\nB. b\nC. c\nD. d\n"

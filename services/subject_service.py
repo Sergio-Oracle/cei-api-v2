@@ -316,6 +316,7 @@ class SubjectService:
         corrige_raw = []
         norm_reports = []
         crosswords = []
+        orig_texts = []   # texte extrait des fichiers d'épreuve (sans corrigé), pour contrôler la fidélité de la reproduction
         loose_key, loose_n = {}, 0   # clés « Bonne réponse » d'énoncés sans numéros (voir subject_normalizer.loose_mcq)
         first_filename = None
         first_s3_key = None
@@ -339,6 +340,7 @@ class SubjectService:
                     corrige_parts.append(f"--- Corrigé: {f.filename} ---\n{part}")
                     corrige_raw.append(part)
                 else:
+                    orig_texts.append(part)
                     part, nrep = normalize_exam_text(part)
                     if not nrep.get('structured'):
                         # Énoncés « A. B. C. D. / Bonne réponse : d » sans numéros : mis au format CEI, clés mises à part
@@ -390,6 +392,22 @@ class SubjectService:
                 detection['counts'][_k] = detection['counts'].get(_k, 0) + _v
             detection['converted'] += _r['converted']; detection['warnings'] += _r['warnings']
         corrige_text = '\n\n'.join(corrige_parts)
+        # Fidélité : (1) contrôle exact de ce qui aurait disparu, (2) relecture COMPLÈTE par l'IA en parallèle du barème
+        from services import subject_fidelity as _fid
+        _orig_all = '\n\n'.join(orig_texts)
+        _lost = _fid.lost_lines(_orig_all, annotated)
+        _review = {'ok': None, 'issues': []}
+        def _run_review():
+            _review.update(_fid.ai_review(_orig_all, annotated, _call_ai))
+        import threading as _th
+        _review_thread = _th.Thread(target=_run_review, daemon=True)
+        _review_thread.start()
+        # Types pour le barème : ceux RÉELLEMENT trouvés dans le document (plus jamais ceux cochés par l'enseignant)
+        _found = set(detection['counts'])
+        question_types = ', '.join(filter(None, [
+            'QCM' if _found & {'qcm', 'qcm_multi'} else '',
+            'Vrai/Faux' if 'vf' in _found else '',
+            'Questions ouvertes' if (_found & {'open', 'subopen', 'code'}) or not _found else '']))
 
         # Détection de doublons — contre TOUTE la banque de questions, puisque
         # ce document est un contenu neuf pour la plateforme (pas une extension
@@ -440,6 +458,9 @@ class SubjectService:
             s3_key=first_s3_key,
         )
         result['duplicates'] = duplicates
+        _review_thread.join(timeout=90)
+        detection['lost_lines'] = _lost
+        detection['review'] = dict(_review)
         result['detection'] = detection
         result['normalization'] = [r for r in norm_reports if r.get('structured')]
         result['has_corrige'] = bool(corrige_text)

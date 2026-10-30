@@ -1127,6 +1127,131 @@ def save_exam_answers(attempt_id):
         except Exception: pass
         return jsonify({'error': str(e)}), 500
 
+# ── Pièces jointes d'une réponse rédigée (qtype_essay « fichiers joints » de Moodle) ─────────────────────────────────
+_ATTACH_EXTS = {'pdf', 'doc', 'docx', 'odt', 'txt', 'rtf', 'xls', 'xlsx', 'ods', 'csv', 'ppt', 'pptx', 'png', 'jpg', 'jpeg', 'gif',
+                'zip', 'py', 'java', 'c', 'cpp', 'js', 'ts', 'html', 'css', 'sql', 'json', 'ipynb', 'md'}
+_ATTACH_MAX_BYTES = 10 * 1024 * 1024
+_ATTACH_MAX_PER_QUESTION = 5
+
+
+def _attachment_list(answers_data, num=None) -> list:
+    """[{num, key, name, size}] lues dans les réponses (champ pq_<n>_files = liste JSON)."""
+    out = []
+    if not isinstance(answers_data, dict):
+        return out
+    for k, v in answers_data.items():
+        m = re.match(r'^pq_(\d+)_files$', str(k))
+        if not m or (num is not None and m.group(1) != str(num)):
+            continue
+        try:
+            for f in json.loads(v) if isinstance(v, str) else (v or []):
+                if isinstance(f, dict) and f.get('key'):
+                    out.append({'num': m.group(1), 'key': str(f['key']), 'name': str(f.get('name', ''))[:120], 'size': int(f.get('size') or 0)})
+        except Exception:
+            continue
+    return out
+
+
+@exams_bp.route('/api/exam_attempts/<int:attempt_id>/attachments', methods=['POST'])
+@paseto_required
+@limiter.exempt
+def upload_attempt_attachment(attempt_id):
+    """Dépose un fichier joint à une réponse (question « Fichier : oui »). Réservé à l'étudiant, tentative en cours, avant l'échéance."""
+    session = get_session()
+    try:
+        user_id = get_current_user_id()
+        attempt = session.query(ExamAttempt).filter_by(id=attempt_id, student_id=user_id).first()
+        if not attempt:
+            return jsonify({'error': 'Tentative non trouvée'}), 404
+        if attempt.status != AttemptStatus.IN_PROGRESS:
+            return jsonify({'error': "Cette copie n'est plus modifiable"}), 400
+        from services.exam_closer import autosubmit_if_expired
+        if autosubmit_if_expired(session, attempt):
+            session.commit()
+            return jsonify({'error': 'Le temps est écoulé : votre copie a été soumise automatiquement'}), 400
+        f = request.files.get('file')
+        num = re.sub(r'\D', '', request.form.get('num', ''))[:3]
+        if not f or not num:
+            return jsonify({'error': 'Fichier ou numéro de question manquant'}), 400
+        name = secure_filename(f.filename or '') or 'fichier'
+        ext = name.rsplit('.', 1)[-1].lower() if '.' in name else ''
+        if ext not in _ATTACH_EXTS:
+            return jsonify({'error': f"Type de fichier non accepté (.{ext}). Formats : PDF, Word, Excel, PowerPoint, images, texte, code, ZIP."}), 400
+        raw = f.read(_ATTACH_MAX_BYTES + 1)
+        if len(raw) > _ATTACH_MAX_BYTES:
+            return jsonify({'error': 'Fichier trop volumineux (10 Mo maximum)'}), 400
+        if not raw:
+            return jsonify({'error': 'Fichier vide'}), 400
+        try:
+            current = json.loads(attempt.answers) if attempt.answers else {}
+        except Exception:
+            current = {}
+        if len(_attachment_list(current, num)) >= _ATTACH_MAX_PER_QUESTION:
+            return jsonify({'error': f'{_ATTACH_MAX_PER_QUESTION} fichiers au maximum par question'}), 400
+        from s3_client import upload_document
+        key = upload_document('answer', f'a{attempt_id}_q{num}_{name}', raw, f.content_type or 'application/octet-stream')
+        if not key:   # stockage objet indisponible : copie locale, jamais de perte
+            d = os.path.join(os.getenv('UPLOAD_FOLDER', 'static/uploads'), 'answers', str(attempt_id))
+            os.makedirs(d, exist_ok=True)
+            fn = f"{datetime.utcnow().strftime('%Y%m%dT%H%M%S%f')}_q{num}_{name}"
+            with open(os.path.join(d, fn), 'wb') as fh:
+                fh.write(raw)
+            key = f'local:answers/{attempt_id}/{fn}'
+        return jsonify({'success': True, 'file': {'key': key, 'name': name, 'size': len(raw)}})
+    except Exception as e:
+        print(f"Erreur upload_attempt_attachment: {e}")
+        return jsonify({'error': "Envoi impossible, réessayez"}), 500
+    finally:
+        session.close()
+
+
+@exams_bp.route('/api/exam_attempts/<int:attempt_id>/attachments/download', methods=['GET'])
+@paseto_required
+def download_attempt_attachment(attempt_id):
+    """Télécharge un fichier joint : l'étudiant auteur, ou le personnel autorisé sur l'examen."""
+    session = get_session()
+    try:
+        user_id = get_current_user_id()
+        user = session.get(User, user_id)
+        attempt = session.query(ExamAttempt).options(joinedload(ExamAttempt.exam).joinedload(OnlineExam.subject)).filter_by(id=attempt_id).first()
+        if not attempt or not user:
+            return jsonify({'error': 'Introuvable'}), 404
+        if attempt.student_id != user_id:
+            if user.role == UserRole.STUDENT:
+                return jsonify({'error': 'Accès non autorisé'}), 403
+            if user.role == UserRole.PROFESSOR and not can_view_exam(session, attempt.exam, user_id):
+                return jsonify({'error': 'Accès non autorisé'}), 403
+        key = request.args.get('key', '')
+        try:
+            answers_data = json.loads(attempt.answers) if attempt.answers else {}
+        except Exception:
+            answers_data = {}
+        f = next((x for x in _attachment_list(answers_data) if x['key'] == key), None)   # seul un fichier réellement rattaché à CETTE copie
+        if not f:
+            return jsonify({'error': 'Fichier introuvable'}), 404
+        if key.startswith('local:answers/'):
+            if request.args.get('json'):
+                return jsonify({'local': True})
+            from flask import send_file
+            path = os.path.normpath(os.path.join(os.getenv('UPLOAD_FOLDER', 'static/uploads'), key[len('local:'):]))
+            base = os.path.normpath(os.path.join(os.getenv('UPLOAD_FOLDER', 'static/uploads'), 'answers', str(attempt_id)))
+            if not path.startswith(base + os.sep) or not os.path.exists(path):
+                return jsonify({'error': 'Fichier introuvable'}), 404
+            return send_file(path, as_attachment=True, download_name=f['name'])
+        from s3_client import _public_client, _SNAP_BUCKET
+        url = _public_client().generate_presigned_url(
+            'get_object', Params={'Bucket': _SNAP_BUCKET, 'Key': key, 'ResponseContentDisposition': f"attachment; filename=\"{f['name']}\""}, ExpiresIn=600)
+        if request.args.get('json'):
+            return jsonify({'url': url})
+        from flask import redirect
+        return redirect(url)
+    except Exception as e:
+        print(f"Erreur download_attempt_attachment: {e}")
+        return jsonify({'error': 'Téléchargement impossible'}), 500
+    finally:
+        session.close()
+
+
 @exams_bp.route('/api/exam_attempts/<int:attempt_id>/heartbeat', methods=['POST'])
 @paseto_required
 @limiter.exempt
@@ -1495,11 +1620,16 @@ def _build_exam_pages(exam, seed) -> dict:
     p2_types = ('section', 'description', 'open', 'subopen', 'code')
     from services import question_types as QT
     for b in blocks:
-        if b['type'] == 'calculee':
+        if b['type'] == 'calculee' or (b.get('vars_line') and b['type'] in ('qcm', 'qcm_multi')):
             vals = QT.instantiate(b.get('vars_line', ''), seed, b['num'])
-            b['text'] = QT.substitute(b['text'], vals)
-            b['extraLines'] = [QT.substitute(l, vals) for l in (b.get('extraLines') or [])]
+            b['text'] = QT.substitute_formulas(b['text'], vals)
+            b['extraLines'] = [QT.substitute_formulas(l, vals) for l in (b.get('extraLines') or [])]
+            for _c in (b.get('choices') or []):                      # QCM calculé : propositions = formules évaluées
+                _c['text'] = QT.substitute_formulas(_c['text'], vals)
             b.pop('vars_line', None)   # jamais envoyé à l'étudiant
+    for b in blocks:
+        if b['type'] == 'appariement' and b.get('draw') and b.get('pairs'):
+            b['pairs'] = QT.draw_pairs(b['pairs'], b['draw'], seed, b['num'])
     p1_blocks = [b for b in blocks if b['type'] in p1_types]
     p2_items  = [b for b in blocks if b['type'] in p2_types]
     # Titre d'exercice dont les questions sont en partie 1 (QCM, Vrai/Faux…) : en partie 2 il resterait un titre orphelin
@@ -1592,6 +1722,7 @@ def _parse_subject_questions_for_grading(content: str) -> dict:
         text = TYPE_MARKER.sub('', rest).strip()
         i += 1
         choices, pairs = {}, []
+        draw = None
         g_items, g_cats, g_choices, g_extra = [], [], [], []
         vars_line = ''
         is_grid = marker in QT.GRID_MARKERS
@@ -1637,6 +1768,10 @@ def _parse_subject_questions_for_grading(content: str) -> dict:
                 g_extra.append(l)
                 i += 1
                 continue
+            if marker == 'APPARIEMENT' and QT.TIRAGE_RE.match(l):
+                draw = int(QT.TIRAGE_RE.match(l).group(1))
+                i += 1
+                continue
             if marker == 'APPARIEMENT':
                 pm = PAIR_RE.match(l)
                 if pm:
@@ -1649,7 +1784,7 @@ def _parse_subject_questions_for_grading(content: str) -> dict:
                 i += 1
                 continue
             i += 1
-        entry = {'marker': marker, 'text': text, 'choices': choices, 'pairs': pairs, 'vars_line': vars_line}
+        entry = {'marker': marker, 'text': text, 'choices': choices, 'pairs': pairs, 'vars_line': vars_line, 'draw': draw}
         if is_grid:
             items, options = QT.grid_from_lines(marker, g_extra, g_choices, g_items, g_cats, text)
             entry['items'], entry['options'] = items, options
@@ -1750,6 +1885,8 @@ def _parse_subject_blocks_ordered(raw: str) -> list:
         extra_lines, choices, pairs = [], [], []
         g_items, g_cats = [], []
         g_grid = None
+        draw_n = None
+        upload_mode = None
         vars_line = ''
         while i < n:
             if is_sep(lines[i]):
@@ -1803,6 +1940,14 @@ def _parse_subject_blocks_ordered(raw: str) -> list:
                     extra_lines.append(lines[i])
                 i += 1
                 continue
+            if is_pair_mode and QT.TIRAGE_RE.match(strip(lines[i])):
+                draw_n = int(QT.TIRAGE_RE.match(strip(lines[i])).group(1))
+                i += 1
+                continue
+            if QT.UPLOAD_RE.match(strip(lines[i])):
+                upload_mode = QT.UPLOAD_RE.match(strip(lines[i])).group(1).lower()
+                i += 1
+                continue
             if is_pair_mode:
                 p = get_pair(lines[i])
                 if p:
@@ -1813,6 +1958,10 @@ def _parse_subject_blocks_ordered(raw: str) -> list:
                     i += 1
                 else:
                     break
+                continue
+            if q['markerType'] in ('QCM', 'QCM_MULTI') and QT.VARS_RE.match(strip(lines[i])):
+                vars_line = QT.VARS_RE.match(strip(lines[i])).group(1).strip()      # QCM calculé : valeurs tirées par étudiant
+                i += 1
                 continue
             c = get_c(lines[i])
             if c:
@@ -1863,6 +2012,10 @@ def _parse_subject_blocks_ordered(raw: str) -> list:
             items, options = QT.grid_from_lines(q['markerType'], clean_extra, choices, g_items, g_cats, q['text'])
             blk['items'], blk['options'] = items, options
             blk['choices'] = []   # les propositions vivent dans `options` (jamais mélangées comme un QCM)
+        if draw_n:
+            blk['draw'] = draw_n          # appariement aléatoire : tirage appliqué par étudiant dans _build_exam_pages
+        if upload_mode and btype in ('open', 'subopen', 'code'):
+            blk['upload'] = 'required' if upload_mode == 'obligatoire' else 'allowed'
         if g_grid:
             blk['grid'] = g_grid           # mots croisés : position de chaque mot (un mot = un champ du texte à trous)
         if vars_line:
@@ -1947,7 +2100,9 @@ def _build_readable_student_answers(subject_content: str, answers_data, exclude_
             lines.append(f"Question {num} ({qt_}) — Réponse : {raw}" if raw else f"Question {num} ({qt_}) — Pas de réponse fournie.")
         elif marker == 'APPARIEMENT' and q.get('pairs'):
             parts = []
-            for idx, pair in enumerate(q['pairs']):
+            from services import question_types as _QTd
+            _pp = _QTd.draw_pairs(q['pairs'], q.get('draw'), seed, num) if q.get('draw') and seed is not None else q['pairs']
+            for idx, pair in enumerate(_pp):
                 ans = answers_data.get(f'{direct_key}_{idx}', '').strip()
                 if ans:
                     parts.append(f"  • {pair['left']} → {ans}")
@@ -1987,6 +2142,10 @@ def _build_readable_student_answers(subject_content: str, answers_data, exclude_
             lines.append(f"Question {num} ({qtext}) — Réponse : {raw}" if raw else no_answer)
 
     if lines:
+        for _a in _attachment_list(answers_data):
+            if not exclude_nums or _a['num'] not in exclude_nums:
+                lines.append(f"Question {_a['num']} — Fichier joint par l'étudiant : « {_a['name']} » "
+                             "(le contenu du fichier n'est pas lu par l'IA : ne pas pénaliser son absence de texte, l'enseignant le consulte)")
         return '\n\n'.join(lines)
 
     # Repli : formats hérités ({qcm:.., texte:..}) ou blob déjà textuel
@@ -2164,7 +2323,7 @@ def _deterministic_grade(content: str, rubric: str, answers_data, seed=None) -> 
                                 'correct': earned == pts, 'given': given})
 
         elif marker == 'APPARIEMENT' and q.get('pairs'):
-            pairs = q['pairs']
+            pairs = QT.draw_pairs(q['pairs'], q.get('draw'), seed, num) if q.get('draw') and seed is not None else q['pairs']
             if not pairs:
                 continue
             n_right = 0
@@ -7690,6 +7849,7 @@ def get_attempt_review(attempt_id):
             'subject_rubric':  attempt.exam.subject.rubric if attempt.exam and attempt.exam.subject else '',
             'feedback':       attempt.feedback,
             'corrector_name': attempt.corrector.full_name if attempt.corrector else None,
+            'attachments':    [dict(a, url=f"/api/exam_attempts/{attempt.id}/attachments/download?key=" + __import__('urllib.parse', fromlist=['quote']).quote(a['key'], safe='')) for a in _attachment_list(answers_data)],
             'incidents':      incidents,
             'proctor_notes':  proctor_notes,
             'corrected_at':   attempt.corrected_at.isoformat() if attempt.corrected_at else None,

@@ -26,11 +26,17 @@ _NOISE_RE = re.compile(r'^\s*[\d\s]{1,14}$')                                  # 
 _FOOTER_RE = re.compile(r'^.{4,140}\s·\s.{2,140}\bpage\s+\d+\s*$', re.I)       # « Matière · Épreuve · page 2 »
 _RECAP_RE = re.compile(r'^\s*R[ée]capitulatif\s+de\s+la\s+note', re.I)
 _DIRECTION_RE = re.compile(r'^\s*(?:Horizontalement|Verticalement)\s*:?\s*$', re.I)
+_UPLOAD_CUE_RE = re.compile(r'(?:joignez|déposez|téléversez|transmettez|envoyez|rendez|uploadez)[^.\n]{0,50}(?:fichier|document|rapport|travail|projet|code|capture|schéma|tableur)', re.I)
+_UPLOAD_LINE_RE = re.compile(r'^\s*(?:Fichier|Pi[èe]ce\s+jointe|D[ée]p[ôo]t)\s*:', re.I)
 _HINT_RE = re.compile(r'\s*[☐□▢]\s*indice\s*$', re.I)
 _MULTI_RE = re.compile(r'plusieurs\s+(?:bonnes?\s+)?r[ée]ponses|toutes\s+les\s+(?:bonnes?\s+)?r[ée]ponses|une\s+ou\s+plusieurs|cochez\s+toutes', re.I)
 _VF_TITLE_RE = re.compile(r'vrai\s*(?:ou|/|-)\s*faux|\bV\s*/\s*F\b', re.I)
 _ASSOC_ROW_RE = re.compile(r'^\s*(\d{1,2})[.)]\s+(.+?)\s+([a-f])[.)]\s+(.+)$')
 _LETTER_SPLIT_RE = re.compile(r'\s([a-f])[.)]\s+')
+_ORDER_RE = re.compile(r"(?:remett|class|rang|ordonn|plac|numérot)\w*[^.\n]{0,60}(?:dans\s+l['’]ordre|ordre\s+(?:chronologique|croissant|décroissant|correct|logique|alphabétique)|chronolog)|(?:ordre\s+chronologique|remise\s+en\s+ordre)", re.I)
+_BANK_RE = re.compile(r'^\s*(?:Mots?|Liste\s+de\s+mots|Banque\s+de\s+mots|Propositions|Expressions?)(?:\s+(?:à|a)\s+(?:utiliser|placer|choisir|insérer))?\s*:\s*(.+)$', re.I)
+_CATS_LINE_RE = re.compile(r'^\s*(?:Cat[ée]gories?|Colonnes?|Groupes?)(?:\s+suivantes?)?\s*:\s*(.+)$', re.I)
+_BULLET_RE = re.compile(r'^\s*[-•*▪]\s+(.+)$')
 _LETTERS_LEN_RE = re.compile(r'\(\s*\d{1,2}\s+lettres?\s*\)', re.I)
 
 
@@ -204,8 +210,16 @@ def detect_and_annotate(content, crosswords=None):
         if cur in ('ASSOCIATION', 'TRI', 'ORDRE', 'TROUS', 'CLOZE', 'ZONES', 'COURT', 'NUMERIQUE', 'CALCULEE', 'VF', 'APPARIEMENT', 'CODE', 'SUBOPEN') \
                 and not (cur == 'VF' and len(choices) >= 2 and not _VF_TITLE_RE.search(text_all + title)):
             want = cur                                         # structure déjà exprimée : respectée
+        elif len(choices) >= 2 and len(_GAP_RE.findall(text_all)) >= 2:
+            want = 'TROUS'                                      # texte à plusieurs trous + liste de mots lettrée (gapselect / ddwtos)
+        elif len(choices) >= 3 and _ORDER_RE.search(consigne + ' ' + text_all):
+            want = 'ORDRE'                                      # « remettez dans l'ordre » (ordering)
         elif len(choices) >= 2:
             want = 'QCM_MULTI' if _MULTI_RE.search(consigne + ' ' + text_all) else 'QCM'
+        elif any(_BANK_RE.match(b) for b in body) and _GAP_RE.search(text_all):
+            want = 'TROUS'                                      # trous + « Mots : a, b, c » (banque de mots)
+        elif any(_CATS_LINE_RE.match(b) for b in body) and sum(1 for b in body if _BULLET_RE.match(b)) >= 2:
+            want = 'TRI'                                        # classement dans des catégories
         elif _VF_TITLE_RE.search(title) or _VF_TITLE_RE.search(head):
             want = 'VF'
         elif _GAP_RE.search(text_all) and not _LETTERS_LEN_RE.search(text_all):
@@ -214,6 +228,39 @@ def detect_and_annotate(content, crosswords=None):
             want = 'COURT'
         else:
             want = cur or 'OUVERT'
+        if want == 'TROUS' and cur != 'TROUS':
+            k = [0]
+            def _fill_t(mo):
+                k[0] += 1
+                return '{%d}' % k[0]
+            new_head = _GAP_RE.sub(_fill_t, head)
+            new_body, opts = [], [b for b in body if _CHOICE_RE.match(b.strip())]
+            for b in body:
+                if not b.strip():
+                    continue
+                bm = _BANK_RE.match(b)
+                if bm:
+                    words = [w.strip() for w in re.split(r'\s*[;,/·|]\s*', bm.group(1)) if w.strip()]
+                    opts = [f"{chr(65 + i)}. {w}" for i, w in enumerate(words)]
+                    continue
+                if _CHOICE_RE.match(b.strip()):
+                    continue
+                new_body.append(_GAP_RE.sub(_fill_t, b))
+            if k[0] and len(opts) >= 2:
+                lines[s:e] = [_MARK_RE.sub('', new_head).rstrip() + ' [TROUS]'] + new_body + opts
+                report['converted'].append(f"texte à trous avec liste de mots : {k[0]} trou(s), {len(opts)} mots")
+                continue
+            want = 'QCM'
+        if want == 'TRI' and cur != 'TRI':
+            cats = next((_CATS_LINE_RE.match(b) for b in body if _CATS_LINE_RE.match(b)), None)
+            items = [b.strip() for b in body if _BULLET_RE.match(b)]
+            names = [c.strip() for c in re.split(r'\s*[|;,/]\s*', cats.group(1)) if c.strip()] if cats else []
+            if len(names) >= 2 and len(items) >= 2:
+                rest = [b for b in body if b.strip() and not _CATS_LINE_RE.match(b) and not _BULLET_RE.match(b)]
+                lines[s:e] = [_MARK_RE.sub('', head).rstrip() + ' [TRI]'] + rest + ['Catégories : ' + ' | '.join(names)] + items
+                report['converted'].append(f"classement : {len(items)} éléments, {len(names)} catégories")
+                continue
+            want = 'OUVERT'
         if want == 'CLOZE' and cur != 'CLOZE':
             k = [0]
             def _fill(mo):
@@ -231,6 +278,9 @@ def detect_and_annotate(content, crosswords=None):
         if cur != want:
             lines[s] = (_MARK_RE.sub('', head).rstrip() + f' [{want}]')
             report['changed'] += 1
+        if want in ('OUVERT', 'CODE', 'SUBOPEN') and _UPLOAD_CUE_RE.search(text_all) and not any(_UPLOAD_LINE_RE.match(b) for b in body):
+            lines.insert(s + 1, 'Fichier : oui')                       # « joignez / déposez votre fichier » → réponse rédigée + fichier joint
+            report['converted'].append(f"question {head.split('.')[0].strip()[:3]} : dépôt de fichier")
     out = '\n'.join(lines)
     from routes.exams import _parse_subject_blocks_ordered
     for b in _parse_subject_blocks_ordered(out):

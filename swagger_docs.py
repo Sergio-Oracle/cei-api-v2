@@ -2408,6 +2408,22 @@ OPENAPI_SPEC = {
             }}}},
             "responses": {"200": {"description": "Sauvegardé"}}
         }},
+        "/api/exam_attempts/{attempt_id}/attachments": {"post": {
+            "tags": ["Examens en ligne"], "summary": "Joindre un fichier à une réponse rédigée (question « Fichier : oui »)",
+            "description": "Étudiant auteur, tentative en cours, avant l'échéance. 10 Mo maximum, 5 fichiers par question, formats : PDF, Word, Excel, PowerPoint, images, texte, code, ZIP. Retourne la clé à ranger dans la réponse `pq_<n>_files`.",
+            "parameters": [{"name": "attempt_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+            "requestBody": {"content": {"multipart/form-data": {"schema": {"type": "object", "required": ["file", "num"], "properties": {
+                "file": {"type": "string", "format": "binary"}, "num": {"type": "string", "description": "Numéro de la question"}}}}}},
+            "responses": {"200": {"description": "{success, file: {key, name, size}}"}, "400": {"description": "Format, taille, échéance ou copie close"}}
+        }},
+        "/api/exam_attempts/{attempt_id}/attachments/download": {"get": {
+            "tags": ["Examens en ligne"], "summary": "Télécharger un fichier joint à une copie",
+            "description": "Étudiant auteur ou personnel de l'examen. Seul un fichier réellement rattaché à cette copie est servi. `json=1` renvoie {url} (lien temporaire) ou {local:true}.",
+            "parameters": [{"name": "attempt_id", "in": "path", "required": True, "schema": {"type": "integer"}},
+                           {"name": "key", "in": "query", "required": True, "schema": {"type": "string"}},
+                           {"name": "json", "in": "query", "required": False, "schema": {"type": "string"}}],
+            "responses": {"200": {"description": "Fichier ou {url}"}, "302": {"description": "Redirection vers le lien temporaire"}, "403": {"description": "Accès non autorisé"}, "404": {"description": "Fichier introuvable"}}
+        }},
         "/api/exam_attempts/{attempt_id}/submit": {"post": {
             "tags": ["Examens en ligne"], "summary": "Soumettre définitivement la copie",
             "parameters": [{"name": "attempt_id", "in": "path", "required": True, "schema": {"type": "integer"}}],

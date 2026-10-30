@@ -44,6 +44,8 @@ ITEM_RE = re.compile(r'^\s*[-•*▪]\s+(.+)$')                      # élément
 CATS_RE = re.compile(r'^\s*Cat[ée]gories?\s*:\s*(.+)$', re.I)    # « Catégories : A | B »
 GAP_RE = re.compile(r'\{(\d{1,2})\}')                             # trou {1}
 DESC_RE = re.compile(r'^\s*\[DESCRIPTION\]\s*(.*)$', re.I)
+TIRAGE_RE = re.compile(r'^\s*Tirage\s*:\s*(\d{1,2})\b', re.I)       # appariement aléatoire : « Tirage : 5 » = 5 paires tirées au hasard par étudiant
+UPLOAD_RE = re.compile(r'^\s*(?:Fichier|Pi[èe]ce\s+jointe|D[ée]p[ôo]t)\s*:\s*(oui|obligatoire|facultatif|autoris[ée])\s*$', re.I)  # réponse rédigée + fichier joint
 GRILLE_RE = re.compile(r'^\s*Grille\s*:\s*(.+)$', re.I)          # mots croisés : « 1:3:H:4:0:12 ; 2:… » = champ:numéro:sens:ligne:colonne:longueur
 
 
@@ -331,6 +333,28 @@ def eval_formula(expr: str, values: dict):
         return float(ev(ast.parse((expr or '').replace('×', '*').replace('÷', '/').replace('^', '**').replace(',', '.').strip(), mode='eval')))
     except Exception:
         return None
+
+
+def draw_pairs(pairs: list, n, seed, num) -> list:
+    """Appariement aléatoire (randomsamatch de Moodle) : n paires tirées dans la réserve, différentes d'un étudiant à l'autre,
+    stables pour un même étudiant (même graine à l'affichage et à la correction)."""
+    import random
+    try:
+        n = int(n)
+    except (TypeError, ValueError):
+        return pairs
+    if not pairs or n <= 0 or n >= len(pairs):
+        return pairs
+    idx = sorted(random.Random(f'{seed}:{num}:tirage').sample(range(len(pairs)), n))
+    return [pairs[i] for i in idx]
+
+
+def substitute_formulas(text: str, values: dict) -> str:
+    """« {={a}*{b}/100} » (formule entre accolades, comme calculatedmulti de Moodle) → valeur calculée pour CET étudiant."""
+    def one(m):
+        v = eval_formula(re.sub(r'\{([A-Za-z]\w*)\}', r'\1', m.group(1)), values)
+        return fmt_value(round(v, 6)) if v is not None else m.group(0)
+    return substitute(re.sub(r'\{=\s*((?:[^{}]|\{[A-Za-z]\w*\})+?)\s*\}', one, text or ''), values)
 
 
 def point_in_rect(xy: str, rect) -> bool:

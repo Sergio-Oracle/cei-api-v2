@@ -3076,6 +3076,52 @@ def correct_all_attempts(exam_id):
         session.close()
 
 
+def _grade_check_summary(rep: dict) -> dict:
+    """Résumé d'une vérification de notes, sans les listes détaillées."""
+    b, a = rep['before'], rep['after']
+    return {'copies': rep['copies'], 'checked': rep['checked'], 'changed': rep['changed'], 'lower': rep['lower'],
+            'higher': rep['higher'], 'unchanged': rep['unchanged'], 'skipped_empty': rep['skipped_empty'],
+            'skipped_manual': rep['skipped_manual'], 'skipped_edited': rep['skipped_edited'],
+            'skipped_unverifiable': rep['skipped_unverifiable'],
+            'avg_before': round(sum(b) / len(b), 2) if b else None, 'avg_after': round(sum(a) / len(a), 2) if a else None,
+            'perfect_before': sum(1 for x in b if x >= 19.995), 'perfect_after': sum(1 for x in a if x >= 19.995),
+            'backup': os.path.basename(rep['backup']) if rep.get('backup') else None}
+
+
+@exams_bp.route('/api/online_exams/<int:exam_id>/recompute_grades', methods=['POST'])
+@paseto_required
+def recompute_grades(exam_id):
+    """Vérifie (apply=false, rien n'est écrit) ou applique (apply=true) le recalcul des notes d'un examen corrigé.
+    À faire une fois la correction terminée et AVANT la publication des résultats ; après publication, l'application
+    exige `confirm_published` (les étudiants ont déjà vu leur note)."""
+    session = get_session()
+    try:
+        user_id = get_current_user_id()
+        user = session.query(User).filter_by(id=user_id).first()
+        if user.role not in [UserRole.PROFESSOR, UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN]:
+            return jsonify({'error': 'Accès non autorisé'}), 403
+        exam = session.query(OnlineExam).filter_by(id=exam_id).first()
+        if not exam:
+            return jsonify({'error': 'Examen non trouvé'}), 404
+        if user.role == UserRole.PROFESSOR and not can_manage_exam(session, exam, user_id):
+            return jsonify({'error': 'Accès non autorisé'}), 403
+        data = request.get_json(silent=True) or {}
+        apply = bool(data.get('apply'))
+        published = bool(exam.results_published)
+        if apply and published and not data.get('confirm_published'):
+            return jsonify({'error': 'Les résultats sont déjà publiés : confirmez pour modifier des notes que les étudiants ont vues.',
+                            'needs_confirmation': True, 'published': True}), 409
+        from services.grade_recompute import recompute
+        rep = recompute(session, exam_id, apply=apply)
+        return jsonify({'success': True, 'apply': apply, 'published': published, 'summary': _grade_check_summary(rep)})
+    except Exception as e:
+        session.rollback()
+        print(f"Erreur recompute_grades: {e}")
+        return jsonify({'error': str(e)}), 500
+    finally:
+        session.close()
+
+
 @exams_bp.route('/api/online_exams/<int:exam_id>/correction_progress', methods=['GET'])
 @paseto_required
 def correction_progress(exam_id):
@@ -3581,6 +3627,19 @@ def publish_exam_results(exam_id):
                 session.close()
                 return jsonify({'error': "Toutes les vagues ne sont pas terminées : publier maintenant révélerait notes et "
                                          "corrections aux étudiants des vagues suivantes. Publiez après la dernière vague."}), 400
+        if bool(data.get('published', True)) and not was_published and not data.get('ignore_check'):
+            # Dernier filet avant que les étudiants voient leur note : les notes doivent être celles que donne le calcul actuel.
+            try:
+                from services.grade_recompute import recompute
+                chk = _grade_check_summary(recompute(session, exam_id, apply=False))
+            except Exception as e:
+                chk = None
+                print(f"Vérification des notes avant publication impossible ({e}) — publication non bloquée")
+            if chk and chk['changed'] > 0:
+                session.close()
+                return jsonify({'error': f"{chk['changed']} note(s) ne correspondent pas au calcul actuel ({chk['lower']} à la baisse, "
+                                         f"{chk['higher']} à la hausse). Recalculez avant de publier.",
+                                'needs_recompute': True, 'check': chk}), 409
         exam.results_published = bool(data.get('published', True))
         if exam.results_published and not was_published:
             exam.results_published_at = utcnow()

@@ -115,11 +115,24 @@ def _batch_done(exam_id) -> None:
         title = s.query(OnlineExam.title).filter_by(id=exam_id).scalar() or f'Examen #{exam_id}'
     finally:
         s.close()
+    # Vérification automatique des notes : le recalcul est proposé avant toute publication des résultats.
+    check = ''
+    try:
+        from services.grade_recompute import recompute
+        s2 = get_session()
+        try:
+            changed = recompute(s2, exam_id, apply=False)['changed']
+        finally:
+            s2.close()
+        check = (f" Attention : {changed} note(s) ne correspondent pas au calcul actuel — utilisez « Recalculer les notes » avant de publier."
+                 if changed else " Vérification des notes : toutes correspondent au calcul actuel.")
+    except Exception as e:
+        log(f"vérification des notes de l'examen {exam_id} : {e}")
     try:
         from notif_bus import notify_user
         notify_user(who, 'scheduled_correction_done', 'Correction terminée',
                     f'La correction de « {title} » est terminée : {corrected} copie(s) corrigée(s) sur {total}'
-                    + (f', {total - corrected} en attente ou en échec' if total > corrected else '') + '.',
+                    + (f', {total - corrected} en attente ou en échec' if total > corrected else '') + '.' + check,
                     priority='default', tags=['clipboard-check'], extra={'exam_id': exam_id})
     except Exception:
         pass

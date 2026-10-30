@@ -16,6 +16,7 @@ import app as A
 from routes import exams as R
 from models import (get_session, User, UserRole, Subject, OnlineExam, ExamStatus, ExamAttempt, AttemptStatus, ExamActivityLog)
 from werkzeug.security import generate_password_hash
+from auth_paseto import create_access_token
 
 RESULTS = []
 def check(nom, ok, detail=''):
@@ -27,6 +28,8 @@ def qcm(n, pts='0,25', correct='C'):
 def bareme(n, pts='0,25', correct='C'):
     return f"Question {n} ({pts} pts) :\n  • Bonne réponse : {correct}) c\n\n"
 
+c = A.app.test_client()
+def H(u): return {'Authorization': 'Bearer ' + create_access_token(u.id, u.role.value, u.email)}
 s = get_session(); tag = uuid.uuid4().hex[:6]; made = {'users': [], 'ex': [], 'sub': []}
 def mk(role, n):
     u = User(email=f'bar.{tag}.{n}@test.invalid', full_name=f'Bar Test {n}', role=role, is_active=True, email_verified=True,
@@ -35,7 +38,7 @@ def mk(role, n):
 ai_calls = []
 real_ai = R.call_claude
 try:
-    adm = mk(UserRole.ADMIN, 'adm'); st = [mk(UserRole.STUDENT, f'e{i}') for i in range(6)]
+    adm = mk(UserRole.ADMIN, 'adm'); st = [mk(UserRole.STUDENT, f'e{i}') for i in range(8)]
     now = datetime.utcnow()
     def setup(content, rubric, title):
         sub = Subject(title=title, content=content, rubric=rubric, creator_id=adm.id); s.add(sub); s.commit(); made['sub'].append(sub.id)
@@ -88,6 +91,25 @@ try:
     check("l'ancienne valeur est sauvegardée dans un fichier", len(saved) == 1 and saved[0]['score'] == 20.0, saved)
     check("la modification est tracée dans l'historique de la copie", s.query(ExamActivityLog).filter_by(attempt_id=inflated.id, event_type='grade_recomputed').count() == 1)
 
+    print('\n== Bouton « Recalculer » et filet avant publication ==')
+    late = stored(st[6], 18.5, json.dumps(infl))                          # une note fausse de plus
+    r = c.post(f'/api/online_exams/{ex.id}/recompute_grades', headers=H(adm), json={'apply': False}).get_json()
+    check("la vérification annonce 1 note à recalculer, sans rien écrire", r['summary']['changed'] == 1 and s.get(ExamAttempt, late.id).score == 18.5, r)
+    r = c.put(f'/api/online_exams/{ex.id}/publish-results', headers=H(adm), json={'published': True})
+    check("la publication est refusée tant que des notes diffèrent du calcul", r.status_code == 409 and r.get_json().get('needs_recompute'), r.get_json())
+    s.expire_all(); check("… et les résultats ne sont pas publiés", not s.get(OnlineExam, ex.id).results_published)
+    r = c.post(f'/api/online_exams/{ex.id}/recompute_grades', headers=H(adm), json={'apply': True}).get_json()
+    s.expire_all()
+    check("le recalcul corrige la note (18,5 → 15)", r['summary']['changed'] == 1 and s.get(ExamAttempt, late.id).score == 15.0, r)
+    r = c.put(f'/api/online_exams/{ex.id}/publish-results', headers=H(adm), json={'published': True})
+    check("la publication passe une fois les notes vérifiées", r.status_code == 200 and r.get_json().get('results_published'), r.get_json())
+    late2 = stored(st[7], 17.0, json.dumps(infl))
+    r = c.post(f'/api/online_exams/{ex.id}/recompute_grades', headers=H(adm), json={'apply': True})
+    check("après publication, appliquer exige une confirmation", r.status_code == 409 and r.get_json().get('needs_confirmation') and s.get(ExamAttempt, late2.id).score == 17.0, r.get_json())
+    r = c.post(f'/api/online_exams/{ex.id}/recompute_grades', headers=H(adm), json={'apply': True, 'confirm_published': True})
+    s.expire_all(); check("… et s'applique une fois confirmé", r.status_code == 200 and s.get(ExamAttempt, late2.id).score == 15.0)
+    s.get(OnlineExam, ex.id).results_published = False; s.commit()
+
     print('\n== Sujet avec une vraie question ouverte : points de l\'IA plafonnés ==')
     content2 = qcm(1, '1') + "Question 2 — Expliquez la règle de droit. (1 pts) [OUVERT]\n"
     rub2 = '=== BARÈME ===\n\n' + bareme(1, '1') + "Question 2 (1 pts) :\n  • Réponse attendue : définition\n"
@@ -103,6 +125,8 @@ try:
     R.call_claude = lambda *a, **k: FMT
     R._run_auto_correction(c.id); s.expire_all(); c = s.get(ExamAttempt, c.id)
     check("QCM faux + ouverte entièrement juste = 10/20 (aucune note gonflée par l'IA)", c.score == 10.0, c.score)
+    r2 = recompute(s, ex2.id, apply=False)
+    check("sujet avec question ouverte : les notes déjà justes ne sont pas touchées par la vérification", r2['changed'] == 0 and r2['checked'] == 2, r2)
 finally:
     R.call_claude = real_ai
     s.rollback()

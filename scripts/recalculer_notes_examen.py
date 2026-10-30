@@ -17,7 +17,7 @@ r = recompute(s, exam_id, apply=apply)
 b, a = r['before'], r['after']
 print(f"Examen {exam_id} : {r['copies']} copies notées — {'APPLIQUÉ' if apply else 'SIMULATION (rien écrit)'}")
 print(f"  recalculées : {len(a)} (modifiées {r['changed']} : {r['lower']} à la baisse, {r['higher']} à la hausse ; inchangées {r['unchanged']})")
-print(f"  laissées telles quelles : {r['skipped_empty']} copies vides, {r['skipped_manual']} notes saisies à la main, {r['skipped_edited']} détails retouchés")
+print(f"  laissées telles quelles : {r['skipped_empty']} copies vides, {r['skipped_manual']} notes saisies à la main, {r['skipped_edited']} détails retouchés, {r['skipped_unverifiable']} non vérifiables")
 if a:
     print(f"  moyenne {sum(b)/len(b):.2f} → {sum(a)/len(a):.2f} | 20/20 : {sum(1 for x in b if x >= 19.995)} → {sum(1 for x in a if x >= 19.995)}")
 if r['backup']:

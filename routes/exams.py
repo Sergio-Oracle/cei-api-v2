@@ -1611,6 +1611,9 @@ def _parse_subject_questions_for_grading(content: str) -> dict:
                     i += 1
                     continue
             if is_grid:
+                if QT.GRILLE_RE.match(l):
+                    i += 1
+                    continue
                 cm_ = QT.CATS_RE.match(l)
                 if cm_:
                     g_cats = [c.strip() for c in cm_.group(1).split('|') if c.strip()]
@@ -1746,6 +1749,7 @@ def _parse_subject_blocks_ordered(raw: str) -> list:
         i += 1
         extra_lines, choices, pairs = [], [], []
         g_items, g_cats = [], []
+        g_grid = None
         vars_line = ''
         while i < n:
             if is_sep(lines[i]):
@@ -1771,6 +1775,11 @@ def _parse_subject_blocks_ordered(raw: str) -> list:
                 cm_ = QT.CATS_RE.match(strip(lines[i]))
                 if cm_:
                     g_cats = [c.strip() for c in cm_.group(1).split('|') if c.strip()]
+                    i += 1
+                    continue
+                gm_ = QT.GRILLE_RE.match(strip(lines[i]))
+                if gm_ and q['markerType'] == 'CLOZE':
+                    g_grid = QT.parse_grille(gm_.group(1))
                     i += 1
                     continue
                 lm_ = QT.LABELS_RE.match(strip(lines[i]))
@@ -1854,6 +1863,8 @@ def _parse_subject_blocks_ordered(raw: str) -> list:
             items, options = QT.grid_from_lines(q['markerType'], clean_extra, choices, g_items, g_cats, q['text'])
             blk['items'], blk['options'] = items, options
             blk['choices'] = []   # les propositions vivent dans `options` (jamais mélangées comme un QCM)
+        if g_grid:
+            blk['grid'] = g_grid           # mots croisés : position de chaque mot (un mot = un champ du texte à trous)
         if vars_line:
             blk['vars_line'] = vars_line   # retiré de l'affichage ; sert à tirer les valeurs de l'étudiant
         blocks.append(blk)

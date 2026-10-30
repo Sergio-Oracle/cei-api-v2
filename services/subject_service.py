@@ -315,6 +315,7 @@ class SubjectService:
         corrige_parts = []
         corrige_raw = []
         norm_reports = []
+        crosswords = []
         loose_key, loose_n = {}, 0   # clés « Bonne réponse » d'énoncés sans numéros (voir subject_normalizer.loose_mcq)
         first_filename = None
         first_s3_key = None
@@ -330,6 +331,9 @@ class SubjectService:
                 part = extract_text_from_file(filepath)
                 if not part:
                     raise ValueError(f"Impossible d'extraire le texte du fichier « {f.filename} »")
+                if filepath.lower().endswith('.pdf'):
+                    from services.crossword_pdf import extract_crosswords
+                    crosswords += extract_crosswords(filepath)      # grilles de mots croisés dessinées (absentes du texte)
                 if re.search(r'corrig|correction|bar[eè]me|solution', f.filename, re.I):
                     # Corrigé officiel : sert uniquement à écrire les clés du barème, jamais montré aux étudiants
                     corrige_parts.append(f"--- Corrigé: {f.filename} ---\n{part}")
@@ -377,7 +381,7 @@ class SubjectService:
             if structured:
                 _parts.append(txt)
             else:
-                _t, _r = detect_and_annotate(txt)
+                _t, _r = detect_and_annotate(txt, crosswords)
                 _parts.append(_t); _detect_reports.append(_r)
         annotated = '\n\n'.join(_parts)
         detection = {'counts': {}, 'converted': [], 'warnings': []}

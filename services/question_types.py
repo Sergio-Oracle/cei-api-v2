@@ -44,6 +44,17 @@ ITEM_RE = re.compile(r'^\s*[-•*▪]\s+(.+)$')                      # élément
 CATS_RE = re.compile(r'^\s*Cat[ée]gories?\s*:\s*(.+)$', re.I)    # « Catégories : A | B »
 GAP_RE = re.compile(r'\{(\d{1,2})\}')                             # trou {1}
 DESC_RE = re.compile(r'^\s*\[DESCRIPTION\]\s*(.*)$', re.I)
+GRILLE_RE = re.compile(r'^\s*Grille\s*:\s*(.+)$', re.I)          # mots croisés : « 1:3:H:4:0:12 ; 2:… » = champ:numéro:sens:ligne:colonne:longueur
+
+
+def parse_grille(spec: str) -> list:
+    out = []
+    for part in re.split(r'\s*;\s*', spec.strip()):
+        m = re.match(r'^(\d{1,2}):(\d{1,2}):([HV]):(\d{1,2}):(\d{1,2}):(\d{1,2})$', part.strip(), re.I)
+        if m:
+            out.append({'k': int(m.group(1)), 'num': int(m.group(2)), 'dir': m.group(3).upper(),
+                        'row': int(m.group(4)), 'col': int(m.group(5)), 'len': int(m.group(6))})
+    return out
 
 
 def norm_text(s: str) -> str:

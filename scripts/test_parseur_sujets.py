@@ -218,6 +218,26 @@ check("consigne « toutes les bonnes réponses » → QCM à réponses multiples
 _etc = "1. Citez les sources du droit : loi, coutume, etc... et expliquez-les.\n"
 check("« etc... » dans une phrase n'est pas un trou", [b['type'] for b in questions(_parse_subject_blocks_ordered(detect_and_annotate(_etc)[0]))] == ['open'])
 
+print('\n== mots croisés : la grille du PDF est reconnue et reproduite ==')
+from services.crossword_pdf import extract_crosswords
+_grids = extract_crosswords(os.path.join(ROOT, 'scripts', 'fixtures', 'epreuve_exercices_mots_croises.pdf'))
+check("grille lue dans le PDF : 5 mots, longueurs 12/8/10/10/7",
+      len(_grids) == 1 and sorted((w['dir'], w['num'], w['len']) for w in _grids[0]['words']) == [('H', 3, 12), ('H', 4, 8), ('H', 5, 10), ('V', 1, 10), ('V', 2, 7)],
+      _grids)
+_gt, _gr = detect_and_annotate(_fx('epreuve_exercices_tableau_vf.txt'), _grids)
+_gq = questions(_parse_subject_blocks_ordered(_gt))
+_cw = [b for b in _gq if b.get('grid')]
+check("une seule question à grille, 5 champs", len(_cw) == 1 and len(_cw[0]['items']) == 5 and len(_cw[0]['grid']) == 5, [(b['type'], b['num']) for b in _gq][-3:])
+check("définitions conservées avec leur sens", any('Horizontalement 3' in l for l in _cw[0]['extraLines']) and any('Verticalement 2' in l for l in _cw[0]['extraLines']))
+check("sans la grille : repli propre sur des réponses courtes", [b['type'] for b in questions(_parse_subject_blocks_ordered(detect_and_annotate(_fx('epreuve_exercices_tableau_vf.txt'))[0]))].count('court') == 5)
+_bad = [dict(_grids[0], words=[dict(w, len=w['len'] + 1) if w['num'] == 2 else w for w in _grids[0]['words']])]
+_bt, _br = detect_and_annotate(_fx('epreuve_exercices_tableau_vf.txt'), _bad)
+check("grille incohérente avec les définitions : jamais de grille fausse", not any(b.get('grid') for b in questions(_parse_subject_blocks_ordered(_bt))) and _br['warnings'])
+_jsb = js_blocks([_gt])
+if _jsb is not None:
+    _jg = [b for b in _jsb[0] if b.get('grid')]
+    check("navigateur = serveur : même grille", len(_jg) == 1 and len(_jg[0]['grid']) == 5 and len(_jg[0].get('items') or []) == 5)
+
 print('\n== sujets défectueux : le contrôle doit protester ==')
 VIDE = "Sujet sans aucune question numérotée.\nRépondez librement."
 CASSE = "Question 1 [QCM]\nÉnoncé\nA. seule proposition\nQuestion 2 [QCM]\nÉnoncé\nA. a\nB. b\nQuestion 3 [QCM]\nÉnoncé\nA. a\nB. b\nC. c\nQuestion 4 [QCM]\nÉnoncé\nA. a\nB. b\nC. c\nD. d\n"

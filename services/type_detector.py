@@ -34,6 +34,65 @@ _LETTER_SPLIT_RE = re.compile(r'\s([a-f])[.)]\s+')
 _LETTERS_LEN_RE = re.compile(r'\(\s*\d{1,2}\s+lettres?\s*\)', re.I)
 
 
+_DIR_HEAD_RE = re.compile(r'^\s*(Horizontalement|Verticalement)\s*:?\s*$', re.I)
+_CLUE_RE = re.compile(r'^\s*(\d{1,2})[.)]\s+(.+)$')
+_NLET_RE = re.compile(r'\(\s*(\d{1,2})\s+lettres?\s*\)', re.I)
+
+
+def _collapse_crossword(lines, grids, report):
+    """« Horizontalement / Verticalement » + définitions « N. … (K lettres) » + grille lue dans le PDF → UNE question [CLOZE]
+    à grille (un champ par mot). N'agit que si numéros, directions ET longueurs concordent exactement avec la grille."""
+    first = next((i for i, l in enumerate(lines) if _DIR_HEAD_RE.match(l)), None)
+    if first is None:
+        return lines
+    clues, cur_dir, k, last = {}, None, first, first
+    while k < len(lines):
+        l = lines[k]
+        if _DIR_HEAD_RE.match(l):
+            cur_dir = 'H' if l.strip().lower().startswith('h') else 'V'
+            k += 1; last = k; continue
+        if _SECT_RE.match(l.strip()) or _RECAP_RE.match(l):
+            break
+        m = _CLUE_RE.match(l)
+        if m and cur_dir:
+            txt = m.group(2).strip()
+            j = k + 1
+            while j < len(lines) and lines[j].strip() and not _CLUE_RE.match(lines[j]) and not _DIR_HEAD_RE.match(lines[j]) \
+                    and not _SECT_RE.match(lines[j].strip()) and not _RECAP_RE.match(lines[j]):
+                txt += ' ' + lines[j].strip(); j += 1
+            clues[(cur_dir, int(m.group(1)))] = txt
+            k = j; last = k; continue
+        if not l.strip():
+            k += 1; continue
+        break
+    if not clues:
+        return lines
+    for g in grids or []:
+        words = {(w['dir'], w['num']): w for w in g['words']}
+        if set(words) != set(clues):
+            continue
+        if any((m := _NLET_RE.search(clues[key])) and int(m.group(1)) != words[key]['len'] for key in clues):
+            continue
+        order = sorted(words, key=lambda kk: (0 if kk[0] == 'H' else 1, kk[1]))
+        spec = ' ; '.join(f"{i + 1}:{words[kk]['num']}:{kk[0]}:{words[kk]['row']}:{words[kk]['col']}:{words[kk]['len']}"
+                          for i, kk in enumerate(order))
+        num = _first_free_number(lines[:first])
+        block = [f"{num}. Complétez la grille de mots croisés à partir des définitions. [CLOZE]", f"Grille : {spec}"]
+        block += [f"{'Horizontalement' if kk[0] == 'H' else 'Verticalement'} {kk[1]} — {_NLET_RE.sub(lambda mo: '(' + mo.group(1) + ' lettres)', clues[kk])}"
+                  for kk in order]
+        block += [f"- {i + 1} COURT" for i in range(len(order))]
+        report['converted'].append(f"grille de mots croisés {g['rows']}×{g['cols']} ({len(order)} mots)")
+        return lines[:first] + block + lines[last:]
+    report['warnings'].append("Mots croisés : la grille du document n'a pas pu être reliée aux définitions (numéros ou longueurs différents) — "
+                              "les définitions sont posées comme des réponses courtes.")
+    return lines
+
+
+def _first_free_number(before):
+    nums = [n for _, n in _question_numbers(before)]
+    return (max(nums) + 1) if nums else 1
+
+
 def _is_q(l):
     s = l.strip()
     if not s or _CHOICE_RE.match(s) or _SECT_RE.match(s):
@@ -121,11 +180,12 @@ def _section_context(lines):
     return ctx
 
 
-def detect_and_annotate(content):
+def detect_and_annotate(content, crosswords=None):
     report = {'counts': {}, 'converted': [], 'warnings': [], 'changed': 0}
     if not content or not isinstance(content, str):
         return content, report
     lines = content.split('\n')
+    lines = _collapse_crossword(lines, crosswords, report)   # avant le nettoyage : il retire « Horizontalement / Verticalement »
     lines = _clean_noise(lines)
     lines = _collapse_associations(lines, report)
     content2, _notes = normalize('\n'.join(lines))             # tableaux Vrai/Faux, numérotation continue
@@ -176,7 +236,7 @@ def detect_and_annotate(content):
     for b in _parse_subject_blocks_ordered(out):
         if b['type'] != 'section':
             report['counts'][b['type']] = report['counts'].get(b['type'], 0) + 1
-    if _LETTERS_LEN_RE.search(out) and re.search(r'mots?\s+crois', out, re.I):
+    if _LETTERS_LEN_RE.search(out) and re.search(r'mots?\s+crois', out, re.I) and not any('grille de mots' in c for c in report['converted']):
         report['warnings'].append("Mots croisés : la grille dessinée n'existe pas dans le texte du document — les définitions sont posées "
                                   "comme des réponses courtes ; ajoutez la grille en image si elle est nécessaire.")
     return out, report

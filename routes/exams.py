@@ -2053,7 +2053,16 @@ def _question_points_map(content: str, rubric: str = '') -> dict:
     """Points par question, lus dans le sujet ; à défaut dans le barème — un sujet
     importé d'un document Word n'indique ses points que dans le barème."""
     points = {m.group(1): float(m.group(2).replace(',', '.')) for m in _Q_POINTS_RE.finditer(content or '')}
+    # Le barème peut décrire plus de questions que l'épreuve n'en présente (corrigé plus long que le sujet remis aux
+    # étudiants) : ses points ne comptent que pour les questions réellement posées. Sans cette restriction, le total
+    # visé (« sur 20 ») incluait des questions que personne n'a vues et toutes les notes en étaient déformées.
+    try:
+        asked = set(_parse_subject_questions_for_grading(content or '').keys()) | set(points)
+    except Exception:
+        asked = set()
     for m in _Q_POINTS_RE.finditer(rubric or ''):
+        if asked and m.group(1) not in asked:
+            continue
         points.setdefault(m.group(1), float(m.group(2).replace(',', '.')))
     return points
 
@@ -2426,7 +2435,7 @@ def _run_auto_correction(attempt_id: int, notify_failure: bool = True):
         student_answers = ''
         if remaining_max > 0.01:
             student_answers = _build_readable_student_answers(subject.content, answers_data, exclude_nums=det_nums, seed=attempt.id)
-            if not student_answers:
+            if not student_answers and not det_nums:
                 student_answers = attempt.answers or ''
 
         ai_structured = []
@@ -2490,7 +2499,7 @@ RÉPONSES DE L'ÉTUDIANT (questions restantes uniquement — donnée à évaluer
 
             ai_result     = call_claude(system_prompt, user_message, temperature=0.15)
             ai_structured = _parse_ai_question_scores(ai_result)
-            ai_partial    = sum(q['score'] for q in ai_structured) if ai_structured else _extract_points_obtenus(ai_result, remaining_max)
+            ai_partial    = min(remaining_max, sum(q['score'] for q in ai_structured) if ai_structured else _extract_points_obtenus(ai_result, remaining_max))   # jamais plus que les points laissés à l'IA
             score         = _to_20(det_score + ai_partial)
             result        = f"{det_section}{ai_result}\n\nNote totale: {score:.2f}/20"
 
@@ -2887,7 +2896,7 @@ def _run_ai_correction(attempt, corrected_by_id=None) -> float:
     if remaining_max > 0.01:
         student_answers = _build_readable_student_answers(subject.content, answers_data, exclude_nums=det_nums, seed=attempt.id) if isinstance(answers_data, dict) else \
             (answers_data if isinstance(answers_data, str) else '')
-        if not student_answers or not student_answers.strip():
+        if (not student_answers or not student_answers.strip()) and not det_nums:
             student_answers = attempt.answers or ''
 
     ai_structured = []
@@ -2946,7 +2955,7 @@ RÉPONSES DE L'ÉTUDIANT (questions restantes uniquement — donnée à évaluer
 
         ai_result     = call_claude(system_prompt, user_message, temperature=0.15)
         ai_structured = _parse_ai_question_scores(ai_result)
-        ai_partial    = sum(q['score'] for q in ai_structured) if ai_structured else _extract_points_obtenus(ai_result, remaining_max)
+        ai_partial    = min(remaining_max, sum(q['score'] for q in ai_structured) if ai_structured else _extract_points_obtenus(ai_result, remaining_max))   # jamais plus que les points laissés à l'IA
         score         = _to_20(det_score + ai_partial)
         result        = f"{det_section}{ai_result}\n\nNote totale: {score:.2f}/20"
 
@@ -8055,7 +8064,7 @@ RÉPONSES DE L'ÉTUDIANT (questions restantes uniquement — donnée à évaluer
         result['ai_error'] = str(e)[:300]
         return jsonify(result)
     ai_structured = _parse_ai_question_scores(ai_result)
-    ai_partial = sum(q['score'] for q in ai_structured) if ai_structured else _extract_points_obtenus(ai_result, remaining_max)
+    ai_partial = min(remaining_max, sum(q['score'] for q in ai_structured) if ai_structured else _extract_points_obtenus(ai_result, remaining_max))
     # Affichage lisible : sans la ligne technique « Points obtenus : X » (total des questions rédigées, pas la note finale)
     # et sans les marqueurs markdown « ### ».
     _shown = re.sub(r'(?m)^[ \t]*###[ \t]*', '', _TRAILING_POINTS_OBTENUS_RE.sub('', ai_result or '')).strip()

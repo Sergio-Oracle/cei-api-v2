@@ -93,6 +93,7 @@ COMMENT RÉPONDRE
 <<<BAREME>>>
 (barème)
 <<<FIN>>>
+- N'utilise AUCUN Markdown dans le cadre (ni astérisques, ni dièses, ni accents graves) : du texte simple uniquement.
 - Ne mets rien d'autre dans le cadre. Ton message d'explication va AVANT ou APRÈS le cadre.
 - Quand l'enseignant parle d'un cours joint, ancre chaque question dans ce cours (aucune notion absente du document).
 
@@ -174,6 +175,14 @@ def _verbatim(content, recs):
         if len(t) >= 25 and any(t == x or difflib.SequenceMatcher(None, t, x).ratio() >= 0.8 for x in src):
             n += 1
     return n
+
+
+def strip_markdown(t):
+    """Jamais de symboles Markdown (*mot*, **mot**, `code`, titres #) dans un sujet : l'étudiant les verrait tels quels."""
+    t = re.sub(r'\*\*(.+?)\*\*', r'\1', t or '')
+    t = re.sub(r'(^|[^*\w])\*(?!\s)([^*\n]+?)\*(?![*\w])', r'\1\2', t)
+    t = re.sub(r'`([^`\n]+)`', r'\1', t)
+    return re.sub(r'(?m)^#{1,6}\s+', '', t)
 
 
 def clean_rubric(rubric):
@@ -297,7 +306,8 @@ def chat(user_id, messages, file_ids, context='', draft=None):
         return {'reply': raw.strip(), 'draft': None}
     reply = (raw[:b.start()] + ' ' + raw[b.end():]).strip()
     body, rubric = b.group(1).strip(), b.group(2).strip()
-    rubric = clean_rubric(rubric)
+    rubric = strip_markdown(clean_rubric(rubric))
+    body = strip_markdown(body)
     title, _, content = body.partition('\n')
     if re.match(r'^\s*Question\s+\d', title):        # pas de titre : la première ligne est déjà une question
         title, content = '', body

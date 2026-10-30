@@ -368,6 +368,7 @@ try:
     _r3 = _SC.chat(4242, [{'role': 'user', 'content': 'Je veux que tu me crées 6 questions à partir de ces fichiers.'}], [f['id'] for f in _files])
     check("« créer 6 questions » : l'IA qui répond « reproduire » est recadrée → nouveau brouillon de 6 questions",
           len(_calls) == 2 and _r3['draft'] and _r3['draft']['report']['blocks'] == 6 and _r3['draft']['title'] == 'Nouvel examen', (len(_calls), _r3['draft'] and _r3['draft']['report']))
+    check("Markdown retiré des sujets rédigés par l'IA (*mot*, **mot**, `code`)", _SC.strip_markdown("Le latin *intro ducere* est **clair** et `x`. 2 * 3 = 6") == "Le latin intro ducere est clair et x. 2 * 3 = 6")
     _AI.call_ai = lambda *a, **k: "Combien de questions souhaitez-vous ?"
     check("question de l'IA : pas de brouillon", _SC.chat(4242, [{'role': 'user', 'content': 'Fais un examen'}], [])['draft'] is None)
 finally:

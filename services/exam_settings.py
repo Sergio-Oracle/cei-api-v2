@@ -64,7 +64,7 @@ FIELD_RULES = {
     'randomize_questions': _bool,
     'questions_per_page': _int_range(0, 50, 'Questions par page'),
     'time_per_question_seconds': _opt_seconds,
-    'require_biometric': _bool, 'run_environment_scan': _bool,
+    'require_biometric': _bool, 'run_environment_scan': _bool, 'require_client': _bool,
 }
 
 # Réglages qui changent les règles de ceux qui ont COMMENCÉ : verrouillés dès qu'une copie existe (ou que l'examen est en cours)
@@ -74,6 +74,7 @@ _STRUCTURAL = {
     'time_per_question_seconds': "le minuteur par page changerait les règles pour ceux qui composent déjà",
     'require_biometric': "la vérification d'identité se fait à l'entrée ; elle ne peut plus changer une fois l'examen ouvert",
     'run_environment_scan': "le scan de l'environnement se fait à l'entrée ; il ne peut plus changer une fois l'examen ouvert",
+    'require_client': "l'application CEI Examen s'exige à l'entrée ; elle ne peut plus changer une fois l'examen ouvert",
 }
 
 

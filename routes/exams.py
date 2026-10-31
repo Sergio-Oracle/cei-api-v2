@@ -302,6 +302,7 @@ def create_online_exam():
             allow_secondary_camera=data.get('allow_secondary_camera', False),
             require_biometric=data.get('require_biometric', False),
             run_environment_scan=data.get('run_environment_scan', False),
+            require_client=bool(data.get('require_client', False)),
             status=ExamStatus.SCHEDULED,
             created_by_id=user_id
         )
@@ -1009,6 +1010,14 @@ def start_exam_attempt(exam_id):
             session.close()
             return jsonify({'error': 'Examen non disponible actuellement'}), 400
 
+        # Application « CEI Examen » obligatoire (comme Safe Exam Browser) : poignée de main signée récente exigée, au démarrage ET à la reprise
+        if getattr(exam, 'require_client', False):
+            from cache import cache_get as _cg
+            if not _cg(f'cei:client_ok:{user_id}:{exam_id}'):
+                session.close()
+                return jsonify({'error': "Cet examen doit être passé avec l'application CEI Examen.", 'client_required': True,
+                                'download_url': '/telecharger-client'}), 403
+
         # Gate biométrique — précondition avant toute création/reprise de
         # tentative, désormais opt-in par examen (require_biometric, décoché
         # par défaut pour tout nouvel examen depuis le 29/08 — retour
@@ -1405,7 +1414,9 @@ def log_exam_activity(attempt_id):
         # frontend), traité avec la même sévérité que les autres sorties de
         # contexte plutôt que de risquer de perdre le signal.
         severity_tab_events   = ['tab_switch', 'fullscreen_exit', 'window_blur', 'tab_closed']
-        severity_medium_events = ['right_click', 'copy_attempt', 'paste_attempt', 'f12_attempt']
+        severity_medium_events = ['right_click', 'copy_attempt', 'paste_attempt', 'f12_attempt',
+                                  'client_forbidden_app', 'client_vm_detected', 'client_second_display', 'client_close_attempt',
+                                  'client_navigation_blocked', 'client_quit_code_failed']
 
         ban_reason = None
 

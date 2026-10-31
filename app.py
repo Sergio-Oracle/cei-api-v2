@@ -133,6 +133,7 @@ from routes.question_bank  import question_bank_bp;   app.register_blueprint(que
 from routes.exams          import exams_bp;           app.register_blueprint(exams_bp)
 from routes.exam_waves     import exam_waves_bp;      app.register_blueprint(exam_waves_bp)
 from routes.subject_check   import subject_check_bp;   app.register_blueprint(subject_check_bp)
+from routes.exam_client     import exam_client_bp;     app.register_blueprint(exam_client_bp)   # application « CEI Examen » : poignée de main + téléchargements
 from routes.audit          import audit_bp;           app.register_blueprint(audit_bp)
 from services import subject_normalizer as _subject_normalizer;  _subject_normalizer.install()   # sujets de PDF : tableaux Vrai/Faux lus, numérotation continue
 from services import audit as _audit;  _audit.install(app)   # journal d'activité des comptes à privilèges (discret)

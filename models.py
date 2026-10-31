@@ -791,6 +791,10 @@ class OnlineExam(Base):
     # est vrai.
     run_environment_scan = Column(Boolean, default=False)
 
+    # Application « CEI Examen » obligatoire (client kiosque équivalent de Safe Exam Browser) : sans elle, l'étudiant ne peut pas démarrer.
+    # Vérifié au démarrage ET à la reprise (poignée de main signée, voir routes/exam_client.py).
+    require_client = Column(Boolean, default=False)
+
     status = Column(SQLEnum(ExamStatus), default=ExamStatus.DRAFT)
     created_by_id = Column(Integer, ForeignKey('users.id'), nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -830,6 +834,7 @@ class OnlineExam(Base):
             'allow_secondary_camera': self.allow_secondary_camera or False,
             'require_biometric': self.require_biometric if self.require_biometric is not None else False,
             'run_environment_scan': self.run_environment_scan if self.run_environment_scan is not None else False,
+            'require_client': bool(self.require_client),
             'creator_name': self.creator.full_name if self.creator else None,
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'is_active': self.status == ExamStatus.ACTIVE,
@@ -1806,6 +1811,8 @@ def init_db():
     _migrations = [
         ("SELECT 1 FROM information_schema.columns WHERE table_name='online_exams' AND column_name='results_published_at'",
          "ALTER TABLE online_exams ADD COLUMN results_published_at TIMESTAMP"),
+        ("SELECT 1 FROM information_schema.columns WHERE table_name='online_exams' AND column_name='require_client'",
+         "ALTER TABLE online_exams ADD COLUMN require_client BOOLEAN DEFAULT FALSE"),
         # Moteur RAG : indexation automatique des documents Moodle
         ("SELECT 1 FROM information_schema.columns WHERE table_name='rag_engines' AND column_name='auto_index'",
          "ALTER TABLE rag_engines ADD COLUMN auto_index BOOLEAN DEFAULT FALSE"),

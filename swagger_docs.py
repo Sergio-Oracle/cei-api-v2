@@ -2408,6 +2408,25 @@ OPENAPI_SPEC = {
             }}}},
             "responses": {"200": {"description": "Sauvegardé"}}
         }},
+        "/api/exam-client/challenge": {"get": {
+            "tags": ["Application CEI Examen"], "summary": "Défi à faire signer par l'application CEI Examen",
+            "description": "Étudiant connecté. Retourne un nonce à usage unique (5 min) que le client signe avec le secret embarqué.",
+            "responses": {"200": {"description": "{nonce, user_id}"}}
+        }},
+        "/api/exam-client/verify": {"post": {
+            "tags": ["Application CEI Examen"], "summary": "Vérifie la signature du client officiel pour un examen",
+            "description": "Corps : {exam_id, nonce, sig, version, platform, vm}. L'en-tête User-Agent doit contenir `CEIExamClient/<version>`. Signature = HMAC-SHA256(secret, `nonce|user_id|version|platform`). Ouvre la porte « application » 14 h pour cet examen (exigée au démarrage et à la reprise si `require_client`).",
+            "responses": {"200": {"description": "{ok, version, vm}"}, "400": {"description": "Défi expiré ou déjà utilisé"}, "403": {"description": "Pas le client officiel / signature invalide"}, "426": {"description": "Version trop ancienne"}, "503": {"description": "Secret non configuré sur le serveur"}}
+        }},
+        "/api/exam-client/releases": {"get": {
+            "tags": ["Application CEI Examen"], "summary": "Versions téléchargeables de l'application (public)",
+            "responses": {"200": {"description": "{version, files: [{name, platform, label, size, sha256, url}]}"}}
+        }},
+        "/api/exam-client/download/{name}": {"get": {
+            "tags": ["Application CEI Examen"], "summary": "Télécharger un installateur listé (public)",
+            "parameters": [{"name": "name", "in": "path", "required": True, "schema": {"type": "string"}}],
+            "responses": {"200": {"description": "Fichier"}, "404": {"description": "Fichier introuvable"}}
+        }},
         "/api/subjects/chat/files": {"post": {
             "tags": ["Sujets"], "summary": "Assistant de création : joindre des fichiers à la discussion",
             "description": "Lit chaque fichier (Word, PDF, texte), le convertit au format CEI (types détectés, grille de mots croisés, clés du corrigé) et le garde 2 h pour la conversation. Enseignant, administrateur, responsable d'examen.",

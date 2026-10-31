@@ -1416,7 +1416,7 @@ def log_exam_activity(attempt_id):
         severity_tab_events   = ['tab_switch', 'fullscreen_exit', 'window_blur', 'tab_closed']
         severity_medium_events = ['right_click', 'copy_attempt', 'paste_attempt', 'f12_attempt',
                                   'client_forbidden_app', 'client_vm_detected', 'client_second_display', 'client_close_attempt',
-                                  'client_navigation_blocked', 'client_quit_code_failed']
+                                  'client_navigation_blocked', 'client_quit_code_failed', 'client_app_closed']
 
         ban_reason = None
 

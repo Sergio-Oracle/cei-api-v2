@@ -21,6 +21,12 @@ import app  # noqa: F401  (initialise les modèles)
 from routes.exams import _parse_subject_blocks_ordered, _parse_subject_questions_for_grading
 from services.subject_check import analyze
 
+# Sujets et corrigés RÉELS : volontairement absents du dépôt (confidentialité des examens). Copie privée : /root/cei-fixtures-prives
+FIXDIR = os.path.join(ROOT, 'scripts', 'fixtures')
+if not os.path.isdir(FIXDIR) or len(os.listdir(FIXDIR)) < 13:
+    print("Essais sur sujets réels ignorés : le dossier scripts/fixtures (non versionné) est absent ou incomplet.")
+    sys.exit(0)
+
 FRONT = os.path.join(os.path.dirname(ROOT), 'cei-next', 'app', 'exam', '[id]', 'page.tsx')
 RESULTS = []
 
@@ -142,10 +148,9 @@ for nom, txt, rep_n in (('PDF', EPREUVE_PDF, _rep_pdf), ('Word', EPREUVE_DOCX, _
     total = sum(float(p.replace(',', '.')) for p in re.findall(r'^Question \d+ — .*\((\d+(?:,\d+)?) pts\)', txt, re.M))
     check(f"{nom} : barème total 20 points", abs(total - 20) < 1e-6, f"{total}")
     check(f"{nom} : aucun avertissement", not rep_n['warnings'], rep_n['warnings'])
-check("PDF : situation du plateau 1 entière",
-      "- [phrase de sujet retirée]" in EPREUVE_PDF)
-check("PDF : affirmation coupée par le tableau recollée",
-      "[phrase de sujet retirée] (0,25 pts) [VF]" in EPREUVE_PDF)
+check("PDF : situations des plateaux de tri entières (éléments « - … » conservés)", len(re.findall(r'^- .{40,}', EPREUVE_PDF, re.M)) >= 8)
+check("PDF : affirmation coupée par le tableau recollée (une seule ligne longue terminée par [VF])",
+      any(l.endswith('[VF]') and len(l) > 90 for l in EPREUVE_PDF.split('\n')))
 check("Word : balises de l'enseignant non répétées", '[VF] (' not in EPREUVE_DOCX and '[QCM] (' not in EPREUVE_DOCX)
 
 print('\n== barème écrit depuis le corrigé (sans IA) ==')

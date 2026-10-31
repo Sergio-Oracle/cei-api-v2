@@ -92,7 +92,7 @@ def exam_client_releases():
     for x in d.get('files', []):
         p = os.path.join(DIST_DIR, x.get('name', ''))
         if os.path.isfile(p):
-            files.append({'name': x['name'], 'platform': x.get('platform', ''), 'label': x.get('label', x['name']), 'size': os.path.getsize(p),
+            files.append({'name': x['name'], 'platform': x.get('platform', ''), 'arch': x.get('arch', ''), 'kind': x.get('kind', ''), 'label': x.get('label', x['name']), 'size': os.path.getsize(p),
                           'sha256': x.get('sha256', ''), 'url': '/static/downloads/' + quote(x['name'])})
     return jsonify({'version': d.get('version'), 'files': files, 'notes': d.get('notes', '')})
 

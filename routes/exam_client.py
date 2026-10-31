@@ -14,6 +14,7 @@ import json
 import os
 import re
 import secrets
+from urllib.parse import quote
 
 from flask import Blueprint, jsonify, request, send_from_directory
 
@@ -22,7 +23,8 @@ from cache import cache_get, cache_set, cache_delete
 
 exam_client_bp = Blueprint('exam_client', __name__)
 
-DIST_DIR = os.getenv('CLIENT_DIST_DIR', '/home/serge/cei-client-dist')
+# Dossier SERVI DIRECTEMENT PAR NGINX (location /static/) : les installateurs (~120 Mo) ne passent jamais par les processus de l'API.
+DIST_DIR = os.getenv('CLIENT_DIST_DIR', os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'static', 'downloads'))
 _UA_RE = re.compile(r'CEIExamClient/(\d+(?:\.\d+)*)')
 
 
@@ -91,7 +93,7 @@ def exam_client_releases():
         p = os.path.join(DIST_DIR, x.get('name', ''))
         if os.path.isfile(p):
             files.append({'name': x['name'], 'platform': x.get('platform', ''), 'label': x.get('label', x['name']), 'size': os.path.getsize(p),
-                          'sha256': x.get('sha256', ''), 'url': f"/api/exam-client/download/{x['name']}"})
+                          'sha256': x.get('sha256', ''), 'url': '/static/downloads/' + quote(x['name'])})
     return jsonify({'version': d.get('version'), 'files': files, 'notes': d.get('notes', '')})
 
 

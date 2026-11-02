@@ -287,7 +287,14 @@ def refresh_token_endpoint():
             token_hash=token_hash, user_id=user.id,
             expires_at=datetime.fromisoformat(payload['exp']),
         )
-        session.add(block); session.commit()
+        session.add(block)
+        try:
+            session.commit()
+        except Exception:
+            # Deux onglets (ou deux requêtes) renouvellent en même temps avec le MÊME jeton : le second trouve le jeton déjà consommé.
+            # Ce n'est pas une panne (le premier a reçu le nouveau cookie) : réponse nette, le client réessaie avec le cookie à jour.
+            session.rollback(); session.close()
+            return jsonify({'error': 'Renouvellement déjà effectué, réessayez'}), 409
         # Correctif 29/08 — même raisonnement que login() : sid = hash du
         # nouveau refresh token, synchronisé avec cei:session:active ci-dessous.
         new_refresh = create_refresh_token(user.id)

@@ -1865,6 +1865,8 @@ def proctor_heartbeat(exam_id):
     s'il est vrai, jamais retiré explicitement : à défaut de signal positif,
     la clé correspondante expire naturellement (TTL) et retombe à "idle"."""
     try:
+        if get_current_user_role() not in ('surveillant', 'professor', 'admin', 'responsable_examen', 'superviseur'):
+            return jsonify({'error': 'Accès non autorisé'}), 403      # un étudiant ne peut pas se déclarer « surveillant présent »
         proctor_id = get_current_user_id()
         cache_set(f'cei:proctor_live:{exam_id}:{proctor_id}', '1', ttl=HEARTBEAT_TTL)
         cache_set(f'cei:proctor_seen:{exam_id}:{proctor_id}', '1', ttl=86400)
@@ -3374,8 +3376,11 @@ def _redis_alerts():
 
 def _agent_auth():
     """Vérifie le secret de l'agent dans le header X-Agent-Secret."""
-    secret = _os_mod.getenv('AGENT_SECRET_KEY', 'changeme-agent-secret-key')
-    return request.headers.get('X-Agent-Secret') == secret
+    import hmac
+    secret = _os_mod.getenv('AGENT_SECRET_KEY', '')
+    if not secret or secret == 'changeme-agent-secret-key':      # jamais de secret par défaut : sans réglage, l'accès agent est fermé
+        return False
+    return hmac.compare_digest((request.headers.get('X-Agent-Secret') or '').encode(), secret.encode())
 
 
 def _load_alerts() -> list:

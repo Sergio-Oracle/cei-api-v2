@@ -3485,8 +3485,11 @@ def correction_progress(exam_id):
 # des endpoints /api/agent/* (header X-Agent-Secret, indépendant du JWT).
 
 def _agent_auth() -> bool:
-    secret = os.getenv('AGENT_SECRET_KEY', 'changeme-agent-secret-key')
-    return request.headers.get('X-Agent-Secret') == secret
+    import hmac
+    secret = os.getenv('AGENT_SECRET_KEY', '')
+    if not secret or secret == 'changeme-agent-secret-key':      # jamais de secret par défaut : sans réglage, l'accès agent est fermé
+        return False
+    return hmac.compare_digest((request.headers.get('X-Agent-Secret') or '').encode(), secret.encode())
 
 
 @exams_bp.route('/api/agent/due_corrections', methods=['GET'])
@@ -4870,6 +4873,9 @@ def download_integrity_report(attempt_id):
         if not attempt:
             session.close()
             return jsonify({'error': 'Tentative non trouvée'}), 404
+        if user.role == UserRole.PROFESSOR and not can_view_exam(session, attempt.exam, user_id):
+            session.close()
+            return jsonify({'error': 'Accès non autorisé'}), 403
         student = attempt.student
         exam    = attempt.exam
         logs    = session.query(ExamActivityLog).filter_by(attempt_id=attempt_id).order_by(ExamActivityLog.timestamp).all()
@@ -7093,6 +7099,18 @@ def get_subject_media(subject_id):
     page d'examen pour afficher/lire les [IMAGE:...]/[AUDIO:...] du sujet."""
     try:
         session = get_session()
+        _u = session.query(User).filter_by(id=get_current_user_id()).first()
+        if not _u or _u.role == UserRole.SURVEILLANT:
+            session.close()
+            return jsonify({'error': 'Accès non autorisé'}), 403
+        if _u.role == UserRole.STUDENT:
+            # Un étudiant ne reçoit les médias que d'un sujet dont il peut passer (ou revoir) un examen ouvert ou terminé
+            from services.exam_access import student_may_access
+            _exams = session.query(OnlineExam).filter(OnlineExam.subject_id == subject_id,
+                                                      OnlineExam.status.in_([ExamStatus.ACTIVE, ExamStatus.CLOSED])).all()
+            if not any(student_may_access(session, e, _u.id) for e in _exams):
+                session.close()
+                return jsonify({'error': 'Accès non autorisé'}), 403
         rows = session.query(SubjectMedia).filter_by(subject_id=subject_id).all()
         result = []
         for m in rows:
@@ -7631,6 +7649,16 @@ def get_proctor_notes(attempt_id):
         if role not in ['professor', 'admin', 'responsable_examen', 'surveillant']:
             session.close()
             return jsonify({'error': 'Accès non autorisé'}), 403
+        att = session.query(ExamAttempt).filter_by(id=attempt_id).first()
+        if not att:
+            session.close()
+            return jsonify({'error': 'Tentative non trouvée'}), 404
+        if role == 'professor' and not can_view_exam(session, att.exam, user_id):
+            session.close()
+            return jsonify({'error': 'Accès non autorisé'}), 403
+        if role == 'surveillant' and not session.query(ExamProctor).filter_by(exam_id=att.exam_id, proctor_id=user_id).first():
+            session.close()
+            return jsonify({'error': "Vous n'êtes pas affecté à cet examen"}), 403
         logs = session.query(ExamActivityLog).filter_by(
             attempt_id=attempt_id, event_type='proctor_note'
         ).order_by(ExamActivityLog.timestamp).all()

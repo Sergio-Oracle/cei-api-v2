@@ -2,8 +2,10 @@
 Application Flask — CEI API v2.
 Point d'entrée : création de l'app, blueprints, middlewares sécurité/cache/logging.
 """
+import json
 import logging
 import os
+import re
 import time
 import uuid
 
@@ -189,10 +191,23 @@ def _ensure_exam_closer():
     from services import exam_closer
     exam_closer.ensure_loop()
 
+_TECH_ERR = re.compile(r"psycopg|sqlalchemy|\[SQL|Traceback|File \"|NoneType|object has no|KeyError|IndexError|TypeError|ValueError|AttributeError|Errno|relation \"|column \"|violates|Integrity|Operational|Exception|\bline \d+|\.py\b|\(.*\bat 0x", re.I)
+
 @app.after_request
 def _after_request(response):
     rid = g.get('request_id', '-')
     response.headers['X-Request-ID'] = rid
+
+    # Une erreur 500 ne montre jamais le texte brut d'une exception (noms de tables, de colonnes, chemins…) : on le garde dans les
+    # journaux avec la référence de la requête, et l'utilisateur reçoit un message neutre et cette référence.
+    if response.status_code == 500 and response.is_json:
+        try:
+            body = response.get_json(silent=True)
+            if isinstance(body, dict) and isinstance(body.get('error'), str) and _TECH_ERR.search(body['error']):
+                logger.error('Erreur 500 [%s] %s %s : %s', rid, request.method, request.path, body['error'][:500])
+                response.set_data(json.dumps({'error': 'Erreur interne du serveur', 'request_id': rid}))
+        except Exception:
+            pass
 
     # Log toutes les requêtes API sauf les assets statiques
     if not request.path.startswith('/static/') and request.path not in ('/favicon.ico',):

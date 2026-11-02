@@ -131,6 +131,10 @@ class SubjectRepository:
             if title is not None:
                 subj.title = title
             if content is not None:
+                if content != (subj.content or ''):
+                    # Le texte change : l'enseignant doit revalider l'affichage dans « Prévisualiser »
+                    session.query(OnlineExam).filter_by(subject_id=subject_id).update(
+                        {'subject_validated_at': None, 'subject_validated_by': None}, synchronize_session=False)
                 subj.content = content
             if rubric is not None:
                 subj.rubric = rubric

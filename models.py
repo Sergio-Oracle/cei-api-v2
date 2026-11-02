@@ -795,6 +795,10 @@ class OnlineExam(Base):
     # Vérifié au démarrage ET à la reprise (poignée de main signée, voir routes/exam_client.py).
     require_client = Column(Boolean, default=False)
 
+    # Validation de l'affichage du sujet par l'enseignant (après « Prévisualiser ») : remise à zéro dès que le texte du sujet change.
+    subject_validated_at = Column(DateTime, nullable=True)
+    subject_validated_by = Column(Integer, nullable=True)
+
     status = Column(SQLEnum(ExamStatus), default=ExamStatus.DRAFT)
     created_by_id = Column(Integer, ForeignKey('users.id'), nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -835,6 +839,7 @@ class OnlineExam(Base):
             'require_biometric': self.require_biometric if self.require_biometric is not None else False,
             'run_environment_scan': self.run_environment_scan if self.run_environment_scan is not None else False,
             'require_client': bool(self.require_client),
+            'subject_validated_at': self.subject_validated_at.isoformat() if self.subject_validated_at else None,
             'creator_name': self.creator.full_name if self.creator else None,
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'is_active': self.status == ExamStatus.ACTIVE,
@@ -1813,6 +1818,10 @@ def init_db():
          "ALTER TABLE online_exams ADD COLUMN results_published_at TIMESTAMP"),
         ("SELECT 1 FROM information_schema.columns WHERE table_name='online_exams' AND column_name='require_client'",
          "ALTER TABLE online_exams ADD COLUMN require_client BOOLEAN DEFAULT FALSE"),
+        ("SELECT 1 FROM information_schema.columns WHERE table_name='online_exams' AND column_name='subject_validated_at'",
+         "ALTER TABLE online_exams ADD COLUMN subject_validated_at TIMESTAMP"),
+        ("SELECT 1 FROM information_schema.columns WHERE table_name='online_exams' AND column_name='subject_validated_by'",
+         "ALTER TABLE online_exams ADD COLUMN subject_validated_by INTEGER"),
         # Moteur RAG : indexation automatique des documents Moodle
         ("SELECT 1 FROM information_schema.columns WHERE table_name='rag_engines' AND column_name='auto_index'",
          "ALTER TABLE rag_engines ADD COLUMN auto_index BOOLEAN DEFAULT FALSE"),

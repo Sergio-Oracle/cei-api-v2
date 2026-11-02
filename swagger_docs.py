@@ -1862,7 +1862,20 @@ OPENAPI_SPEC = {
             "description": "Comme « Prévisualiser » dans Moodle : l'examen tel que l'étudiant le reçoit (sujet sans barème) et ses pages (`preview.pages`, même format que /api/exam_attempts/{id}/paginated), mélangées selon `seed` (tiré au hasard si absent : chaque prévisualisation montre un autre ordre). Aucune tentative créée. Réservé à l'admin, au créateur de l'examen et aux enseignants de son EC (403 sinon). La page /exam/{id}?preview=1 l'utilise.",
             "parameters": [{"name": "exam_id", "in": "path", "required": True, "schema": {"type": "integer"}},
                            {"name": "seed", "in": "query", "schema": {"type": "integer"}}],
-            "responses": {"200": {"description": "Examen + subject_content + preview {seed, pages}"}, "403": {"description": "Non autorisé"}}
+            "responses": {"200": {"description": "Examen + subject_content + preview {seed, pages} + subject_edit {subject_id, can_edit, reason, validated_at, validated_by} (modification du sujet possible depuis l'aperçu ?)"}, "403": {"description": "Non autorisé"}}
+        }},
+        "/api/online_exams/{exam_id}/subject_validation": {"post": {
+            "tags": ["Examens en ligne"], "summary": "Valider (ou retirer la validation de) l'affichage du sujet après « Prévisualiser »",
+            "description": "L'enseignant confirme que ce que voient les étudiants correspond à son sujet. La validation est remise à zéro dès que le texte du sujet est modifié (PUT /api/subjects/{id}). Même droits que /preview.",
+            "parameters": [{"name": "exam_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+            "requestBody": {"content": {"application/json": {"schema": {"type": "object", "properties": {"validated": {"type": "boolean", "default": True}}}}}},
+            "responses": {"200": {"description": "{success, subject_id, can_edit, reason, validated_at, validated_by}"}, "403": {"description": "Non autorisé"}, "404": {"description": "Examen non trouvé"}}
+        }},
+        "/api/subjects/check": {"post": {
+            "tags": ["Sujets"], "summary": "Contrôler un texte de sujet en cours de rédaction (aucune écriture)",
+            "description": "Ce que les étudiants verraient avec ce texte : questions lues, avertissements, lignes qui ne seraient affichées nulle part (`hidden_lines`), questions qui citent un élément absent, et accord avec le barème du sujet (`subject_id`). Le texte est remis en forme comme à l'enregistrement. Réservé à l'admin, au responsable d'examen et aux enseignants. Utilisé par l'éditeur de la prévisualisation.",
+            "requestBody": {"content": {"application/json": {"schema": {"type": "object", "required": ["content"], "properties": {"content": {"type": "string"}, "subject_id": {"type": "integer"}}}}}},
+            "responses": {"200": {"description": "{ok, questions, by_type, issues[{level, message}], hidden_lines[], blocks[{num, type, has_context}], rubric}"}, "400": {"description": "Contenu invalide"}, "403": {"description": "Non autorisé"}}
         }},
         "/api/online_exams/{exam_id}/preview/grade": {"post": {
             "tags": ["Examens en ligne"], "summary": "Corriger une prévisualisation (rien n'est enregistré)",

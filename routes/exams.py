@@ -8377,7 +8377,58 @@ def preview_online_exam(exam_id):
                 'content': _strip_bareme_from_content(exam.subject.content or ''),
             }
         data['preview'] = {'seed': seed, 'pages': _build_exam_pages(exam, seed)}
+        data['subject_edit'] = _subject_edit_info(session, user, exam)
         return jsonify(data)
+    finally:
+        session.close()
+
+
+def _subject_edit_info(session, user, exam) -> dict:
+    """Ce que l'utilisateur peut faire du sujet depuis « Prévisualiser » : le modifier (mêmes règles que PUT /api/subjects/<id> :
+    auteur ou responsable de l'EC, et aucun examen lié actif / clôturé / avec tentatives) et l'avoir validé ou non."""
+    from repositories.subject_repository import SubjectRepository
+    subj = exam.subject
+    info = {'subject_id': subj.id if subj else None, 'can_edit': False, 'reason': None,
+            'validated_at': exam.subject_validated_at.isoformat() if exam.subject_validated_at else None, 'validated_by': None}
+    if exam.subject_validated_by:
+        v = session.get(User, exam.subject_validated_by)
+        info['validated_by'] = v.full_name if v else None
+    if not subj:
+        info['reason'] = "Cet examen n'a pas de sujet."
+        return info
+    if user.role == UserRole.PROFESSOR:
+        from services.ec_rights import can_edit_subject
+        if not can_edit_subject(session, subj, user.id):
+            info['reason'] = "Vous ne pouvez modifier que vos propres sujets ou ceux des EC dont vous êtes responsable."
+            return info
+    if SubjectRepository.has_locked_exam(subj.id):
+        info['reason'] = "Le sujet ne peut plus être modifié : un examen qui l'utilise est déjà actif, clôturé ou a reçu des tentatives."
+        return info
+    info['can_edit'] = True
+    return info
+
+
+@exams_bp.route('/api/online_exams/<int:exam_id>/subject_validation', methods=['POST'])
+@paseto_required
+def validate_exam_subject_display(exam_id):
+    """L'enseignant confirme que l'aperçu correspond à son sujet (`validated: true`) ou retire sa validation."""
+    session = get_session()
+    try:
+        user = session.get(User, get_current_user_id())
+        exam = session.query(OnlineExam).options(joinedload(OnlineExam.subject)).filter_by(id=exam_id).first()
+        if not exam:
+            return jsonify({'error': 'Examen non trouvé'}), 404
+        if not _preview_allowed(session, user, exam):
+            return jsonify({'error': 'Accès non autorisé'}), 403
+        if (request.get_json(silent=True) or {}).get('validated', True):
+            exam.subject_validated_at, exam.subject_validated_by = utcnow(), user.id
+        else:
+            exam.subject_validated_at, exam.subject_validated_by = None, None
+        session.commit()
+        return jsonify({'success': True, **_subject_edit_info(session, user, exam)})
+    except Exception as e:
+        session.rollback()
+        return jsonify({'error': str(e)}), 500
     finally:
         session.close()
 

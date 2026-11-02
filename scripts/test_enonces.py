@@ -104,5 +104,14 @@ if js2:
     jc = [x for x in js2[0] if x['type'] == 'cloze']
     check("texte à trous coupé sur deux lignes : même résultat dans le navigateur", jc and jc[0]['text'] == bc[0]['text'] and not jc[0]['options'], jc and jc[0]['text'])
 
+# 5. Correction : l'énoncé d'une partie qui suit une question n'est pas lu comme ses propositions (incident du 02/11/2026, Devoir2-IA, Q6)
+from routes.exams import _parse_subject_questions_for_grading as parse_grading
+SUITE = ("1. Q1. Qui ment ? [QCM]\nA. Paul\nB. Marie\nC. Luc\nD. Anne\n\n"
+         "Partie B — Les témoins\nRappel des déclarations :\nA : « Je n'ai rien effacé »\nB : « Si C est coupable, D l'est aussi »\n\n"
+         "2. Q2. Autre question ? [QCM]\nA. oui\nB. non\n")
+g = parse_grading(SUITE)
+check("correction : les propositions de Q1 sont les siennes (pas les déclarations de la partie B)", g['1']['choices'] == {'A': 'Paul', 'B': 'Marie', 'C': 'Luc', 'D': 'Anne'}, g['1']['choices'])
+check("correction : Q2 garde ses propositions", g['2']['choices'] == {'A': 'oui', 'B': 'non'}, g['2']['choices'])
+
 ok = sum(RES); print(f"\n{ok}/{len(RES)} vérifications réussies")
 sys.exit(0 if ok == len(RES) else 1)

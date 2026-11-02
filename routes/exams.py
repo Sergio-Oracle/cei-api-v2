@@ -1818,6 +1818,10 @@ def _parse_subject_questions_for_grading(content: str) -> dict:
         while i < len(lines):
             l = lines[i].strip()
             if not l:
+                # Ligne vide après au moins deux propositions : la question est finie (comme l'affichage, _parse_subject_blocks_ordered).
+                # Sans cela, un énoncé de partie suivant (« A : … », « B : … ») était lu comme les propositions de la question précédente.
+                if not is_grid and (len(choices) >= 2 or len(pairs) >= 2):
+                    break
                 i += 1
                 continue
             if Q_RE.match(l) and not (is_grid and (QT.ITEM_RE.match(l) or C_WIDE.match(l))):

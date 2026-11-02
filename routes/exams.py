@@ -1868,6 +1868,11 @@ def _parse_subject_questions_for_grading(content: str) -> dict:
                     i += 1
                     continue
             cm = C_RE.match(l)
+            if not cm and choices:
+                # Plus de six propositions : « G. … » après « F. … » (même règle que l'affichage, _parse_subject_blocks_ordered)
+                wm2 = C_WIDE.match(l)
+                if wm2 and wm2.group(1).upper() == chr(ord(max(choices)) + 1):
+                    cm = wm2
             if cm:
                 choices[cm.group(1).upper()] = cm.group(2).strip()
                 i += 1
@@ -2301,7 +2306,8 @@ def _build_readable_student_answers(subject_content: str, answers_data, exclude_
 # (« Question 1 (1.5 pts) : », format des sujets importés depuis un document Word).
 _RUBRIC_Q_BLOCK_RE = re.compile(
     r'Question\s+(\d{1,3})\s*(?:[—\-–:.]|\().*?(?=\nQuestion\s+\d{1,3}\s*(?:[—\-–:.]|\()|\n─+\nTOTAL|\Z)', re.S)
-_RUBRIC_QCM_ANSWER_RE = re.compile(r'[Bb]onnes?\s+r[ée]ponses?\s*:\s*([A-Fa-f]\)?(?:\s*,\s*[A-Fa-f]\)?)*)')
+# Lettres A à L (un QCM peut avoir plus de six propositions) ; une lettre doit être seule : « Bonne réponse : Cette phrase… » n'est pas la réponse C.
+_RUBRIC_QCM_ANSWER_RE = re.compile(r'[Bb]onnes?\s+r[ée]ponses?\s*:\s*(\(?[A-La-l]\)?(?![A-Za-zÀ-ÿ])(?:\s*[,;]\s*\(?[A-La-l]\)?(?![A-Za-zÀ-ÿ]))*)')
 _RUBRIC_VF_ANSWER_RE  = re.compile(r'R[ée]ponse\s*:\s*(Vrai|Faux)', re.I)
 _Q_POINTS_RE          = re.compile(r'Question\s+(\d{1,3})\s*(?:[—\-–:.][^\n]*?)?\(\s*(\d+(?:[.,]\d+)?)\s*pts?\s*\)')
 
@@ -2318,7 +2324,7 @@ def _extract_correct_answers(rubric: str) -> dict:
         num, block = m.group(1), m.group(0)
         am = _RUBRIC_QCM_ANSWER_RE.search(block)
         if am:
-            letters = {l.upper() for l in re.findall(r'[A-Fa-f]', am.group(1))}
+            letters = {l.upper() for l in re.findall(r'[A-La-l]', am.group(1))}
             if letters:
                 result[num] = {'type': 'qcm', 'letters': letters}
                 continue

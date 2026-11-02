@@ -33,7 +33,7 @@ def exam_subject_check(exam_id):
 def check_subject_draft():
     """Contrôle d'un TEXTE DE SUJET en cours de rédaction (éditeur de « Prévisualiser ») — aucune écriture.
     Donne ce que les étudiants verraient : questions lues, lignes jamais affichées, références à un élément absent,
-    et l'accord avec le barème du sujet (`subject_id`) quand il en a un."""
+    et ce que la CORRECTION fera de chaque question (bonne réponse et points lus dans le barème, `grading`)."""
     import re
     from routes.exams import _parse_subject_blocks_ordered, _strip_bareme_from_content
     from services.subject_normalizer import normalize
@@ -53,22 +53,26 @@ def check_subject_draft():
         qs = [b for b in blocks if b.get('type') not in ('section', 'text', 'description')]
         out = {**report, 'hidden_lines': hidden_lines(content, blocks),
                'blocks': [{'num': b.get('num'), 'type': b['type'], 'has_context': bool((b.get('context') or {}).get('text'))} for b in qs]}
-        rubric_issue = None
-        if data.get('subject_id'):
+        # Barème : celui du brouillon s'il est fourni, sinon celui du sujet ; `edits` = bonnes réponses / points modifiés dans le tableau
+        rubric = data.get('rubric') if isinstance(data.get('rubric'), str) else None
+        if rubric is None and data.get('subject_id'):
             from models import Subject
             subj = session.get(Subject, int(data['subject_id']))
-            if subj and (subj.rubric or '').strip():
-                in_rubric = {int(n) for n in re.findall(r'^\s*Question\s+(\d{1,3})\b', subj.rubric, re.M)}
-                in_subject = {int(b['num']) for b in qs if str(b.get('num', '')).isdigit()}
-                if in_rubric and in_rubric != in_subject:
-                    missing, extra = sorted(in_subject - in_rubric), sorted(in_rubric - in_subject)
-                    rubric_issue = {'missing_in_rubric': missing, 'missing_in_subject': extra}
-                    out['issues'] = list(out['issues']) + [{'level': 'warn', 'message':
-                        "Le barème ne correspond plus aux questions du sujet"
-                        + (f" : question(s) {', '.join(map(str, missing))} sans barème" if missing else '')
-                        + (f" ; barème pour des question(s) absentes du sujet : {', '.join(map(str, extra))}" if extra else '')
-                        + ". Mettez le barème à jour (Sujets, puis Modifier) avant l'examen."}]
-        out['rubric'] = rubric_issue
+            rubric = (subj.rubric if subj else '') or ''
+        rubric = rubric or ''
+        from services.rubric_check import grading_report, apply_edits
+        edits = data.get('edits')
+        if isinstance(edits, dict) and edits:
+            clean = {}
+            for num, ed in edits.items():
+                if str(num).isdigit() and isinstance(ed, dict):
+                    clean[str(int(num))] = {k: ed[k] for k in ('points', 'letters', 'value') if k in ed}
+            rubric = apply_edits(content, rubric, clean)
+        grading = grading_report(content, rubric)
+        out['issues'] = list(out['issues']) + [{'level': i['level'], 'message': i['message']} for i in grading['issues']]
+        out['ok'] = not any(i['level'] == 'error' for i in out['issues'])
+        out['grading'] = grading
+        out['rubric_text'] = rubric
         return jsonify(out)
     finally:
         session.close()

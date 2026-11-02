@@ -2047,6 +2047,11 @@ def _parse_subject_blocks_ordered(raw: str) -> list:
                     g_items.append(im_.group(1).strip())
                     i += 1
                     continue
+                if q['markerType'] == 'CLOZE' and not g_items and not g_grid and not choices and not C_RE.match(strip(lines[i])):
+                    # Suite du texte à trous coupée par un retour à la ligne (« … le \n (I) et le {1} ») : elle n'est pas une proposition
+                    q['text'] = (q['text'] + ' ' + strip(lines[i])).strip()
+                    i += 1
+                    continue
                 wm_ = C_WIDE.match(strip(lines[i]))
                 if wm_:
                     choices.append({'letter': wm_.group(1).upper(), 'text': strip(wm_.group(2))})
@@ -2082,6 +2087,11 @@ def _parse_subject_blocks_ordered(raw: str) -> list:
                 i += 1
                 continue
             c = get_c(lines[i])
+            if not c and choices:
+                # Plus de six propositions : « G. … » après « F. … » est la proposition suivante, pas la suite du texte de F
+                wm_ = C_WIDE.match(strip(lines[i]))
+                if wm_ and wm_.group(1).upper() == chr(ord(choices[-1]['letter']) + 1):
+                    c = {'letter': wm_.group(1).upper(), 'text': strip(wm_.group(2))}
             if c:
                 choices.append(c)
                 i += 1

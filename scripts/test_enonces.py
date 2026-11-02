@@ -76,5 +76,33 @@ if js:
     jj = [x for x in js[2] if x['type'] == 'qcm']
     check("énoncé placé juste avant Q1 (sans « Partie ») : serveur = navigateur", pj and jj and pj[0].get('context') == jj[0].get('context') and (pj[0].get('context') or {}).get('text', '').startswith('Examen de logique'), (pj[0].get('context') if pj else None))
 
+# 4. Rien ne disparaît en silence : contrôle de couverture
+from services.subject_coverage import coverage_issues
+check("sujet sain : aucun avertissement", coverage_issues(BON) == [], coverage_issues(BON))
+SEPT = "1. Q1. Choisir ? [QCM]\nA. a1\nB. b1\nC. c1\nD. d1\nE. e1\nF. f1\nG. g1\nH. h1\n"
+bs = [x for x in parse_py(SEPT) if x['type'] == 'qcm']
+check("QCM à 8 propositions (A à H) : toutes lues, aucune collée à la précédente (serveur)", bs and [c['letter'] for c in bs[0]['choices']] == list('ABCDEFGH') and bs[0]['choices'][5]['text'] == 'f1', bs and bs[0]['choices'])
+js3 = js_blocks([SEPT])
+if js3:
+    jb = [x for x in js3[0] if x['type'] == 'qcm']
+    check("QCM à 8 propositions : même résultat dans le navigateur", jb and [c['letter'] for c in jb[0]['choices']] == list('ABCDEFGH') and jb[0]['choices'][5]['text'] == 'f1')
+check("QCM à 8 propositions : aucun avertissement", coverage_issues(SEPT) == [], coverage_issues(SEPT))
+FIN = BON + "\nNB : justifiez chaque réponse sur votre copie.\n"
+iss = coverage_issues(FIN)
+check("texte placé après la dernière question (affiché nulle part) : signalé", iss and 'justifiez chaque' in iss[0]['message'], iss)
+check("« Fin de l'épreuve » / « Bon courage » : pas d'alerte", coverage_issues(BON + "\nBon courage !\nFin de l'épreuve\n") == [])
+HYP = "1. Q1. La conclusion est-elle une conséquence des trois hypothèses ? [QCM]\nA. oui\nB. non\n"
+iss = coverage_issues(HYP)
+check("question qui cite « les trois hypothèses » absentes : signalée", iss and 'hypoth' in iss[0]['message'], iss)
+check("…mais pas si l'énoncé de la partie les donne", coverage_issues("Partie A — X\nHypothèses : H1 = p ; H2 = q ; H3 = r.\n\n" + HYP) == [], coverage_issues("Partie A — X\nHypothèses : H1 = p ; H2 = q ; H3 = r.\n\n" + HYP))
+check("« propositions ci-dessous » (les choix suivent) : pas d'alerte", coverage_issues("1. Q1. Choisissez parmi les propositions ci-dessous. [QCM]\nA. a\nB. b\n") == [])
+CLOZE = "1. Dans la dissertation comme dans le commentaire, l'annonce du plan fait apparaître le [CLOZE]\n(I) et le {1}\n- 1 COURT\n"
+bc = [x for x in parse_py(CLOZE) if x['type'] == 'cloze']
+check("texte à trous coupé sur deux lignes : suite jointe au texte (serveur)", bc and '(I) et le {1}' in bc[0]['text'] and not bc[0]['options'], bc and bc[0]['options'])
+js2 = js_blocks([CLOZE])
+if js2:
+    jc = [x for x in js2[0] if x['type'] == 'cloze']
+    check("texte à trous coupé sur deux lignes : même résultat dans le navigateur", jc and jc[0]['text'] == bc[0]['text'] and not jc[0]['options'], jc and jc[0]['text'])
+
 ok = sum(RES); print(f"\n{ok}/{len(RES)} vérifications réussies")
 sys.exit(0 if ok == len(RES) else 1)

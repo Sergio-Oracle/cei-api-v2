@@ -85,6 +85,12 @@ def analyze(content: str) -> dict:
         except ValueError:
             pass
 
+    try:
+        from services.subject_coverage import coverage_issues
+        issues += coverage_issues(content)
+    except Exception as e:                       # le contrôle de couverture ne doit jamais empêcher l'examen
+        _log.warning('contrôle de couverture indisponible: %s', e)
+
     ok = not any(i['level'] == 'error' for i in issues)
     return {'ok': ok, 'questions': len(blocks), 'by_type': by_type, 'issues': issues}
 

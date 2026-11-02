@@ -486,6 +486,13 @@ class SubjectService:
         elif detection['declared'] and detection['declared'] != _found:
             detection['warnings'].append(f"Le document annonce {detection['declared']} questions, la plateforme en a reconnu {_found} : vérifiez l'aperçu.")
         detection['review'] = dict(_review)
+        # Rien ne doit disparaître en silence : lignes qui ne seraient affichées nulle part, questions qui citent un élément absent
+        try:
+            from services.subject_coverage import coverage_issues
+            from services.subject_normalizer import normalize as _norm_saved
+            detection['warnings'] += [i['message'] for i in coverage_issues(_norm_saved(annotated)[0])]
+        except Exception as _cov_err:
+            print(f'[SubjectService] contrôle de couverture indisponible: {_cov_err}')
         result['detection'] = detection
         result['normalization'] = [r for r in norm_reports if r.get('structured')]
         result['has_corrige'] = bool(corrige_text)

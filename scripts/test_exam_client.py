@@ -20,7 +20,7 @@ stu = s.query(User).filter(User.role == UserRole.STUDENT).first()
 subj = s.query(Subject).first()
 now = datetime.utcnow()
 ex = OnlineExam(subject_id=subj.id, title='TEST client', duration_minutes=60, start_time=now - timedelta(minutes=5), end_time=now + timedelta(minutes=55),
-                status=ExamStatus.ACTIVE, created_by_id=adm.id, require_client=True)
+                status=ExamStatus.ACTIVE, created_by_id=adm.id, require_client=True, restrict_to_enrolled=False)   # ce test ne porte pas sur l'inscription (voir test_acces_examen.py)
 s.add(ex); s.commit(); eid = ex.id
 H = lambda u: {'Authorization': 'Bearer ' + create_access_token(u.id, u.role.value, u.email)}
 UA = {'User-Agent': 'Mozilla/5.0 CEIExamClient/1.0.0'}

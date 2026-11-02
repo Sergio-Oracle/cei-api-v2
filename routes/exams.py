@@ -80,6 +80,9 @@ def get_online_exams():
                 OnlineExam.status == ExamStatus.CLOSED
             ).all() if all_closed_ids else []
             exams = active_exams + closed_exams
+            from services.exam_access import accessible_exam_ids as _acc
+            _ok = _acc(session, exams, user_id)
+            exams = [e for e in exams if e.id in _ok]      # jamais d'examen d'une UE à laquelle l'étudiant n'est pas inscrit
         elif user.role == UserRole.PROFESSOR:
             # Professeurs : leurs examens ET ceux des EC auxquels ils sont affectés (un examen créé à
             # leur place par le responsable d'examen ou l'administrateur doit leur apparaître)
@@ -303,6 +306,7 @@ def create_online_exam():
             require_biometric=data.get('require_biometric', False),
             run_environment_scan=data.get('run_environment_scan', False),
             require_client=bool(data.get('require_client', False)),
+            restrict_to_enrolled=bool(data.get('restrict_to_enrolled', True)),
             status=ExamStatus.SCHEDULED,
             created_by_id=user_id
         )
@@ -861,6 +865,10 @@ def get_online_exam_details(exam_id):
         if user.role == UserRole.STUDENT:
             # Étudiants : seulement les examens actifs dans la plage horaire
             now = utcnow()
+            from services.exam_access import student_may_access, REFUSAL
+            if not student_may_access(session, exam, user_id):
+                session.close()
+                return jsonify({'error': REFUSAL, 'not_enrolled': True}), 403
             from services.exam_waves import window_for as _window_for, wave_dict as _wave_dict, _iso as _wiso
             w_start, w_end, _wave, _missing = _window_for(session, exam, user_id, ensure=True)
             if _missing:
@@ -977,6 +985,11 @@ def start_exam_attempt(exam_id):
             return jsonify({'error': 'Examen non trouvé'}), 404
 
         now = utcnow()
+
+        from services.exam_access import student_may_access, REFUSAL
+        if not student_may_access(session, exam, user_id):
+            session.close()
+            return jsonify({'error': REFUSAL, 'not_enrolled': True}), 403
 
         # Fenêtre applicable à CET étudiant : celle de sa vague si l'examen est par
         # vagues, sinon celle de l'examen. Un étudiant sans vague n'entre pas.

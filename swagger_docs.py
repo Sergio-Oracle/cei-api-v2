@@ -2329,6 +2329,7 @@ OPENAPI_SPEC = {
         },
         "/api/online_exams/{exam_id}/details": {"get": {
             "tags": ["Examens en ligne"], "summary": "Détail complet d'un examen",
+            "description": "Étudiant : 403 `not_enrolled` s'il n'est pas inscrit à l'UE de l'EC du sujet (sauf copie existante, rattachement à une vague, ou réglage `restrict_to_enrolled` = faux).",
             "parameters": [{"name": "exam_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
             "responses": {"200": {"description": "Examen + stats + tentatives"}, "404": {"$ref": "#/components/responses/NotFound"}}
         }},
@@ -2352,6 +2353,9 @@ OPENAPI_SPEC = {
         "/api/online_exams/{exam_id}/start": {"post": {
             "tags": ["Examens en ligne"], "summary": "Démarrer ou reprendre une tentative (étudiant)",
             "description": (
+                "**Inscription requise** : un étudiant non inscrit à l'UE de l'EC du sujet reçoit 403 `not_enrolled` (aucune copie créée), "
+                "même avec le lien direct ; exceptions : copie déjà existante, rattachement à une vague, ou `restrict_to_enrolled` = faux "
+                "(réglage de l'examen, vrai par défaut). `GET /api/online_exams` ne liste que les examens accessibles à l'étudiant. "
                 "Premier démarrage : `access_code` non requis. Reprise d'une tentative déjà IN_PROGRESS (l'étudiant a quitté "
                 "puis revient) : `access_code` devient obligatoire. Le code est désormais **persistant et self-service** — "
                 "généré automatiquement au premier besoin (valable jusqu'à `end_time` de l'examen, réutilisable à chaque "

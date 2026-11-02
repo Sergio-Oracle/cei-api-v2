@@ -1862,7 +1862,7 @@ OPENAPI_SPEC = {
             "description": "Comme « Prévisualiser » dans Moodle : l'examen tel que l'étudiant le reçoit (sujet sans barème) et ses pages (`preview.pages`, même format que /api/exam_attempts/{id}/paginated), mélangées selon `seed` (tiré au hasard si absent : chaque prévisualisation montre un autre ordre). Aucune tentative créée. Réservé à l'admin, au créateur de l'examen et aux enseignants de son EC (403 sinon). La page /exam/{id}?preview=1 l'utilise.",
             "parameters": [{"name": "exam_id", "in": "path", "required": True, "schema": {"type": "integer"}},
                            {"name": "seed", "in": "query", "schema": {"type": "integer"}}],
-            "responses": {"200": {"description": "Examen + subject_content + preview {seed, pages} + subject_edit {subject_id, can_edit, reason, validated_at, validated_by} (modification du sujet possible depuis l'aperçu ?)"}, "403": {"description": "Non autorisé"}}
+            "responses": {"200": {"description": "Examen + subject_content + preview {seed, pages} + subject_edit {subject_id, can_edit, reason, validated_at, validated_by}"}, "403": {"description": "Non autorisé"}}
         }},
         "/api/online_exams/{exam_id}/subject_validation": {"post": {
             "tags": ["Examens en ligne"], "summary": "Valider (ou retirer la validation de) l'affichage du sujet après « Prévisualiser »",

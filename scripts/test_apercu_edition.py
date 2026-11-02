@@ -77,6 +77,14 @@ try:
     chk("correction : l'étudiant qui répond A à Q2 (nouvelle place de la bonne réponse) a tout juste (20/20)", score == 20 and mx == 20, (score, mx))
     score, *_ = _deterministic_grade(sub.content, sub.rubric, {'pq_1': 'A', 'pq_2': 'B', 'pq_3': 'C'})
     chk("correction : l'ancienne lettre (B) n'est plus une bonne réponse (15/20)", score == 15, score)
+    # barème IA : explication écrite après la lettre (pas une copie de la proposition) → aucune fausse alerte (sujet « Réseaux de neurones », 02/11/2026)
+    from services.rubric_check import grading_report
+    EXP = "1. Q1. Quelle opération réduit la taille ? [QCM]\nA. Convolution avec stride 1\nB. Pooling max\nC. Normalisation batch\nD. Dropout\n"
+    RX = "Question 1 (1 pts) :\n• Bonne réponse : B) — Le pooling max résume les activations locales, réduisant la taille spatiale.\n"
+    rep = grading_report(EXP, RX)
+    chk("barème avec explication après la lettre : aucune fausse erreur", not rep['issues'] and rep['rows'][0]['letters'] == ['B'], rep['issues'])
+    rep = grading_report(EXP.replace("B. Pooling max\nC. Normalisation batch", "B. Normalisation batch\nC. Pooling max"), "Question 1 (1 pts) :\n• Bonne réponse : B) Pooling max\n")
+    chk("barème qui copie la proposition, propositions déplacées : erreur + nouvelle lettre C", rep['rows'][0]['suggest'] == 'C' and rep['rows'][0]['status'] == 'error', rep['issues'])
     G8 = "1. Q1. Choisir ? [QCM]\nA. a\nB. b\nC. c\nD. d\nE. e\nF. f\nG. g\nH. h\n"
     sc, mx, *_ = _deterministic_grade(G8, "Question 1 (4 pts) :\n  • Bonne réponse : G) g\n", {'pq_1': 'G'})
     chk("QCM à 8 propositions : bonne réponse G reconnue par la correction", sc == 4 and mx == 4, (sc, mx))

@@ -20,6 +20,15 @@ def _norm(s: str) -> str:
     return re.sub(r'[\W_]+', '', (s or '').lower(), flags=re.UNICODE)
 
 
+def _same(written: str, choice: str) -> bool:
+    """Le texte écrit dans le barème désigne-t-il cette proposition ? Égalité, ou l'un contient l'autre (explication qui reprend la proposition,
+    texte tronqué). Les très courts textes (« oui », « non ») ne comptent que s'ils sont identiques."""
+    a, b = _norm(written), _norm(choice)
+    if not a or not b:
+        return False
+    return a == b or (len(b) >= 4 and b in a) or (len(a) >= 4 and a in b)
+
+
 def _fmt_pts(x: float) -> str:
     return str(int(x)) if float(x).is_integer() else str(round(x, 2)).replace('.', ',')
 
@@ -66,17 +75,20 @@ def grading_report(content: str, rubric: str) -> dict:
                         row['status'] = 'error'; add('error', num, f"la bonne réponse du barème ({', '.join(bad)}) n'existe pas parmi les propositions du sujet.")
                     if kind == 'qcm' and len(key['letters']) != 1:
                         row['status'] = 'error'; add('error', num, "un QCM à une réponse a plusieurs bonnes réponses dans le barème.")
-                    # Le barème recopie le texte de la bonne proposition : s'il ne correspond plus, les propositions ont changé
+                    # Le barème recopie parfois le texte de la bonne proposition (« B) non »). S'il ne correspond plus à la proposition de CETTE lettre
+                    # mais correspond clairement à une AUTRE, les propositions ont été déplacées : la lettre du barème est fausse.
+                    # Un barème qui écrit une explication après la lettre (« B) — Le pooling max résume… ») n'est PAS une copie : on ne compare pas.
                     m = blocks.get(num)
                     am = _ANSWER_TEXT_RE.search(m.group(0)) if m else None
                     if am and kind == 'qcm' and am.group(2).strip() and len(key['letters']) == 1:
                         L, written = am.group(1).upper(), am.group(2).strip()
                         now = next((c['text'] for c in choices if c['letter'] == L), None)
-                        if now is not None and _norm(written) and _norm(written) != _norm(now):
-                            moved = next((c['letter'] for c in choices if _norm(c['text']) == _norm(written)), None)
-                            row['status'] = 'error'; row['suggest'] = moved
-                            add('error', num, f"le barème attend {L}) « {written[:60]} » mais la proposition {L} du sujet est maintenant « {now[:60]} »"
-                                              + (f" ; ce texte est devenu la proposition {moved}." if moved else "."))
+                        if now is not None and not _same(written, now):
+                            moved = next((c['letter'] for c in choices if c['letter'] != L and _same(written, c['text'])), None)
+                            if moved:
+                                row['status'] = 'error'; row['suggest'] = moved
+                                add('error', num, f"le barème attend {L}) « {written[:60]} » mais la proposition {L} du sujet est maintenant « {now[:60]} » ; "
+                                                  f"ce texte est devenu la proposition {moved}.")
         elif kind == 'auto':
             if not key:
                 row['status'] = 'warn'; add('warn', num, "pas de réponse attendue lisible dans le barème : elle sera corrigée par l'IA.")

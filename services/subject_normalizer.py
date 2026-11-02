@@ -18,6 +18,8 @@ _VF_HEAD_RE = re.compile(r'^\s*N°?\s+Affirmations?\s+Vrai\s+Faux\s*$', re.I)
 _Q_RE = re.compile(r'^(\s*(?:(?:Question|Q)\.?\s+)?)(\d{1,3})(\s*[.:)–—-]\s*|\s+(?=\[))(.*)$', re.I)
 _CHOICE_RE = re.compile(r'^\s*\(?[A-Fa-f]\)?\s*[.):\s-]\s+')
 _SECT_RE = re.compile(r'^\s*(?:Partie|Section|Exercice|Part)\s+(?:[IVX]+\b|\d+\b|[-–—:])', re.I)
+_SECT_LETTER_RE = re.compile(r"^\s*(?:Partie|Section|Exercice|Part)\s+[A-Z]\b(?![’'a-zà-ÿ])")   # « Partie A », jamais « Partie de … »
+_GLUED_Q_RE = re.compile(r'^(.*\S)\s+((\d{1,3})\.\s+(?:Q|Question)\s*(\d{1,3})\s*[.:)]\s.*)$')
 
 
 def _vf_tables(lines):
@@ -41,7 +43,7 @@ def _question_numbers(lines):
     res = []
     for idx, l in enumerate(lines):
         s = l.strip()
-        if not s or _CHOICE_RE.match(s) or _SECT_RE.match(s):
+        if not s or _CHOICE_RE.match(s) or _SECT_RE.match(s) or _SECT_LETTER_RE.match(s):
             continue
         m = _Q_RE.match(l)
         if m and m.group(4).strip():
@@ -142,6 +144,21 @@ def rubric_from_key(content, key, total_points=20):
     return '\n'.join(out)
 
 
+def _unglue(lines):
+    """« énoncé… » + « 7. Q7. question » sur une même ligne → deux lignes. Le lecteur ne voit une question que si elle commence sa ligne :
+    collée à la fin d'un énoncé, elle disparaissait (incident du 02/11/2026, Devoir2-IA : Q1, Q7 et Q15 absentes, énoncés des parties perdus).
+    Reconnu seulement quand le numéro devant « Qn. » est le même que n (forme produite par loose_mcq), donc jamais sur du texte ordinaire."""
+    out, changed = [], 0
+    for l in lines:
+        m = _GLUED_Q_RE.match(l)
+        if m and m.group(3) == m.group(4) and not _Q_RE.match(m.group(1)) and re.search(r'[.»)!?:;”"]$', m.group(1)):
+            out += [m.group(1), '', m.group(2)]
+            changed += 1
+        else:
+            out.append(l)
+    return out, changed
+
+
 def normalize(content):
     """Retourne (contenu_normalisé, liste de modifications lisibles). Aucune écriture ailleurs."""
     if not content or not isinstance(content, str):
@@ -151,6 +168,9 @@ def normalize(content):
     lines, n = _vf_tables(lines)
     if n:
         notes.append(f"{n} ligne(s) de tableau Vrai/Faux converties en questions [VF]")
+    lines, n = _unglue(lines)
+    if n:
+        notes.append(f"{n} question(s) recollée(s) à la fin d'un énoncé remises sur leur propre ligne")
     lines, n = _renumber(lines)
     if n:
         notes.append(f"numérotation rendue continue (1 à {n}) : les numéros repartaient de 1 d'un exercice à l'autre")

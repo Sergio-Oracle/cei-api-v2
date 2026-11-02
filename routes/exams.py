@@ -1906,6 +1906,8 @@ def _parse_subject_blocks_ordered(raw: str) -> list:
     # séparateur, ces lignes se collaient aux lignes annexes de la question
     # précédente au lieu d'être reconnues comme un nouvel en-tête de section.
     SECT_RE = re.compile(r'^(?:Partie|Section|Exercice|Part)\s+(?:[IVX]+\b|\d+\b|[-–—:])', re.I)
+    # « Partie A », « Partie B — … » : lettre MAJUSCULE seule (jamais « Partie de … »)
+    SECT_LETTER_RE = re.compile(r"^(?:Partie|Section|Exercice|Part)\s+[A-Z]\b(?![’'a-zà-ÿ])")
     INSTR_RE = re.compile(
         r'^(?:Défini[rz]|Expliqu[eé][rz]?|Décri[vz]|Analys[eé][rz]?|Calcul[eé][rz]?|Rédig[eé][rz]?|'
         r'Démontr[eé][rz]?|Comment[eé][rz]?|Identifi[eé][rz]?|Justifi[eé][rz]?|Compar[eé][rz]?|'
@@ -1916,7 +1918,11 @@ def _parse_subject_blocks_ordered(raw: str) -> list:
     def is_q(l): return bool(Q_RE.match(strip(l)))
     def is_c(l): return bool(C_RE.match(strip(l))) and len(strip(l)) > 3
     def is_sep(l): return not l.strip() or bool(SEP_RE.match(l.strip()))
-    def is_sect(l): return bool(SECT_RE.match(strip(l))) and not is_q(l)
+    def is_sect(l): return (bool(SECT_RE.match(strip(l))) or bool(SECT_LETTER_RE.match(strip(l)))) and not is_q(l)
+    # Lignes qui ne sont jamais un énoncé : en-tête de fichier, médias, marqueurs seuls
+    def is_noise(l):
+        t = l.strip()
+        return not t or bool(SEP_RE.match(t)) or bool(MEDIA_RE.match(t)) or bool(re.match(r'^---.*---$', t)) or bool(re.match(r'^\[[A-Za-zÉé_ ]+\]$', t))
 
     def get_q(l):
         s = strip(l)
@@ -1944,9 +1950,24 @@ def _parse_subject_blocks_ordered(raw: str) -> list:
         if is_sect(lines[i]):
             last_sect = i
         i += 1
+    # Énoncé d'une partie (« On utilise les variables… », « Rappel des déclarations… ») : il n'est pas une question, mais l'étudiant
+    # en a besoin pour répondre. Il est rattaché à chaque question de la partie (champ `context`), car la partie « QCM » est une liste
+    # de questions seule (et mélangée) : un bloc d'énoncé indépendant n'y serait jamais affiché.
+    ctx_title, ctx_text, pending = '', [], []
     if last_sect is not None:
         blocks.append({'type': 'section', 'title': strip(lines[last_sect])})   # titre du PREMIER exercice (juste avant la question 1)
-    # préambule ignoré ici (déjà affiché intégralement via le panneau "sujet complet")
+        ctx_title = strip(lines[last_sect])
+        pending = [l.rstrip() for l in lines[last_sect + 1:i] if not is_noise(l)]
+    else:
+        para, last_para = [], []
+        for l in lines[:i]:                       # dernier paragraphe (suite de lignes non vides) avant la question 1
+            if l.strip():
+                para.append(l.rstrip())
+            elif para:
+                last_para, para = para, []
+        para = [l for l in (para or last_para) if not is_noise(l)]
+        if len(' '.join(para)) >= 40:
+            pending = para
 
     while i < n:
         dm = QT.DESC_RE.match(lines[i])
@@ -1960,12 +1981,15 @@ def _parse_subject_blocks_ordered(raw: str) -> list:
             continue
         if is_sect(lines[i]):
             blocks.append({'type': 'section', 'title': strip(lines[i])})
+            ctx_title, ctx_text, pending = strip(lines[i]), [], []
             i += 1
             continue
         if is_sep(lines[i]) and not is_q(lines[i]):
             i += 1
             continue
         if not is_q(lines[i]):
+            if not is_noise(lines[i]):
+                pending.append(lines[i].rstrip())       # texte hors question : énoncé de la partie
             i += 1
             continue
         q = get_q(lines[i])
@@ -2102,6 +2126,10 @@ def _parse_subject_blocks_ordered(raw: str) -> list:
             'type': btype, 'num': q['num'], 'text': q['text'], 'extraLines': clean_extra,
             'choices': choices, 'pairs': pairs or None, 'media': media or None,
         }
+        if pending:
+            ctx_text, pending = pending, []
+        if ctx_title or ctx_text:
+            blk['context'] = {'title': ctx_title, 'text': '\n'.join(ctx_text).strip()}
         if is_grid:
             items, options = QT.grid_from_lines(q['markerType'], clean_extra, choices, g_items, g_cats, q['text'])
             blk['items'], blk['options'] = items, options

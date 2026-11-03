@@ -29,6 +29,7 @@ LK_YAML="${LK_YAML:-/etc/livekit/livekit.yaml}"
 EGRESS_YAML="${EGRESS_YAML:-/etc/livekit/egress.yaml}"
 IMAGE="${IMAGE:-livekit/egress@sha256:14c1222a0d4a1e440e2cb7e3d53429a5c1a2c9277abae7ac79be336ea32fea25}"
 METRICS="${METRICS:-http://127.0.0.1:6789/metrics}"
+EGRESS_UID="${EGRESS_UID:-1001}"   # utilisateur « egress » de l'image livekit/egress
 DRY="${DRY:-0}"                     # DRY=1 : ni apt, ni docker, ni systemctl (tests)
 BACKUP="/root/backup_egress_$(date +%Y%m%d_%H%M%S)"
 
@@ -100,8 +101,12 @@ EOF
 if [ "$MODE" = "apply" ]; then
   mkdir -p "$(dirname "$EGRESS_YAML")"
   [ -f "$EGRESS_YAML" ] && { mkdir -p "$BACKUP"; cp -a "$EGRESS_YAML" "$BACKUP/egress.yaml"; }
-  umask 077; printf '%s\n' "$EGRESS_BODY" > "$EGRESS_YAML"; chmod 0600 "$EGRESS_YAML"
-  echo "  $EGRESS_YAML écrit (0600)"
+  umask 077; printf '%s\n' "$EGRESS_BODY" > "$EGRESS_YAML"
+  # Le conteneur tourne avec l'utilisateur « egress » (uid 1001) : un fichier 0600 appartenant à root lui est
+  # illisible (le conteneur sortait en erreur et redémarrait en boucle). Propriétaire = uid 1001, lecture seule ;
+  # le répertoire /etc/livekit (0750 root:livekit) empêche tout autre compte de l'atteindre.
+  chown "$EGRESS_UID":0 "$EGRESS_YAML"; chmod 0400 "$EGRESS_YAML"
+  echo "  $EGRESS_YAML écrit (propriétaire uid $EGRESS_UID, 0400)"
 else echo "  [plan] $EGRESS_YAML serait écrit (clé $KEY_NAME, ws://127.0.0.1:7880, Redis local)"; fi
 
 say "4/4 Conteneur livekit-egress"
@@ -118,8 +123,8 @@ fi
 if [ "$MODE" = "apply" ] && [ "$DRY" != "1" ]; then
   sleep 6
   docker ps --filter name=livekit-egress --format '  conteneur : {{.Names}} {{.Status}}'
-  docker logs livekit-egress 2>&1 | grep -E "service ready|cpu available" | tail -2 | cut -c1-160 | sed 's/^/  /'
-  redis-cli pubsub channels '*' | grep -c Egress | sed 's/^/  canaux Egress dans Redis : /'
+  { docker logs livekit-egress 2>&1 | grep -E "service ready|cpu available|rror|denied" | tail -3 | cut -c1-200 | sed 's/^/  /'; } || true
+  { redis-cli pubsub channels '*' | grep -c Egress | sed 's/^/  canaux Egress dans Redis : /'; } || true
 fi
 
 say "Terminé ($MODE)"

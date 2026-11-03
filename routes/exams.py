@@ -3230,6 +3230,14 @@ def _run_ai_correction(attempt, corrected_by_id=None) -> float:
     if remaining_max <= 0.01 or not student_answers.strip():
         score  = _to_20(det_score)
         result = f"{det_section}Note totale: {score:.2f}/20"
+        # Tout est noté automatiquement (sujet entièrement QCM/vrai-faux/appariement) : il n'y a pas d'appel IA, donc
+        # rien d'autre n'enregistrerait la note (régression depuis 4eab47b : la note était calculée puis perdue).
+        attempt.score = score
+        attempt.feedback = result
+        attempt.question_scores = json.dumps(det_structured)
+        attempt.corrected_at = utcnow()
+        attempt.corrected_by_id = corrected_by_id
+        return score
     else:
         system_prompt = _build_correction_system_prompt(
             exam.title + (" — " + subject.title if subject.title else ""),

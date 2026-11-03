@@ -4,7 +4,7 @@ Incident du 02/11/2026 (examen 152) : une étudiante non inscrite à l'UE de l'e
 des examens, ni l'ouverture, ni le démarrage ne contrôlaient l'inscription. Règle, centralisée ici et appelée partout :
 
   un étudiant accède à l'examen s'il est inscrit à l'UE de l'EC du sujet, OU s'il a déjà une copie, OU s'il est dans une vague de
-  l'examen (rattachements faits par le personnel) ; l'enseignant peut lever la restriction (`restrict_to_enrolled` = faux).
+  l'examen (rattachements faits par le personnel)  (règle permanente, sans réglage : un enseignant ne peut pas la lever).
 """
 from models import ExamAttempt, ExamWaveStudent, StudentUEEnrollment
 
@@ -17,8 +17,6 @@ def _ue_id(exam):
 
 
 def student_may_access(session, exam, student_id) -> bool:
-    if exam.restrict_to_enrolled is False:
-        return True
     ue_id = _ue_id(exam)
     if ue_id and session.query(StudentUEEnrollment.id).filter_by(student_id=student_id, ue_id=ue_id).first():
         return True
@@ -38,6 +36,6 @@ def accessible_exam_ids(session, exams, student_id) -> set:
     waves = {r[0] for r in session.query(ExamWaveStudent.exam_id).filter(ExamWaveStudent.student_id == student_id, ExamWaveStudent.exam_id.in_(ids))}
     out = set()
     for e in exams:
-        if e.restrict_to_enrolled is False or e.id in attempts or e.id in waves or (_ue_id(e) in my_ues and _ue_id(e)):
+        if e.id in attempts or e.id in waves or (_ue_id(e) in my_ues and _ue_id(e)):
             out.add(e.id)
     return out

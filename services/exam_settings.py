@@ -65,7 +65,6 @@ FIELD_RULES = {
     'questions_per_page': _int_range(0, 50, 'Questions par page'),
     'time_per_question_seconds': _opt_seconds,
     'require_biometric': _bool, 'run_environment_scan': _bool, 'require_client': _bool,
-    'restrict_to_enrolled': _bool,
 }
 
 # Réglages qui changent les règles de ceux qui ont COMMENCÉ : verrouillés dès qu'une copie existe (ou que l'examen est en cours)

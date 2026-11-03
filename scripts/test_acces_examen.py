@@ -28,7 +28,6 @@ try:
     e=OnlineExam(subject_id=subj.id,title='TEST accès',duration_minutes=60,start_time=now-timedelta(minutes=5),end_time=now+timedelta(minutes=55),
                  status=ExamStatus.ACTIVE,created_by_id=insc.id)
     s.add(e); s.commit(); mk_ids['exams'].append(e.id); eid=e.id
-    chk("Par défaut un examen est réservé aux inscrits", e.to_dict()['restrict_to_enrolled'] is True)
     ids=lambda u:[x['id'] for x in (c.get('/api/online_exams',headers=H(u)).get_json() or [])]
     chk("Liste : l'inscrit voit l'examen", eid in ids(insc))
     chk("Liste : le non-inscrit ne le voit pas", eid not in ids(etr))
@@ -43,15 +42,10 @@ try:
     r=c.get(f'/api/online_exams/{eid}/details',headers=H(vag)); chk("Étudiant rattaché à une vague par le personnel : accès conservé", r.status_code==200, (r.status_code,r.get_json()))
     r=c.get(f'/api/online_exams/{eid}/details',headers=H(etr)); chk("Un étranger reste refusé même quand l'examen a des vagues", r.status_code==403, r.status_code)
     s.query(ExamWaveStudent).filter_by(wave_id=w.id).delete(); s.delete(w); s.commit()
-    # levée de la restriction par l'enseignant
-    e=s.get(OnlineExam,eid); e.restrict_to_enrolled=False; s.commit()
-    chk("Restriction levée : le non-inscrit voit l'examen", eid in ids(etr))
-    r=c.get(f'/api/online_exams/{eid}/details',headers=H(etr)); chk("Restriction levée : ouverture acceptée", r.status_code==200, r.status_code)
-    e=s.get(OnlineExam,eid); e.restrict_to_enrolled=True; s.commit()
-    # réglage via l'API
+    # la règle est permanente : aucun réglage ne permet de la lever
     adm=s.query(User).filter(User.role==UserRole.ADMIN).first()
-    r=c.put(f'/api/admin/online_exams/{eid}',headers=H(adm),json={'restrict_to_enrolled':False}); s.expire_all()
-    chk("Le réglage se modifie par l'API des réglages", r.status_code==200 and s.get(OnlineExam,eid).restrict_to_enrolled is False, (r.status_code,r.get_json()))
+    c.put(f'/api/admin/online_exams/{eid}',headers=H(adm),json={'restrict_to_enrolled':False}); s.expire_all()
+    r=c.get(f'/api/online_exams/{eid}/details',headers=H(etr)); chk("Aucun réglage ne lève la restriction (envoi de restrict_to_enrolled=false ignoré)", r.status_code==403, r.status_code)
 finally:
     s.close(); s2=get_session()
     for i in mk_ids['exams']:

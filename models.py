@@ -843,7 +843,6 @@ class OnlineExam(Base):
             'require_biometric': self.require_biometric if self.require_biometric is not None else False,
             'run_environment_scan': self.run_environment_scan if self.run_environment_scan is not None else False,
             'require_client': bool(self.require_client),
-            'restrict_to_enrolled': self.restrict_to_enrolled is not False,
             'subject_validated_at': self.subject_validated_at.isoformat() if self.subject_validated_at else None,
             'creator_name': self.creator.full_name if self.creator else None,
             'created_at': self.created_at.isoformat() if self.created_at else None,

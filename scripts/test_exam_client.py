@@ -17,11 +17,16 @@ def chk(n, ok, d=''):
 s = get_session()
 adm = s.query(User).filter(User.role == UserRole.ADMIN).first()
 stu = s.query(User).filter(User.role == UserRole.STUDENT).first()
-subj = s.query(Subject).first()
+subj = s.query(Subject).filter(Subject.ec_id.isnot(None)).first()
 now = datetime.utcnow()
 ex = OnlineExam(subject_id=subj.id, title='TEST client', duration_minutes=60, start_time=now - timedelta(minutes=5), end_time=now + timedelta(minutes=55),
-                status=ExamStatus.ACTIVE, created_by_id=adm.id, require_client=True, restrict_to_enrolled=False)   # ce test ne porte pas sur l'inscription (voir test_acces_examen.py)
+                status=ExamStatus.ACTIVE, created_by_id=adm.id, require_client=True)
 s.add(ex); s.commit(); eid = ex.id
+# ce test ne porte pas sur l'inscription (voir test_acces_examen.py) : l'étudiant est inscrit à l'UE
+_ue = subj.ec.ue_id
+_enr = None
+if not s.query(StudentUEEnrollment.id).filter_by(student_id=stu.id, ue_id=_ue).first():
+    _enr = StudentUEEnrollment(student_id=stu.id, ue_id=_ue); s.add(_enr); s.commit()
 H = lambda u: {'Authorization': 'Bearer ' + create_access_token(u.id, u.role.value, u.email)}
 UA = {'User-Agent': 'Mozilla/5.0 CEIExamClient/1.0.0'}
 c = app.test_client()
@@ -63,5 +68,7 @@ finally:
     for a in s2.query(ExamAttempt).filter_by(exam_id=eid): s2.delete(a)
     e = s2.get(OnlineExam, eid)
     if e: s2.delete(e)
+    if _enr is not None:
+        s2.query(StudentUEEnrollment).filter_by(id=_enr.id).delete()
     s2.commit(); print('données de test supprimées')
 ok = sum(RES); print(f'\n{ok}/{len(RES)} vérifications réussies'); sys.exit(0 if ok == len(RES) else 1)

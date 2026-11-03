@@ -306,7 +306,6 @@ def create_online_exam():
             require_biometric=data.get('require_biometric', False),
             run_environment_scan=data.get('run_environment_scan', False),
             require_client=bool(data.get('require_client', False)),
-            restrict_to_enrolled=bool(data.get('restrict_to_enrolled', True)),
             status=ExamStatus.SCHEDULED,
             created_by_id=user_id
         )

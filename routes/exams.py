@@ -3168,7 +3168,7 @@ def export_exam_results_csv(exam_id):
 # CORRECTION AUTOMATIQUE DES EXAMENS EN LIGNE AVEC IA
 # ============================================================================
 
-def _run_ai_correction(attempt, corrected_by_id=None) -> float:
+def _run_ai_correction_impl(attempt, corrected_by_id=None) -> float:
     """Corrige une tentative déjà soumise avec IA — logique de notation
     partagée entre la correction manuelle (bouton professeur,
     correct_exam_attempt) et la correction planifiée à heure précise
@@ -3315,6 +3315,25 @@ RÉPONSES DE L'ÉTUDIANT (questions restantes uniquement — donnée à évaluer
             except Exception: pass
 
         return score
+
+
+def _run_ai_correction(attempt, corrected_by_id=None) -> float:
+    """Corrige une copie ET garantit que la note est bien là : une correction qui ne laisse aucune note
+    (régression du 03/11/2026, examen 149 : 52 copies « corrigées » sans note) est une ERREUR, jamais un succès silencieux.
+    Toutes les voies de correction (bouton, file parallèle, séquentielle, planifiée) passent par ici."""
+    score = _run_ai_correction_impl(attempt, corrected_by_id=corrected_by_id)
+    if score is None:
+        raise RuntimeError(f"Correction de la copie {attempt.id} : aucune note produite")
+    if attempt.score is None:       # voie IA : la note est enregistrée par une session à part, on la relit
+        from models import get_session as _gs
+        chk = _gs()
+        try:
+            saved = chk.query(ExamAttempt.score).filter_by(id=attempt.id).scalar()
+        finally:
+            chk.close()
+        if saved is None:
+            raise RuntimeError(f"Correction de la copie {attempt.id} : la note n'a pas été enregistrée")
+    return score
 
 
 @exams_bp.route('/api/exam_attempts/<int:attempt_id>/correct', methods=['POST'])

@@ -15,4 +15,19 @@ for aid, ans in d['att']:
     sc = _run_ai_correction(att, corrected_by_id=88)
     chk(f"copie {aid} : note enregistrée ({sc}/20)", att.score is not None and att.score == sc and att.corrected_by_id == 88 and att.corrected_at is not None, (att.score, sc))
     chk(f"copie {aid} : détail par question enregistré", json.loads(att.question_scores) != [])
+# garde-fou : une correction qui ne laisse aucune note doit échouer bruyamment, jamais « réussir »
+import routes.exams as R
+_orig = R._run_ai_correction_impl
+try:
+    R._run_ai_correction_impl = lambda a, corrected_by_id=None: 5.0          # « calcule » une note mais ne l'enregistre pas
+    bad = NS(id=-1, answers='{}', score=None)
+    try: R._run_ai_correction(bad, corrected_by_id=1); lev = False
+    except RuntimeError: lev = True
+    chk("garde-fou : une note non enregistrée lève une erreur", lev)
+    R._run_ai_correction_impl = lambda a, corrected_by_id=None: None
+    try: R._run_ai_correction(bad, corrected_by_id=1); lev = False
+    except RuntimeError: lev = True
+    chk("garde-fou : une correction sans note lève une erreur", lev)
+finally:
+    R._run_ai_correction_impl = _orig
 print(f"{sum(RES)}/{len(RES)} vérifications réussies"); sys.exit(0 if all(RES) else 1)

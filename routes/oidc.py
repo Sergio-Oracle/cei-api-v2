@@ -303,14 +303,21 @@ def oidc_force_login():
             return jsonify({'error': 'Compte introuvable ou désactivé.'}), 404
 
         existing = cache_get(session_key(user.id))
-        if existing and existing.get('token_hash'):
+        if existing and existing.get('token_hash') and not session.query(TokenBlocklist.id).filter_by(token_hash=existing['token_hash']).first():
             session.add(TokenBlocklist(
                 token_hash=existing['token_hash'], user_id=user.id,
                 expires_at=utcnow() + REFRESH_TTL,
             ))
 
         user.last_login = utcnow()
-        session.commit()
+        try:
+            session.commit()
+        except Exception:
+            # Deux requêtes simultanées ont révoqué la même ancienne session (clé unique du jeton) : c'est déjà fait, on continue.
+            session.rollback()
+            user = session.query(User).filter_by(id=entry['user_id']).first()
+            user.last_login = utcnow()
+            session.commit()
         # Ici on répond en JSON (appelé via fetch depuis la page /login),
         # pas en redirection HTTP — le frontend fait router.push('/dashboard') lui-même.
         # On ne réutilise que les Set-Cookie de _issue_session_and_redirect,

@@ -45,6 +45,29 @@ loglevel       = "info"
 access_log_format = '%(h)s %(l)s %(u)s %(t)s "%(r)s" %(s)s %(b)s %(D)sµs'
 
 # ── PID ───────────────────────────────────────────────────────────────────────
+# Un fichier PID resté d'avant un redémarrage du serveur désigne souvent un
+# processus étranger (PID réutilisé, p. ex. un worker nginx) : gunicorn refuse
+# alors de démarrer (« Already running on PID … ») et systemd relance en boucle.
+# Observé le 03/11/2026 : service des notifications en échec ~1 900 fois après
+# le redémarrage du serveur (notifications du tableau de bord coupées).
+def _purge_stale_pidfile(path):
+    try:
+        with open(path) as f:
+            pid = int(f.read().strip())
+    except (OSError, ValueError):
+        return
+    try:
+        with open(f'/proc/{pid}/cmdline', 'rb') as f:
+            if b'gunicorn' in f.read():
+                return  # vrai gunicorn : on ne touche à rien
+    except OSError:
+        pass  # processus disparu : fichier périmé
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+_purge_stale_pidfile(os.getenv('GUNICORN_PIDFILE', "/run/cei-api-v2.pid"))
 pidfile = os.getenv('GUNICORN_PIDFILE', "/run/cei-api-v2.pid")
 
 # ── Sécurité ──────────────────────────────────────────────────────────────────

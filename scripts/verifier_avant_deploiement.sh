@@ -4,7 +4,7 @@
 cd "$(dirname "$0")/.."
 PY=.venv-base/bin/python
 ko=0
-for t in test_correction_qcm test_correction_parallele test_bareme_correction test_acces_examen test_securite_acces test_parseur_sujets test_exam_settings; do
+for t in test_correction_qcm test_correction_parallele test_bareme_correction test_acces_examen test_securite_acces test_parseur_sujets test_exam_settings test_enregistrement; do
   if $PY scripts/$t.py > /tmp/verif_$t.log 2>&1; then echo "OK   $t  ($(grep -o '[0-9]*/[0-9]* vérifications réussies' /tmp/verif_$t.log | tail -1))"
   else echo "ÉCHEC $t  → /tmp/verif_$t.log"; tail -5 /tmp/verif_$t.log; ko=1; fi
 done

@@ -2423,14 +2423,16 @@ def toggle_room_recording(exam_id):
                             'file_outputs': [{'filepath': cam_path, 's3': s3_cfg}]}
                 if audio_track:
                     cam_body['audio_track_id'] = audio_track
-                    try:
-                        req = urlreq.Request(f'{lk_http}/twirp/livekit.Egress/StartTrackCompositeEgress',
-                            data=json.dumps(cam_body).encode(), headers=headers)
-                        with urlreq.urlopen(req, timeout=8) as resp:
-                            eid = json.loads(resp.read()).get('egress_id')
-                            all_egress_ids.append(eid)
-                    except Exception as e:
-                        errors.append({'identity': identity, 'error': str(e)})
+                # Le démarrage de l'enregistrement caméra ne dépend PAS du micro : il était imbriqué
+                # dans « if audio_track: », donc un étudiant sans micro actif n'était jamais enregistré.
+                try:
+                    req = urlreq.Request(f'{lk_http}/twirp/livekit.Egress/StartTrackCompositeEgress',
+                        data=json.dumps(cam_body).encode(), headers=headers)
+                    with urlreq.urlopen(req, timeout=8) as resp:
+                        eid = json.loads(resp.read()).get('egress_id')
+                        all_egress_ids.append(eid)
+                except Exception as e:
+                    errors.append({'identity': identity, 'error': str(e)})
 
                 if screen_track:
                     scr_path = f'recordings/exam-{exam_id}/salle-ecran-{sid}-{ts}.mp4'
@@ -2448,6 +2450,11 @@ def toggle_room_recording(exam_id):
                         pass
 
             if not all_egress_ids:
+                # Distinguer « le service n'a pas répondu » de « caméras éteintes » : l'ancien message
+                # accusait les caméras même quand c'était le service d'enregistrement qui était en panne.
+                service_errors = [e for e in errors if e.get('error') != 'caméra non active']
+                if service_errors:
+                    return jsonify({'error': "Le service d'enregistrement est momentanément indisponible."}), 503
                 detail = f' ({len(errors)} étudiant(s) sans caméra active)' if errors else ''
                 return jsonify({'error': f'Aucun enregistrement démarré{detail}. Vérifiez que les étudiants ont leur caméra active.'}), 400
 
@@ -2591,6 +2598,7 @@ def toggle_group_recording(exam_id):
         all_egress_ids = []
 
         if action == 'start':
+            lk_unreachable = False
             # Récupérer les participants LiveKit pour avoir les track IDs
             try:
                 r = urlreq.Request(f'{lk_http}/twirp/livekit.RoomService/ListParticipants',
@@ -2599,6 +2607,7 @@ def toggle_group_recording(exam_id):
                     parts = {p['identity']: p for p in json.loads(resp.read()).get('participants', [])}
             except Exception:
                 parts = {}
+                lk_unreachable = True
 
             for aid in active_ids:
                 sid = student_ids.get(aid)
@@ -2684,6 +2693,16 @@ def toggle_group_recording(exam_id):
                 s2.close()
 
             if len(results) == 0:
+                # Panne du service (LiveKit injoignable ou demande d'enregistrement en échec) : ne pas accuser
+                # les caméras des étudiants — c'est ce message trompeur qui s'affichait pendant l'examen 149.
+                if lk_unreachable or any(e.get('track') == 'cam' for e in errors):
+                    return jsonify({
+                        'success': False,
+                        'error': "Le service d'enregistrement est momentanément indisponible.",
+                        'started': 0,
+                        'errors': len(errors),
+                        'failed': errors
+                    }), 503
                 return jsonify({
                     'success': False,
                     'error': (f"Aucun enregistrement démarré — {len(errors)} étudiant(s) non disponible(s). "

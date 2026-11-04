@@ -2575,7 +2575,9 @@ def toggle_group_recording(exam_id):
     admin_payload = {
         'exp': now + 3600, 'iss': config['api_key'], 'nbf': now,
         'sub': 'room-recorder',
-        'video': {'room': room_name, 'roomRecord': True}
+        # roomAdmin : indispensable pour LISTER les participants (sans lui LiveKit répond 401 « permissions denied »
+        # et toutes les caméras apparaissaient « non actives ») ; roomRecord : démarrer/arrêter les enregistrements.
+        'video': {'room': room_name, 'roomRecord': True, 'roomAdmin': True}
     }
     egress_token = pyjwt.encode(admin_payload, config['api_secret'], algorithm='HS256')
     headers = {

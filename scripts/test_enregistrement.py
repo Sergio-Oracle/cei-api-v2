@@ -29,10 +29,15 @@ class LK:
     """Faux serveur LiveKit : programmable par scénario, mémorise les corps de requête."""
     def __init__(self): self.reset()
     def reset(self, participants=None, list_error=None, start_error=None):
-        self.participants = participants or []; self.list_error = list_error; self.start_error = start_error; self.calls = []; self.n = 0
+        self.participants = participants or []; self.list_error = list_error; self.start_error = start_error; self.calls = []; self.n = 0; self.list_grants = []
     def __call__(self, req, timeout=None, **kw):
         url = req.full_url; body = json.loads(req.data or b'{}')
         self.calls.append((url.rsplit('/', 1)[-1], body))
+        if url.endswith('ListParticipants'):   # LiveKit refuse (401) de lister sans roomAdmin : le faux serveur fait pareil
+            import jwt as _jwt
+            grant = _jwt.decode(req.get_header('Authorization').split(' ', 1)[1], options={'verify_signature': False}).get('video', {})
+            self.list_grants.append(grant)
+            if not grant.get('roomAdmin'): raise urllib.error.HTTPError(url, 401, 'permissions denied', {}, None)
         if url.endswith('ListParticipants'):
             if self.list_error: raise self.list_error
             return Resp({'participants': self.participants})
@@ -76,6 +81,8 @@ try:
         chk('LiveKit injoignable : 503 + message exact', r.status_code == 503 and 'momentanément indisponible' in j.get('error', ''), (r.status_code, j))
         lk.reset([part(sid, muted_cam=True)]); r = c.post(G, headers=H(adm), json={'action': 'start'}); j = r.get_json() or {}
         chk('caméra réellement coupée : 400 + message sur les caméras', r.status_code == 400 and 'caméra' in j.get('error', ''), (r.status_code, j))
+
+        chk('groupe : la liste des participants est demandée avec roomAdmin (sinon LiveKit répond 401)', lk.list_grants and all(g.get('roomAdmin') for g in lk.list_grants), lk.list_grants)
 
         print('Enregistrement de la salle (room_recording)')
         lk.reset([part(sid)]); r = c.post(R, headers=H(adm), json={'action': 'start'}); j = r.get_json() or {}

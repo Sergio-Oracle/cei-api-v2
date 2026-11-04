@@ -29,7 +29,7 @@ from utils  import (
     send_account_created_email, send_password_reset_email,
     send_password_changed_email,
 )
-from cache import cache_get, cache_set, cache_delete
+from cache import cache_get, cache_set, cache_delete, cache_set_nx_value
 
 auth_bp = Blueprint('auth', __name__)
 
@@ -353,6 +353,21 @@ def refresh_token_endpoint():
             session.close()
             return jsonify({'error': 'Utilisateur introuvable'}), 401
 
+        # Un seul renouvellement par jeton, décidé AVANT toute écriture en base : le premier arrivé pose le
+        # nouveau jeton dans la clé de rejeu (atomique) ; un second onglet qui arrive au même instant reçoit CE
+        # même jeton (200) au lieu d'un 401/409 qui le déconnecterait. Sans Redis : repli sur l'ancien
+        # comportement (la base arbitre, le perdant reçoit 409 et le client réessaie).
+        new_refresh = create_refresh_token(user.id)
+        won = cache_set_nx_value(_refresh_grace_key(token_hash), {'new_refresh': new_refresh}, _REFRESH_GRACE_S)
+        if won is False:
+            other = (cache_get(_refresh_grace_key(token_hash)) or {}).get('new_refresh')
+            if other:
+                if user.role == UserRole.STUDENT:
+                    _set_active_session(user.id, other, _device_label(request), int(REFRESH_TTL.total_seconds()))
+                resp = _refresh_ok_response(user, other)
+                session.close()
+                _log.info('refresh simultané (second onglet) user=%s', user.id)
+                return resp, 200
         block = TokenBlocklist(
             token_hash=token_hash, user_id=user.id,
             expires_at=datetime.fromisoformat(payload['exp']),
@@ -361,15 +376,14 @@ def refresh_token_endpoint():
         try:
             session.commit()
         except Exception:
-            # Deux onglets (ou deux requêtes) renouvellent en même temps avec le MÊME jeton : le second trouve le jeton déjà consommé.
-            # Ce n'est pas une panne (le premier a reçu le nouveau cookie) : réponse nette, le client réessaie avec le cookie à jour.
+            # Le jeton était déjà consommé (sans que la clé de rejeu le dise : Redis indisponible ou vidée).
+            # Ce n'est pas une panne : réponse nette, le client réessaie avec le cookie à jour.
             session.rollback(); session.close()
+            if won:
+                cache_delete(_refresh_grace_key(token_hash))   # ne pas rejouer un jeton qui n'a jamais été remis
             return jsonify({'error': 'Renouvellement déjà effectué, réessayez'}), 409
-        # Correctif 29/08 — même raisonnement que login() : sid = hash du
-        # nouveau refresh token, synchronisé avec cei:session:active ci-dessous.
-        new_refresh = create_refresh_token(user.id)
-        # Mémorisé quelques secondes : permet de rejouer cette réponse si elle n'arrive pas au client (voir plus haut).
-        cache_set(_refresh_grace_key(token_hash), {'new_refresh': new_refresh}, _REFRESH_GRACE_S)
+        if won is None:   # Redis indisponible au moment de décider : on mémorise quand même pour le rejeu
+            cache_set(_refresh_grace_key(token_hash), {'new_refresh': new_refresh}, _REFRESH_GRACE_S)
         if user.role == UserRole.STUDENT:
             # Garde le marqueur de session unique synchronisé avec le token
             # tout juste renouvelé — sinon une déconnexion forcée ultérieure

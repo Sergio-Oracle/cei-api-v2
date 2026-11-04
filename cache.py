@@ -81,6 +81,18 @@ def cache_set_nx(key: str, ttl: int) -> bool:
         return False
 
 
+def cache_set_nx_value(key: str, value: Any, ttl: int) -> Optional[bool]:
+    """Pose atomiquement `value` seulement si la clé n'existe pas.
+    True = posé par CE call ; False = existait déjà ; None = Redis indisponible (l'appelant décide du repli)."""
+    client = _get_client()
+    if client is None:
+        return None
+    try:
+        return bool(client.set(key, json.dumps(value, ensure_ascii=False), nx=True, ex=ttl))
+    except Exception:
+        return None
+
+
 def cache_should_score(key: str, ttl: int) -> bool:
     """Verrou de déduplication pour la notation de risque (proctoring) —
     PAS le même contrat que cache_set_nx. Ici, contrairement à un verrou de

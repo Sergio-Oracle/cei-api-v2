@@ -736,7 +736,7 @@ OPENAPI_SPEC = {
         }},
         "/api/auth/refresh": {"post": {
             "tags": ["Authentification"], "summary": "Rafraîchir l'access token (cookie refresh requis)",
-            "description": "Utilise le cookie httpOnly `cei_refresh` pour émettre un nouvel access token. L'ancien refresh token est révoqué (rotation). Envoyer la requête avec `credentials: 'include'` depuis le frontend.",
+            "description": "Utilise le cookie httpOnly `cei_refresh` pour émettre un nouvel access token. L'ancien refresh token est révoqué (rotation). Envoyer la requête avec `credentials: 'include'` depuis le frontend. **Rejeu (04/11)** : si la réponse s'est perdue en route, rejouer l'ANCIEN jeton pendant 30 s (`REFRESH_REPLAY_GRACE_S`) renvoie le même nouveau cookie (200) au lieu d'un 401 ; au-delà, ou si le nouveau jeton a déjà servi, c'est refusé. **Limite (04/11)** : 20/min PAR JETON (plus par IP : une salle entière partage souvent une IP) + garde-fou de 1500/min par IP ; au-delà `429` avec `Retry-After`, à traiter comme passager (réessayer), pas comme une déconnexion. Chaque refus est journalisé avec sa raison (`jeton_deja_utilise`, `jeton_expire_ou_invalide`, `compte_introuvable_ou_inactif`).",
             "security": [],
             "responses": {
                 "200": {"description": "Nouvel access token + nouveau cookie refresh", "content": {"application/json": {"schema": {
@@ -747,7 +747,9 @@ OPENAPI_SPEC = {
                         "user":         {"type": "object", "description": "Profil de l'utilisateur (même contenu que GET /api/auth/me) : l'interface s'affiche sans second aller-retour"}
                     }
                 }}}},
-                "401": {"description": "Cookie absent, token révoqué ou expiré"}
+                "401": {"description": "Cookie absent, token révoqué ou expiré (refus définitif : se reconnecter)"},
+                "409": {"description": "Deux renouvellements simultanés avec le même jeton : réessayer, le cookie est à jour"},
+                "429": {"description": "Trop de renouvellements avec ce jeton : réessayer après `Retry-After` (passager)"}
             }
         }},
         "/api/auth/logout": {"post": {

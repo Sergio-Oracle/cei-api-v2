@@ -11,6 +11,8 @@ from datetime import datetime, timedelta, timezone
 from threading import Thread
 from flask_limiter.util import get_remote_address
 import os
+import uuid
+import logging
 
 from extensions import bcrypt, limiter
 from helpers    import utcnow
@@ -261,8 +263,55 @@ def login():
 
 
 # ── Refresh ───────────────────────────────────────────────────────────────────
+# Correctif 04/11 (devoir du 03/11 : « déconnexions » signalées par les étudiants) :
+#  1. La limite était de 30 renouvellements/minute PAR IP. Tous les étudiants d'une salle (même IP publique)
+#     se connectent à la même heure, donc leurs jetons expirent ensemble 15 min plus tard : au-delà de 30,
+#     les suivants recevaient 429 et le client les renvoyait à l'écran de connexion. Même erreur que celle
+#     déjà corrigée pour le login : on limite maintenant PAR JETON (chaque jeton ne sert qu'une fois, 20/min
+#     est déjà très large) et on garde un garde-fou par IP très haut contre un client réellement en boucle.
+#  2. Le jeton de renouvellement est à usage unique : si la réponse se perd (connexion lente, délai de 15 s)
+#     le client rejoue l'ANCIEN jeton, trouvé « révoqué » → 401 → déconnexion, alors que le serveur avait
+#     bien renouvelé. On rejoue donc, pendant une courte fenêtre, la réponse déjà décidée (mêmes nouveaux
+#     jetons) au lieu de refuser. Au-delà de la fenêtre, ou si le nouveau jeton a déjà servi, c'est refusé.
+#  3. Chaque refus est journalisé avec sa raison et le compte quand il est connu : on peut enfin distinguer
+#     un visiteur sans session (normal) d'une session réellement perdue.
+_REFRESH_GRACE_S = int(os.getenv('REFRESH_REPLAY_GRACE_S', '30'))
+_log = logging.getLogger('cei.api')
+
+
+def _refresh_rate_limit_key():
+    tok = get_refresh_token_from_cookie()
+    # Sans cookie (visiteur non connecté) : jamais limité par jeton, la limite par IP suffit.
+    return ('rt:' + hash_token(tok)[:32]) if tok else ('anon:' + uuid.uuid4().hex)
+
+
+def _refresh_grace_key(token_hash: str) -> str:
+    return 'cei:refresh_grace:' + token_hash
+
+
+def _peek_user_id(token: str):
+    """Compte d'un jeton, sans rien exiger d'autre (journal seulement). None si illisible."""
+    try:
+        return int(paseto_decode_token(token).get('sub'))
+    except Exception:
+        return None
+
+
+def _refresh_ok_response(user, new_refresh: str):
+    new_student_sid = hash_token(new_refresh) if user.role == UserRole.STUDENT else None
+    new_access = create_access_token(user.id, user.role.value, user.email, sid=new_student_sid)
+    resp = make_response(jsonify({
+        'access_token': new_access,
+        'expires_in': int(ACCESS_TTL.total_seconds()),
+        'user': user.to_dict(),
+    }))
+    set_refresh_cookie(resp, new_refresh)
+    return resp
+
+
 @auth_bp.route('/api/auth/refresh', methods=['POST'])
-@limiter.limit("30 per minute")
+@limiter.limit("1500 per minute")                                          # garde-fou par IP (salle entière derrière un NAT)
+@limiter.limit("20 per minute", key_func=_refresh_rate_limit_key)          # limite réelle : par jeton
 def refresh_token_endpoint():
     token = get_refresh_token_from_cookie()
     if not token:
@@ -271,6 +320,21 @@ def refresh_token_endpoint():
     try:
         token_hash = hash_token(token)
         if session.query(TokenBlocklist).filter_by(token_hash=token_hash).first():
+            # Réponse perdue côté client ? Rejouer la décision déjà prise, tant que le nouveau jeton n'a pas servi.
+            grace = cache_get(_refresh_grace_key(token_hash)) or {}
+            new_refresh = grace.get('new_refresh')
+            if new_refresh and not session.query(TokenBlocklist).filter_by(token_hash=hash_token(new_refresh)).first():
+                try:
+                    gp = paseto_decode_token(new_refresh)
+                    gu = session.query(User).filter_by(id=int(gp['sub'])).first()
+                    if gu and gu.is_active and gp.get('type') == 'refresh':
+                        resp = _refresh_ok_response(gu, new_refresh)
+                        session.close()
+                        _log.info('refresh rejoué (réponse perdue côté client) user=%s', gu.id)
+                        return resp, 200
+                except Exception:
+                    pass
+            _log.info('refresh refusé raison=jeton_deja_utilise user=%s', _peek_user_id(token))
             session.close()
             return jsonify({'error': 'Token révoqué — reconnectez-vous'}), 401
 
@@ -280,6 +344,7 @@ def refresh_token_endpoint():
 
         user = session.query(User).filter_by(id=int(payload['sub'])).first()
         if not user or not user.is_active:
+            _log.info('refresh refusé raison=compte_introuvable_ou_inactif user=%s', payload.get('sub'))
             session.close()
             return jsonify({'error': 'Utilisateur introuvable'}), 401
 
@@ -298,8 +363,8 @@ def refresh_token_endpoint():
         # Correctif 29/08 — même raisonnement que login() : sid = hash du
         # nouveau refresh token, synchronisé avec cei:session:active ci-dessous.
         new_refresh = create_refresh_token(user.id)
-        new_student_sid = hash_token(new_refresh) if user.role == UserRole.STUDENT else None
-        new_access  = create_access_token(user.id, user.role.value, user.email, sid=new_student_sid)
+        # Mémorisé quelques secondes : permet de rejouer cette réponse si elle n'arrive pas au client (voir plus haut).
+        cache_set(_refresh_grace_key(token_hash), {'new_refresh': new_refresh}, _REFRESH_GRACE_S)
         if user.role == UserRole.STUDENT:
             # Garde le marqueur de session unique synchronisé avec le token
             # tout juste renouvelé — sinon une déconnexion forcée ultérieure
@@ -309,17 +374,11 @@ def refresh_token_endpoint():
             _set_active_session(user.id, new_refresh, _device_label(request), int(REFRESH_TTL.total_seconds()))
         # Profil renvoyé avec le jeton : l'interface n'a plus besoin d'un
         # second aller-retour (/api/auth/me) pour s'afficher.
-        user_data = user.to_dict()
+        resp = _refresh_ok_response(user, new_refresh)
         session.close()
-
-        resp = make_response(jsonify({
-            'access_token': new_access,
-            'expires_in': int(ACCESS_TTL.total_seconds()),
-            'user': user_data,
-        }))
-        set_refresh_cookie(resp, new_refresh)
         return resp, 200
     except ValueError as e:
+        _log.info('refresh refusé raison=jeton_expire_ou_invalide user=%s', _peek_user_id(token))
         session.close()
         return jsonify({'error': str(e)}), 401
     except Exception as e:

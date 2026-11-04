@@ -2747,6 +2747,26 @@ def toggle_group_recording(exam_id):
                 else:
                     flat_ids.append((None, item))
 
+            # L'interface n'envoie PAS la liste des enregistrements démarrés, et current_egress_id ne garde que la
+            # caméra : sans ceci, « Arrêter REC » laissait tourner les enregistrements d'ÉCRAN du groupe. On demande
+            # donc à LiveKit les enregistrements en cours de la salle et on arrête ceux lancés par CE surveillant
+            # (dossier « groupe-proctor-<son id> »). Jamais ceux d'un autre surveillant ni ceux du REC Salle.
+            try:
+                lreq = urlreq.Request(f'{lk_http}/twirp/livekit.Egress/ListEgress',
+                    data=json.dumps({'room_name': room_name, 'active': True}).encode(), headers=headers)
+                with urlreq.urlopen(lreq, timeout=5) as lresp:
+                    known = {e for _, e in flat_ids}
+                    for it in json.loads(lresp.read()).get('items', []):
+                        eid_found = it.get('egress_id')
+                        if not eid_found or eid_found in known:
+                            continue
+                        # Chemin des fichiers du groupe : recordings/exam-<id>/groupe-proctor-<surveillant>/groupe-cam|ecran-<étudiant>-…
+                        # → on ne retient que les enregistrements lancés par CE surveillant.
+                        if _re.search(rf'recordings/exam-{exam_id}/groupe-proctor-{user_id}/groupe-(?:cam|ecran)-', json.dumps(it)):
+                            flat_ids.append((None, eid_found)); known.add(eid_found)
+            except Exception:
+                pass   # on arrête au moins ce qu'on connaît déjà
+
             stopped = 0
             for att_id, eid in flat_ids:
                 req = urlreq.Request(

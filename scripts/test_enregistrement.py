@@ -29,7 +29,7 @@ class LK:
     """Faux serveur LiveKit : programmable par scénario, mémorise les corps de requête."""
     def __init__(self): self.reset()
     def reset(self, participants=None, list_error=None, start_error=None):
-        self.participants = participants or []; self.list_error = list_error; self.start_error = start_error; self.calls = []; self.n = 0; self.list_grants = []
+        self.participants = participants or []; self.list_error = list_error; self.start_error = start_error; self.calls = []; self.n = 0; self.list_grants = []; self.active = {}; self.stopped = []
     def __call__(self, req, timeout=None, **kw):
         url = req.full_url; body = json.loads(req.data or b'{}')
         self.calls.append((url.rsplit('/', 1)[-1], body))
@@ -43,14 +43,19 @@ class LK:
             return Resp({'participants': self.participants})
         if url.endswith('StartTrackCompositeEgress'):
             if self.start_error: raise self.start_error
-            self.n += 1; return Resp({'egress_id': f'EG_test{self.n}'})
-        if url.endswith('StopEgress'): return Resp({})
+            self.n += 1; eid = f'EG_test{self.n}'
+            self.active[eid] = {'egress_id': eid, 'status': 'EGRESS_ACTIVE', 'track_composite': {'file_outputs': body.get('file_outputs', [])}}
+            return Resp({'egress_id': eid})
+        if url.endswith('StopEgress'):
+            self.stopped.append(body.get('egress_id')); self.active.pop(body.get('egress_id'), None); return Resp({})
+        if url.endswith('ListEgress'): return Resp({'items': list(self.active.values())})
         raise AssertionError('appel inattendu ' + url)
     def starts(self): return [b for n, b in self.calls if n == 'StartTrackCompositeEgress']
 
 lk = LK()
-def part(sid, video=True, audio=False, muted_cam=False):
+def part(sid, video=True, audio=False, muted_cam=False, screen=False):
     t = []
+    if screen: t.append({'sid': 'TR_S', 'type': 'VIDEO', 'source': 'SCREEN_SHARE', 'muted': False})
     if video: t.append({'sid': 'TR_V', 'type': 'VIDEO', 'source': 'CAMERA', 'muted': muted_cam})
     if audio: t.append({'sid': 'TR_A', 'type': 'AUDIO', 'source': 'MICROPHONE', 'muted': False})
     return {'identity': f'student-{sid}', 'tracks': t}
@@ -83,6 +88,15 @@ try:
         chk('caméra réellement coupée : 400 + message sur les caméras', r.status_code == 400 and 'caméra' in j.get('error', ''), (r.status_code, j))
 
         chk('groupe : la liste des participants est demandée avec roomAdmin (sinon LiveKit répond 401)', lk.list_grants and all(g.get('roomAdmin') for g in lk.list_grants), lk.list_grants)
+
+        print("Arrêt de l'enregistrement du groupe sans liste d'identifiants (ce que fait l'interface)")
+        lk.reset([part(sid, audio=True, screen=True)]); r = c.post(G, headers=H(adm), json={'action': 'start'}); j = r.get_json() or {}
+        chk('démarrage : caméra + écran enregistrés (2 enregistrements)', r.status_code == 200 and j.get('screens_recorded') == 1 and len(lk.active) == 2, (r.status_code, j, list(lk.active)))
+        lk.active['EG_autre'] = {'egress_id': 'EG_autre', 'status': 'EGRESS_ACTIVE', 'track_composite': {'file_outputs': [{'filepath': f'recordings/exam-{eid}/groupe-proctor-987654/groupe-cam-99999-20261104.mp4'}]}}   # groupe d'un AUTRE surveillant
+        lk.active['EG_salle'] = {'egress_id': 'EG_salle', 'status': 'EGRESS_ACTIVE', 'track_composite': {'file_outputs': [{'filepath': f'recordings/exam-{eid}/salle-cam-{sid}-20261104.mp4'}]}}      # REC Salle de l'enseignant
+        r = c.post(G, headers=H(adm), json={'action': 'stop', 'egress_id': None}); j = r.get_json() or {}
+        chk('arrêt sans liste : la caméra ET l\'écran du groupe sont arrêtés', r.status_code == 200 and j.get('stopped') == 2, (r.status_code, j, lk.stopped))
+        chk("  l'enregistrement d'un autre groupe et celui de la salle ne sont PAS touchés", set(lk.active) == {'EG_autre', 'EG_salle'}, list(lk.active))
 
         print('Enregistrement de la salle (room_recording)')
         lk.reset([part(sid)]); r = c.post(R, headers=H(adm), json={'action': 'start'}); j = r.get_json() or {}

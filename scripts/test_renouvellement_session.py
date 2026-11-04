@@ -55,7 +55,7 @@ try:
     codes = [refresh(t).status_code for t in toks]
     chk('45 étudiants d\'une même IP, 45 jetons distincts en une minute : aucun 429 (avant : 429 au-delà de 30)', 429 not in codes and codes.count(200) == 45, sorted(set(codes)))
     t = create_refresh_token(uid); codes = [refresh(t).status_code for _ in range(26)]
-    chk('un même jeton martelé : bloqué par la limite par jeton (429 avant la 26e)', 429 in codes, codes)
+    chk('un même jeton rejoué 26 fois en une minute : jamais bloqué (limite par jeton sur 24 h)', 429 not in codes, sorted(set(codes)))
 
     print('Journal des refus')
     m = [x for x in cap.msgs if 'refresh refusé' in x]

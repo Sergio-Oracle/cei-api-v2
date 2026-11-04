@@ -267,8 +267,8 @@ def login():
 #  1. La limite était de 30 renouvellements/minute PAR IP. Tous les étudiants d'une salle (même IP publique)
 #     se connectent à la même heure, donc leurs jetons expirent ensemble 15 min plus tard : au-delà de 30,
 #     les suivants recevaient 429 et le client les renvoyait à l'écran de connexion. Même erreur que celle
-#     déjà corrigée pour le login : on limite maintenant PAR JETON (chaque jeton ne sert qu'une fois, 20/min
-#     est déjà très large) et on garde un garde-fou par IP très haut contre un client réellement en boucle.
+#     déjà corrigée pour le login : on limite maintenant PAR JETON (chaque jeton ne sert qu'une fois ; fenêtre
+#     de 24 h) et le garde-fou par IP est relevé à 1 000 000/min (pratiquement désactivé).
 #  2. Le jeton de renouvellement est à usage unique : si la réponse se perd (connexion lente, délai de 15 s)
 #     le client rejoue l'ANCIEN jeton, trouvé « révoqué » → 401 → déconnexion, alors que le serveur avait
 #     bien renouvelé. On rejoue donc, pendant une courte fenêtre, la réponse déjà décidée (mêmes nouveaux
@@ -276,6 +276,11 @@ def login():
 #  3. Chaque refus est journalisé avec sa raison et le compte quand il est connu : on peut enfin distinguer
 #     un visiteur sans session (normal) d'une session réellement perdue.
 _REFRESH_GRACE_S = int(os.getenv('REFRESH_REPLAY_GRACE_S', '30'))
+# Relevées à la demande de l'utilisateur (04/11) : ne plus jamais refuser un renouvellement légitime.
+# Par jeton : fenêtre de 24 h (un jeton ne sert qu'une fois, quelques rejeux au plus). Par IP : pratiquement illimité.
+# Ajustables sans redéploiement par variables d'environnement.
+_REFRESH_LIMIT_PER_TOKEN = os.getenv('REFRESH_LIMIT_PER_TOKEN', '10000 per day')
+_REFRESH_LIMIT_PER_IP    = os.getenv('REFRESH_LIMIT_PER_IP',    '1000000 per minute')
 _log = logging.getLogger('cei.api')
 
 
@@ -310,8 +315,8 @@ def _refresh_ok_response(user, new_refresh: str):
 
 
 @auth_bp.route('/api/auth/refresh', methods=['POST'])
-@limiter.limit("1500 per minute")                                          # garde-fou par IP (salle entière derrière un NAT)
-@limiter.limit("20 per minute", key_func=_refresh_rate_limit_key)          # limite réelle : par jeton
+@limiter.limit(_REFRESH_LIMIT_PER_IP)                                      # garde-fou par IP (salle entière derrière un NAT)
+@limiter.limit(_REFRESH_LIMIT_PER_TOKEN, key_func=_refresh_rate_limit_key) # fenêtre de 24 h par jeton
 def refresh_token_endpoint():
     token = get_refresh_token_from_cookie()
     if not token:

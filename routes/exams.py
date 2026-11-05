@@ -1594,7 +1594,8 @@ def log_exam_activity(attempt_id):
             'no_face_count': attempt.no_face_count or 0,
             'max_tab_switches': exam.max_tab_switches,
             'max_no_face_count': exam.max_no_face_count if exam.max_no_face_count is not None else 10,
-            'severity': 'high' if event_type in (severity_tab_events + ['devtools_attempt', 'no_face_detected', 'face_absent', 'multiple_faces']) else 'medium',
+            # no_face_detected / face_absent : « medium » depuis le 05/11/2026 (souvent dû à l'éclairage ou au cadrage) ; multiple_faces reste « high ».
+            'severity': 'high' if event_type in (severity_tab_events + ['devtools_attempt', 'multiple_faces']) else 'medium',
             'banned': False
         }
 

@@ -409,7 +409,10 @@ def log_proctoring_event(attempt_id):
 
         # Augmenter le score de risque selon le type d'événement
         proctoring_risk_map = {
-            'no_face_detected': 10,
+            # 10 → 5 (05/11/2026, retour de la responsable de formation après le devoir du 03/11 : 677 « visage non détecté » pour
+            # 24 étudiants, dont beaucoup dus à l'éclairage ou à un visage brièvement hors cadre). Une absence soutenue reste
+            # visible (les événements s'accumulent toujours), mais ne fait plus grimper le score aussi vite.
+            'no_face_detected': 5,
             # Retour DFIP — luminosité insuffisante/excessive rend la détection
             # peu fiable : signal informatif seulement, ne doit jamais faire
             # monter le score de risque comme une vraie absence.

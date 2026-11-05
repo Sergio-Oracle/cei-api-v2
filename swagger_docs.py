@@ -2452,10 +2452,11 @@ OPENAPI_SPEC = {
         }},
         "/api/exam-client/releases": {"get": {
             "tags": ["Application CEI Examen"], "summary": "Versions téléchargeables de l'application (public)",
-            "responses": {"200": {"description": "{version, files: [{name, platform, label, size, sha256, url}]}"}}
+            "description": "`updates` : fichiers de mise à jour AUTOMATIQUE de l'application ({name, platform, arch, mode: nsis|appimage|mac-zip, size, sha256, sig}). `sig` = HMAC-SHA256(secret embarqué, `update|version|name|sha256`) calculée à la publication ; le poste vérifie somme et signature avant d'installer, et ne met jamais à jour pendant un examen.",
+            "responses": {"200": {"description": "{version, files: [{name, platform, label, size, sha256, url}], updates: [...]}"}}
         }},
         "/api/exam-client/download/{name}": {"get": {
-            "tags": ["Application CEI Examen"], "summary": "Télécharger un installateur listé (public)",
+            "tags": ["Application CEI Examen"], "summary": "Télécharger un installateur ou un fichier de mise à jour listé (public)",
             "parameters": [{"name": "name", "in": "path", "required": True, "schema": {"type": "string"}}],
             "responses": {"200": {"description": "Fichier"}, "404": {"description": "Fichier introuvable"}}
         }},

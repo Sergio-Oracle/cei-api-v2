@@ -241,12 +241,20 @@ def exam_client_releases():
         if os.path.isfile(p):
             files.append({'name': x['name'], 'platform': x.get('platform', ''), 'arch': x.get('arch', ''), 'kind': x.get('kind', ''), 'label': x.get('label', x['name']), 'size': os.path.getsize(p),
                           'sha256': x.get('sha256', ''), 'url': '/static/downloads/' + quote(x['name'])})
-    return jsonify({'version': d.get('version'), 'files': files, 'notes': d.get('notes', '')})
+    # Fichiers de MISE À JOUR AUTOMATIQUE de l'application (signés à la publication, vérifiés par le poste avant exécution)
+    updates = []
+    for x in d.get('updates', []) or []:
+        p = os.path.join(DIST_DIR, x.get('name', ''))
+        if os.path.isfile(p) and x.get('sig') and x.get('sha256'):
+            updates.append({'name': x['name'], 'platform': x.get('platform', ''), 'arch': x.get('arch', ''), 'mode': x.get('mode', ''),
+                            'size': os.path.getsize(p), 'sha256': x['sha256'], 'sig': x['sig'], 'url': '/static/downloads/' + quote(x['name'])})   # servi par nginx, jamais par l'API
+    return jsonify({'version': d.get('version'), 'files': files, 'updates': updates, 'notes': d.get('notes', '')})
 
 
 @exam_client_bp.route('/api/exam-client/download/<path:name>', methods=['GET'])
 def exam_client_download(name):
-    listed = {x.get('name') for x in _latest().get('files', [])}
+    lat = _latest()
+    listed = {x.get('name') for x in lat.get('files', [])} | {x.get('name') for x in (lat.get('updates') or [])}
     if name not in listed or '/' in name or name.startswith('.'):
         return jsonify({'error': 'Fichier introuvable'}), 404
     return send_from_directory(DIST_DIR, name, as_attachment=True)

@@ -794,6 +794,12 @@ class OnlineExam(Base):
     # Application « CEI Examen » obligatoire (client kiosque équivalent de Safe Exam Browser) : sans elle, l'étudiant ne peut pas démarrer.
     # Vérifié au démarrage ET à la reprise (poignée de main signée, voir routes/exam_client.py).
     require_client = Column(Boolean, default=False)
+    # Application CEI Examen : sites (https) ouverts dans une fenêtre d'assistance du client — canal de dépannage technique, ex. une
+    # visioconférence de l'équipe d'assistance —, applications (noms de processus) épargnées par le nettoyage du poste, et refus des machines
+    # virtuelles. Liste JSON en texte ; vide = aucun. Voir services/exam_settings.py (validation) et routes/exam_client.py.
+    client_allowed_sites = Column(Text, nullable=True)
+    client_allowed_apps = Column(Text, nullable=True)
+    client_block_vm = Column(Boolean, default=False)
 
     # Examen réservé aux étudiants inscrits à l'UE de son EC (voir services/exam_access.py). Vrai par défaut : incident du 02/11/2026
     # (une étudiante non inscrite a pu ouvrir et démarrer un examen par son lien direct, la liste et le démarrage ne contrôlaient pas l'inscription).
@@ -843,12 +849,26 @@ class OnlineExam(Base):
             'require_biometric': self.require_biometric if self.require_biometric is not None else False,
             'run_environment_scan': self.run_environment_scan if self.run_environment_scan is not None else False,
             'require_client': bool(self.require_client),
+            'client_allowed_sites': _json_list(self.client_allowed_sites),
+            'client_allowed_apps': _json_list(self.client_allowed_apps),
+            'client_block_vm': bool(self.client_block_vm),
             'subject_validated_at': self.subject_validated_at.isoformat() if self.subject_validated_at else None,
             'creator_name': self.creator.full_name if self.creator else None,
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'is_active': self.status == ExamStatus.ACTIVE,
             'attempts_count': len(self.attempts) if self.attempts else 0
         }
+
+def _json_list(raw):
+    """Liste enregistrée en JSON dans une colonne texte (réglages de l'application CEI Examen) ; toute valeur illisible donne []."""
+    if not raw:
+        return []
+    try:
+        v = json.loads(raw)
+        return [str(x) for x in v] if isinstance(v, list) else []
+    except (ValueError, TypeError):
+        return []
+
 
 def utc_iso(dt):
     """Date UTC naïve de la base → ISO 8601 avec « Z ». Sans fuseau, le navigateur
@@ -1822,6 +1842,12 @@ def init_db():
          "ALTER TABLE online_exams ADD COLUMN results_published_at TIMESTAMP"),
         ("SELECT 1 FROM information_schema.columns WHERE table_name='online_exams' AND column_name='require_client'",
          "ALTER TABLE online_exams ADD COLUMN require_client BOOLEAN DEFAULT FALSE"),
+        ("SELECT 1 FROM information_schema.columns WHERE table_name='online_exams' AND column_name='client_allowed_sites'",
+         "ALTER TABLE online_exams ADD COLUMN client_allowed_sites TEXT"),
+        ("SELECT 1 FROM information_schema.columns WHERE table_name='online_exams' AND column_name='client_allowed_apps'",
+         "ALTER TABLE online_exams ADD COLUMN client_allowed_apps TEXT"),
+        ("SELECT 1 FROM information_schema.columns WHERE table_name='online_exams' AND column_name='client_block_vm'",
+         "ALTER TABLE online_exams ADD COLUMN client_block_vm BOOLEAN DEFAULT FALSE"),
         ("SELECT 1 FROM information_schema.columns WHERE table_name='online_exams' AND column_name='restrict_to_enrolled'",
          "ALTER TABLE online_exams ADD COLUMN restrict_to_enrolled BOOLEAN DEFAULT TRUE NOT NULL"),
         ("SELECT 1 FROM information_schema.columns WHERE table_name='online_exams' AND column_name='subject_validated_at'",

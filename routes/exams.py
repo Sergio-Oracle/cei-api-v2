@@ -269,6 +269,15 @@ def create_online_exam():
             session.close()
             return jsonify({'error': f'Format de date invalide: {str(ve)}'}), 400
 
+        # Application CEI Examen : sites / applications autorisés (validés comme à la modification)
+        from services.exam_settings import FIELD_RULES as _FR
+        try:
+            _client_sites = _FR['client_allowed_sites'](data.get('client_allowed_sites'))
+            _client_apps = _FR['client_allowed_apps'](data.get('client_allowed_apps'))
+        except ValueError as _ve:
+            session.close()
+            return jsonify({'error': str(_ve)}), 400
+
         # Correction planifiée à une heure précise (optionnelle) — même
         # normalisation UTC que start_time/end_time.
         scheduled_correction_at = None
@@ -306,6 +315,9 @@ def create_online_exam():
             require_biometric=data.get('require_biometric', False),
             run_environment_scan=data.get('run_environment_scan', False),
             require_client=bool(data.get('require_client', False)),
+            client_allowed_sites=_client_sites,
+            client_allowed_apps=_client_apps,
+            client_block_vm=bool(data.get('client_block_vm', False)),
             status=ExamStatus.SCHEDULED,
             created_by_id=user_id
         )
@@ -581,7 +593,8 @@ def get_online_exam_settings(exam_id):
             return jsonify({'error': 'Vous ne pouvez modifier que vos propres examens'}), 403
         from services.exam_settings import policy, FIELD_RULES
         pol = policy(session, exam)
-        values = {k: getattr(exam, k) for k in FIELD_RULES}
+        from services.exam_settings import current_value as _cv
+        values = {k: (_cv(exam, k) if k in ('client_allowed_sites', 'client_allowed_apps') else getattr(exam, k)) for k in FIELD_RULES}
         values.update({'subject_id': exam.subject_id,
                        'start_time': exam.start_time.isoformat() + 'Z' if exam.start_time else None,
                        'end_time': exam.end_time.isoformat() + 'Z' if exam.end_time else None,
@@ -1428,7 +1441,7 @@ def log_exam_activity(attempt_id):
         severity_tab_events   = ['tab_switch', 'fullscreen_exit', 'window_blur', 'tab_closed']
         severity_medium_events = ['right_click', 'copy_attempt', 'paste_attempt', 'f12_attempt',
                                   'client_forbidden_app', 'client_vm_detected', 'client_second_display', 'client_close_attempt',
-                                  'client_navigation_blocked', 'client_quit_code_failed', 'client_app_closed']
+                                  'client_navigation_blocked', 'client_quit_code_failed', 'client_app_closed', 'client_remote_session']
 
         ban_reason = None
 

@@ -2434,8 +2434,21 @@ OPENAPI_SPEC = {
         }},
         "/api/exam-client/verify": {"post": {
             "tags": ["Application CEI Examen"], "summary": "Vérifie la signature du client officiel pour un examen",
-            "description": "Corps : {exam_id, nonce, sig, version, platform, vm}. L'en-tête User-Agent doit contenir `CEIExamClient/<version>`. Signature = HMAC-SHA256(secret, `nonce|user_id|version|platform`). Ouvre la porte « application » 14 h pour cet examen (exigée au démarrage et à la reprise si `require_client`).",
+            "description": "Corps : {exam_id, nonce, sig, version, platform, vm, remote}. `remote` (session de bureau à distance détectée) est refusé (403 `client_remote`) ; `vm` est refusé (403 `client_vm_refused`) si l'examen interdit les machines virtuelles (`client_block_vm`). L'en-tête User-Agent doit contenir `CEIExamClient/<version>`. Signature = HMAC-SHA256(secret, `nonce|user_id|version|platform`). Ouvre la porte « application » 14 h pour cet examen (exigée au démarrage et à la reprise si `require_client`).",
             "responses": {"200": {"description": "{ok, version, vm}"}, "400": {"description": "Défi expiré ou déjà utilisé"}, "403": {"description": "Pas le client officiel / signature invalide"}, "426": {"description": "Version trop ancienne"}, "503": {"description": "Secret non configuré sur le serveur"}}
+        }},
+        "/api/exam_attempts/{attempt_id}/client_exit_code": {"post": {
+            "tags": ["Application CEI Examen"], "summary": "Générer un code de sortie d'urgence pour un étudiant (personnel)",
+            "description": "Même périmètre que l'envoi d'un avertissement : le surveillant pour ses étudiants affectés, l'enseignant pour ses examens, administrateur et responsable d'examen. Code ALÉATOIRE à 8 chiffres, propre à CET étudiant et CET examen, valable 15 minutes, à usage unique (un nouveau code remplace l'ancien). Seule une empreinte est conservée (Redis). La génération est journalisée (`client_exit_code_issued`). 409 si la copie n'est plus en cours, 503 si Redis est indisponible.",
+            "responses": {"200": {"description": "{code: '1234-5678', expires_in: 900, student_name}"}, "403": {"description": "Rôle ou étudiant non autorisé"}, "409": {"description": "Copie non en cours"}, "503": {"description": "Service indisponible"}}
+        }},
+        "/api/exam-client/exit": {"post": {
+            "tags": ["Application CEI Examen"], "summary": "Vérifier un code de sortie d'urgence (appelé par l'application)",
+            "description": "Appelé par le client lui-même, jamais par la page : signature HMAC (secret embarqué) de `exit|exam_id|user_id|code|ts|version|platform`, horodatage à ±120 s, agent utilisateur CEIExamClient. Le serveur compare l'empreinte du code, le consomme (usage unique) et journalise `client_quit_code_used` ; chaque échec est journalisé (`client_quit_code_failed`). 5 essais ratés détruisent le code (429). Le personnel de l'examen est notifié de l'usage.",
+            "requestBody": {"required": True, "content": {"application/json": {"schema": {"type": "object", "properties": {
+                "exam_id": {"type": "integer"}, "user_id": {"type": "integer"}, "code": {"type": "string"}, "ts": {"type": "integer", "description": "millisecondes"},
+                "version": {"type": "string"}, "platform": {"type": "string"}, "sig": {"type": "string"}}}}}},
+            "responses": {"200": {"description": "{ok: true} : l'application peut se fermer"}, "403": {"description": "Signature, code ou délai invalide"}, "429": {"description": "Trop d'essais : code détruit"}}
         }},
         "/api/exam-client/releases": {"get": {
             "tags": ["Application CEI Examen"], "summary": "Versions téléchargeables de l'application (public)",

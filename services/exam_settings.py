@@ -52,6 +52,72 @@ def _opt_seconds(v):
     return n or None
 
 
+def _client_sites(v):
+    """Sites ouverts dans la fenêtre d'assistance de l'application CEI Examen : adresses https complètes, 5 au plus (liste ou texte, une par ligne)."""
+    import ipaddress, json, re
+    from urllib.parse import urlparse
+    if v in (None, '', []):
+        return None
+    if isinstance(v, str):
+        t = v.strip()
+        try:
+            v = json.loads(t) if t.startswith('[') else [x for x in re.split(r'[\n,;]+', t)]
+        except ValueError:
+            raise ValueError("Sites autorisés : liste d'adresses attendue")
+    if not isinstance(v, list):
+        raise ValueError("Sites autorisés : liste d'adresses attendue")
+    out = []
+    for x in v:
+        x = str(x).strip()
+        if not x:
+            continue
+        p = urlparse(x)
+        host = (p.hostname or '').lower()
+        bad = p.scheme != 'https' or not host or '.' not in host or p.username or p.password or len(x) > 300
+        if not bad:
+            try:
+                ipaddress.ip_address(host)
+                bad = True                                        # pas d'adresse IP brute : un nom de site reconnaissable
+            except ValueError:
+                pass
+        if bad:
+            raise ValueError(f"Site autorisé invalide « {x[:60]} » : adresse complète en https:// attendue (ex. https://jokkomeet.unchk.sn/)")
+        norm = f"https://{host}" + (f":{p.port}" if p.port else '') + (p.path or '/') + (f"?{p.query}" if p.query else '')
+        if norm not in out:
+            out.append(norm)
+    if len(out) > 5:
+        raise ValueError("Sites autorisés : 5 au maximum")
+    return json.dumps(out, ensure_ascii=False) if out else None
+
+
+def _client_apps(v):
+    """Applications (noms de processus, ex. « whatsapp ») que l'application CEI Examen laisse ouvertes : 10 au plus."""
+    import json, re
+    if v in (None, '', []):
+        return None
+    if isinstance(v, str):
+        t = v.strip()
+        try:
+            v = json.loads(t) if t.startswith('[') else [x for x in re.split(r'[\n,;]+', t)]
+        except ValueError:
+            raise ValueError("Applications autorisées : liste de noms attendue")
+    if not isinstance(v, list):
+        raise ValueError("Applications autorisées : liste de noms attendue")
+    out = []
+    for x in v:
+        x = str(x).strip()
+        if not x:
+            continue
+        x = re.sub(r'\.(exe|app)$', '', x, flags=re.I)
+        if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._ -]{0,59}', x):
+            raise ValueError(f"Application autorisée invalide « {x[:40]} » : nom du programme attendu (lettres, chiffres, point, tiret)")
+        if x.lower() not in [o.lower() for o in out]:
+            out.append(x)
+    if len(out) > 10:
+        raise ValueError("Applications autorisées : 10 au maximum")
+    return json.dumps(out, ensure_ascii=False) if out else None
+
+
 FIELD_RULES = {
     'title': _text('Le titre', 200, required=True),
     'instructions': _text('La consigne', 5000),
@@ -65,6 +131,7 @@ FIELD_RULES = {
     'questions_per_page': _int_range(0, 50, 'Questions par page'),
     'time_per_question_seconds': _opt_seconds,
     'require_biometric': _bool, 'run_environment_scan': _bool, 'require_client': _bool,
+    'client_allowed_sites': _client_sites, 'client_allowed_apps': _client_apps, 'client_block_vm': _bool,
 }
 
 # Réglages qui changent les règles de ceux qui ont COMMENCÉ : verrouillés dès qu'une copie existe (ou que l'examen est en cours)
@@ -75,6 +142,7 @@ _STRUCTURAL = {
     'require_biometric': "la vérification d'identité se fait à l'entrée ; elle ne peut plus changer une fois l'examen ouvert",
     'run_environment_scan': "le scan de l'environnement se fait à l'entrée ; il ne peut plus changer une fois l'examen ouvert",
     'require_client': "l'application CEI Examen s'exige à l'entrée ; elle ne peut plus changer une fois l'examen ouvert",
+    'client_block_vm': "le refus des machines virtuelles se vérifie à l'entrée ; il ne peut plus changer une fois l'examen ouvert",
 }
 
 
@@ -104,6 +172,9 @@ def policy(session, exam):
 
 def current_value(exam, key):
     v = getattr(exam, key, None)
+    if key in ('client_allowed_sites', 'client_allowed_apps'):      # listes enregistrées en JSON : rendues comme listes
+        from models import _json_list
+        return _json_list(v)
     if hasattr(v, 'isoformat'):
         return v.isoformat()
     return v

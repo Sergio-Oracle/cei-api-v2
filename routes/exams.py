@@ -1552,7 +1552,14 @@ def log_exam_activity(attempt_id):
             tab_switches_val = attempt.tab_switches or 0
             warnings_count_val = attempt.warnings_count or 0
             session.close()
+            # Une seule alerte « seuil atteint » par copie toutes les 10 min (05/11/2026) : sans cela, chaque événement
+            # suivant (le compteur reste ≥ au seuil) renvoyait une notification URGENTE au surveillant/enseignant, et
+            # quelques minutes d'absence de visage les noyaient sous les alertes. Sans Redis (None) : on envoie, c'est le
+            # seul filet quand le bannissement automatique est désactivé.
+            from cache import cache_set_nx_value
+            _send_threshold_alert = cache_set_nx_value(f'cei:threshold_alert:{attempt_id_val}', 1, 600) is not False
             try:
+                if not _send_threshold_alert: raise RuntimeError('alerte de seuil déjà envoyée pour cette copie')
                 from proctoring_routes import _push_alert
                 _push_alert({
                     'exam_id': exam_id_val,
@@ -1571,6 +1578,7 @@ def log_exam_activity(attempt_id):
             except Exception as _pa_err:
                 print(f"push_alert (log_activity) échoué: {_pa_err}")
             try:
+                if not _send_threshold_alert: raise RuntimeError('déjà envoyée')
                 from notif_bus import notify_exam
                 notify_exam(exam_id_val, 'threshold_alert', 'Seuil de surveillance atteint',
                             f'{student_name} — {ban_reason}. Bannissement automatique désactivé : intervention manuelle requise.',

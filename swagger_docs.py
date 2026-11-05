@@ -2519,7 +2519,7 @@ OPENAPI_SPEC = {
         "/api/exam_attempts/{attempt_id}/log_activity": {"post": {
             "tags": ["Examens en ligne"],
             "summary": "Logger une activité suspecte (client étudiant)",
-            "description": "Appelé automatiquement par le frontend lors d'un événement suspect. Incrémente le score de risque et peut déclencher un bannissement automatique.",
+            "description": "Appelé automatiquement par le frontend lors d'un événement suspect. Incrémente le score de risque et peut déclencher un bannissement automatique. **Seuil atteint avec bannissement automatique désactivé (05/11)** : une seule alerte (tableau de bord + notification urgente `threshold_alert`) par copie et par 10 min (clé Redis `cei:threshold_alert:<copie>`) ; sans Redis, l'alerte part à chaque fois (seul filet).",
             "parameters": [{"name": "attempt_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
             "requestBody": {"required": True, "content": {"application/json": {"schema": {
                 "type": "object", "required": ["event_type"],

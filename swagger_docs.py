@@ -4014,7 +4014,7 @@ OPENAPI_SPEC = {
         }},
         "/api/professor/recent_incidents": {"get": {
             "tags": ["Tableaux de bord"], "summary": "Incidents récents des examens (enseignant, administrateur, responsable d'examen)",
-            "description": "Enseignant : ses examens et ceux de ses EC (y compris créés à sa place par le responsable d'examen) ; administrateur et responsable d'examen : tous les examens. Flux recalculé à chaque appel (incidents de proctoring des dernières 24h + affectations d'EC des 7 derniers jours) — jamais stocké tel quel. Les items supprimés/marqués comme lus via /dismiss sont exclus.",
+            "description": "Enseignant : ses examens et ceux de ses EC (y compris créés à sa place par le responsable d'examen) ; administrateur et responsable d'examen : tous les examens. Flux recalculé à chaque appel (incidents de proctoring des dernières 24h + affectations d'EC des 7 derniers jours, avec EC, UE, formation et rôle responsable/tuteur dans `ec_code`, `ec_name`, `ue_code`, `ue_name`, `formation_name`, `assignment_kind`) — jamais stocké tel quel. Les items supprimés/marqués comme lus via /dismiss sont exclus.",
             "responses": {"200": {"description": "Incidents récents"}}
         }},
         "/api/professor/recent_incidents/dismiss": {"post": {
@@ -4838,6 +4838,18 @@ OPENAPI_SPEC = {
                 "properties": {"ids": {"type": "array", "items": {"type": "integer"}, "description": "IDs à marquer (vide = toutes)"}}
             }}}},
             "responses": {"200": {"description": "Notifications mises à jour"}}
+        }},
+        "/api/notifications/dismiss": {"post": {
+            "tags": ["Tableaux de bord"], "summary": "Supprimer des alertes de l'historique (personnel)",
+            "description": "Personnel uniquement (403 pour un étudiant). Supprime définitivement, pour l'utilisateur connecté, les alertes de son historique Redis (page « Notifications ») : celles dont l'id est dans `ids`, ou toutes avec `all: true`. 503 si Redis est indisponible.",
+            "requestBody": {"required": True, "content": {"application/json": {"schema": {
+                "type": "object",
+                "properties": {
+                    "ids": {"type": "array", "items": {"type": "string"}, "description": "Ids des alertes (champ `id` de GET /api/notifications)."},
+                    "all": {"type": "boolean", "description": "true = vider tout l'historique."}
+                }
+            }}}},
+            "responses": {"200": {"description": "{success, removed}"}, "400": {"description": "ids ou all requis"}, "403": {"description": "Étudiant"}, "503": {"description": "Historique indisponible"}}
         }},
         "/api/notifications/poll": {"get": {
             "tags": ["Tableaux de bord"],

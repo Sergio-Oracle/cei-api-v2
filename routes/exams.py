@@ -5269,17 +5269,14 @@ def get_professor_recent_incidents():
         
         exam_ids = [e.id for e in active_exams]
         
-        if not exam_ids:
-            session.close()
-            return jsonify({'incidents': [], 'unread_count': 0})
-        
-        # Incidents des dernières 24h
+        # Incidents des dernières 24h (sans examen : aucun incident, mais les
+        # affectations d'EC ci-dessous doivent rester visibles)
         since = utcnow() - timedelta(hours=24)
-        
+
         incidents = session.query(ExamActivityLog).join(ExamAttempt).filter(
             ExamAttempt.exam_id.in_(exam_ids),
             ExamActivityLog.timestamp >= since
-        ).order_by(ExamActivityLog.timestamp.desc()).limit(100).all()
+        ).order_by(ExamActivityLog.timestamp.desc()).limit(100).all() if exam_ids else []
 
         # Charger les snapshots caméra pour les events visuels (face)
         VISUAL_EVENTS = {'no_face_detected', 'no_face', 'multiple_faces', 'face_reference_captured',
@@ -5329,15 +5326,25 @@ def get_professor_recent_incidents():
         ec_notifs = []
         for asgn in new_assignments:
             ec = asgn.ec
+            ue = ec.ue if ec else None
+            semester = ue.semester if ue else None
+            formation = semester.formation if semester else None
             ec_notifs.append({
                 'id': f'ec_assign_{asgn.id}',
                 'event_type': 'ec_assignment',
-                'timestamp': asgn.assigned_at.isoformat() if asgn.assigned_at else None,
+                'timestamp': utc_iso(asgn.assigned_at) if asgn.assigned_at else None,
                 'details': f"Affectation à l'EC : {ec.name if ec else asgn.ec_id}",
                 'student_name': '',
                 'exam_title': '',
                 'severity': 'info',
-                'snapshot_data': None
+                'snapshot_data': None,
+                # Contexte de l'affectation (la page n'affichait que des « — »)
+                'ec_code': ec.code if ec else None,
+                'ec_name': ec.name if ec else None,
+                'ue_code': ue.code if ue else None,
+                'ue_name': ue.name if ue else None,
+                'formation_name': formation.name if formation else None,
+                'assignment_kind': 'tuteur' if (asgn.kind == 'tuteur') else 'responsable',
             })
 
         all_items = incidents_list + ec_notifs

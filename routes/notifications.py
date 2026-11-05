@@ -3,6 +3,7 @@ Blueprint Notifications.
 
 GET  /api/notifications          — corrections récentes (étudiant)
 PUT  /api/notifications/mark-read — marquer toutes comme lues
+POST /api/notifications/dismiss  — supprimer des alertes de l'historique du personnel
 GET  /api/notifications/poll     — draine la file Redis de l'utilisateur (réponse immédiate)
 """
 import os, json, logging
@@ -179,6 +180,53 @@ def mark_notifications_read():
         return jsonify({'error': str(e)}), 500
     finally:
         session.close()
+
+
+@notifications_bp.route('/api/notifications/dismiss', methods=['POST'])
+@paseto_required
+def dismiss_notifications():
+    """Personnel : supprime de l'historique des alertes (page « Notifications »)
+    celles dont l'id est donné (`ids`), ou toutes (`all: true`). Les alertes sont
+    des événements du bus gardés dans Redis (30 jours) : la suppression est
+    définitive et ne concerne que l'utilisateur connecté. Les étudiants n'ont pas
+    d'historique stocké (leurs notifications viennent des copies corrigées)."""
+    from flask import request
+    user_id = get_current_user_id()
+    session = get_session()
+    try:
+        user = session.query(User).get(user_id)
+        if not user:
+            return jsonify({'error': 'Utilisateur introuvable'}), 404
+        if user.role == UserRole.STUDENT:
+            return jsonify({'error': 'Non disponible pour les étudiants'}), 403
+    finally:
+        session.close()
+
+    data = request.get_json(silent=True) or {}
+    delete_all = bool(data.get('all'))
+    ids = {str(i) for i in (data.get('ids') or [])}
+    if not delete_all and not ids:
+        return jsonify({'error': 'ids ou all requis'}), 400
+
+    key = f'cei:notif:history:{user_id}'
+    removed = 0
+    try:
+        r = _redis_lib.from_url(_REDIS_URL, decode_responses=True, socket_connect_timeout=1)
+        if delete_all:
+            removed = r.llen(key)
+            r.delete(key)
+        else:
+            for line in r.lrange(key, 0, -1):
+                try:
+                    ev = json.loads(line)
+                except ValueError:
+                    continue
+                if f"{ev.get('type', 'evt')}_{ev.get('ts') or 0}" in ids:
+                    removed += r.lrem(key, 0, line)
+    except Exception as e:
+        _log.warning('suppression notifications impossible user=%s: %s', user_id, e)
+        return jsonify({'error': 'Service momentanément indisponible'}), 503
+    return jsonify({'success': True, 'removed': removed})
 
 
 _POLL_BATCH = 50

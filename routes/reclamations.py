@@ -402,8 +402,12 @@ Si REJECTED: Correction originale inchangée"""
         else:
             exam = attempt.exam
             original_score = attempt.score or 0
+            # Sujet ancré dans le cours (moteur RAG) : l'arbitre juge d'après le barème et le cours, comme la correction.
+            from services.rag_correction import safe_reference_for
+            _course = safe_reference_for(exam.subject if exam else None)
             system_prompt = f"Tu es un arbitre impartial pour les réclamations d'examens en ligne.\n\n{_RECLAMATION_SECURITY}{DECISION_FORMAT}"
             user_message  = (
+                (f"{_course}\n\n" if _course else "") +
                 f"EXAMEN: {exam.title if exam else 'N/A'}\n"
                 f"INSTRUCTIONS: {exam.instructions[:500] if exam and exam.instructions else 'N/A'}\n"
                 f"###DONNEE_DEBUT###\n"

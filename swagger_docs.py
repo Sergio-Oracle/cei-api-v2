@@ -259,6 +259,7 @@ _SCHEMAS = {
             "rubric":       {"type": "string"},
             "ec_id":        {"type": "integer"},
             "creator_id":   {"type": "integer"},
+            "rag_grounded": {"type": "boolean", "description": "Sujet issu de « Générer Suggestions » sur des documents indexés : sa correction IA s'appuie sur le cours (barème + passages), pas sur les connaissances générales de l'IA"},
             "created_at":   {"type": "string", "format": "date-time"},
             "papers_count": {"type": "integer"}
         }
@@ -3686,6 +3687,7 @@ OPENAPI_SPEC = {
                 "**Moteur RAG** : si la suggestion porte `rag_passages`, le sujet et le barème sont ancrés dans ces passages (source [Sx] citée "
                 "dans le barème), puis chaque réponse attendue est vérifiée contre le passage cité. Résultat dans `grounding` : "
                 "{checked, status: ok|partial, unsupported: [{question, title, cited, reason}]} — questions signalées à l'enseignant, jamais retirées. "
+                "La réponse porte aussi `rag_passages` (les passages utilisés), à renvoyer tels quels à `create-from-suggestion` pour que la correction IA du sujet enregistré s'appuie sur le même cours. "
                 "`suggestion.question_types` peut inclure \"Questions dépendantes (sous-questions liées)\" (marqueur [SUBOPEN]) — exercices en "
                 "plusieurs parties a/b/c où chaque sous-question s'appuie explicitement sur le résultat de la précédente ; le barème généré "
                 "applique systématiquement la règle de l'erreur reportée. `suggestion.grading_criteria`, s'il est fourni (éventuellement "
@@ -3735,7 +3737,8 @@ OPENAPI_SPEC = {
                     "rubric_override": {"type": "string"},
                     "ec_id":           {"type": "integer", "description": "Obligatoire — EC auquel rattacher le sujet"},
                     "metadata":        {"type": "object"},
-                    "media_link_key":  {"type": "string", "description": "Associe les médias uploadés pendant la composition (avant que le sujet n'existe) via leur link_key"}
+                    "media_link_key":  {"type": "string", "description": "Associe les médias uploadés pendant la composition (avant que le sujet n'existe) via leur link_key"},
+                    "rag_passages":    {"type": "array", "items": {"type": "object"}, "description": "Passages du cours (moteur RAG) renvoyés par `generate-full-exam` : [{id, filename, module, fileurl, content}], 12 au plus de 3000 caractères. Le sujet est alors marqué `rag_grounded` et sa correction IA (copies, prévisualisation, réclamations, copies papier) s'appuie sur ces passages : barème + cours, jamais les connaissances générales de l'IA. Sans passages, le sujet est corrigé comme avant."}
                 }
             }}}},
             "responses": {

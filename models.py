@@ -416,6 +416,10 @@ class Subject(Base):
     # nullable car les sujets créés avant ce champ n'ont pas été retrouvés
     # dans tous les cas (fichiers orphelins, doublons de tentatives ratées).
     s3_key = Column(String(500), nullable=True)
+    # Sujet issu de « Générer Suggestions » sur des documents indexés (moteur RAG) : passages du cours (JSON) sur
+    # lesquels il a été construit. La correction IA s'appuie dessus (services/rag_correction.py).
+    rag_grounded = Column(Boolean, default=False)
+    rag_passages = Column(Text, nullable=True)
     creator_id = Column(Integer, ForeignKey('users.id'), nullable=False)
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -439,6 +443,7 @@ class Subject(Base):
             'rubric': self.rubric,
             'filename': self.filename,
             's3_key': self.s3_key,
+            'rag_grounded': bool(self.rag_grounded),
             'creator_id': self.creator_id,
             'creator_name': self.creator.full_name if self.creator else None,
             'is_active': self.is_active,
@@ -1888,6 +1893,11 @@ def init_db():
         # #7 — image attachée au sujet
         ("SELECT 1 FROM information_schema.columns WHERE table_name='subjects' AND column_name='image_filename'",
          "ALTER TABLE subjects ADD COLUMN image_filename VARCHAR(255)"),
+        # Correction ancrée dans le cours (06/11) — passages du cours gardés avec le sujet
+        ("SELECT 1 FROM information_schema.columns WHERE table_name='subjects' AND column_name='rag_grounded'",
+         "ALTER TABLE subjects ADD COLUMN rag_grounded BOOLEAN NOT NULL DEFAULT FALSE"),
+        ("SELECT 1 FROM information_schema.columns WHERE table_name='subjects' AND column_name='rag_passages'",
+         "ALTER TABLE subjects ADD COLUMN rag_passages TEXT"),
         # formation principale de l'étudiant
         ("SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='formation_id'",
          "ALTER TABLE users ADD COLUMN formation_id INTEGER REFERENCES formations(id) ON DELETE SET NULL"),

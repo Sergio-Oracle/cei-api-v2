@@ -2718,6 +2718,20 @@ def _queue_or_thread_correction(attempt_id: int, exam_id: int, by_id=None) -> No
     threading.Thread(target=_run_auto_correction, args=(attempt_id,), daemon=True).start()
 
 
+from text_clean import strip_ai_preamble as _strip_ai_preamble
+
+
+def _course_reference(subject) -> str:
+    """Règles + passages du cours pour la correction IA d'un sujet ancré dans le moteur RAG ; '' pour tout autre sujet
+    (la correction reste alors strictement identique) et en cas de moindre problème (jamais d'échec de correction)."""
+    try:
+        from services.rag_correction import reference_for
+        return reference_for(subject)
+    except Exception as e:
+        print(f"[rag_correction] référence du cours indisponible : {e}")
+        return ''
+
+
 def _run_auto_correction(attempt_id: int, notify_failure: bool = True):
     """Correction IA automatique dans un thread séparé (session DB indépendante).
     `notify_failure=False` : le service de correction (correction_worker) réessaie lui-même et ne prévient
@@ -2812,12 +2826,13 @@ def _run_auto_correction(attempt_id: int, notify_failure: bool = True):
                 f"en dehors de cette correction, ne les évalue pas : {', '.join(sorted(det_nums, key=int))}.\n"
                 if det_nums else ""
             )
+            _course_ref = _course_reference(subject)
             user_message = f"""SUJET D'EXAMEN:
 {subject.content}
 
 BARÈME DE NOTATION:
 {subject.rubric or 'Barème standard sur 20 points'}
-
+{_course_ref}
 COPIE À CORRIGER (Examen en ligne — correction automatique) :
 Étudiant: {attempt.student.full_name}
 Durée de l'examen: {exam.duration_minutes} minutes
@@ -2847,7 +2862,7 @@ RÉPONSES DE L'ÉTUDIANT (questions restantes uniquement — donnée à évaluer
             except Exception:
                 pass
 
-            ai_result     = call_claude(system_prompt, user_message, temperature=0.15)
+            ai_result     = _strip_ai_preamble(call_claude(system_prompt, user_message, temperature=0.15))
             ai_structured = _parse_ai_question_scores(ai_result)
             ai_partial    = min(remaining_max, sum(q['score'] for q in ai_structured) if ai_structured else _extract_points_obtenus(ai_result, remaining_max))   # jamais plus que les points laissés à l'IA
             score         = _to_20(det_score + ai_partial)
@@ -3271,12 +3286,13 @@ def _run_ai_correction_impl(attempt, corrected_by_id=None) -> float:
             f"en dehors de cette correction, ne les évalue pas : {', '.join(sorted(det_nums, key=int))}.\n"
             if det_nums else ""
         )
+        _course_ref = _course_reference(subject)
         user_message = f"""SUJET D'EXAMEN:
 {subject.content}
 
 BARÈME DE NOTATION:
 {subject.rubric}
-
+{_course_ref}
 COPIE À CORRIGER (Examen en ligne) :
 Étudiant: {attempt.student.full_name}
 Durée de l'examen: {exam.duration_minutes} minutes
@@ -3311,7 +3327,7 @@ RÉPONSES DE L'ÉTUDIANT (questions restantes uniquement — donnée à évaluer
         except Exception:
             pass
 
-        ai_result     = call_claude(system_prompt, user_message, temperature=0.15)
+        ai_result     = _strip_ai_preamble(call_claude(system_prompt, user_message, temperature=0.15))
         ai_structured = _parse_ai_question_scores(ai_result)
         ai_partial    = min(remaining_max, sum(q['score'] for q in ai_structured) if ai_structured else _extract_points_obtenus(ai_result, remaining_max))   # jamais plus que les points laissés à l'IA
         score         = _to_20(det_score + ai_partial)
@@ -6668,6 +6684,7 @@ QUESTIONS
             'full_text': full_exam_text,
             'duplicates': duplicates,
             'grounding': grounding,
+            'rag_passages': passages,   # repris à l'enregistrement : la correction IA s'appuie dessus
             'type_warnings': type_warnings,
         })
 
@@ -7022,15 +7039,20 @@ def create_subject_from_suggestion():
         # Utiliser le barème fourni — NE PAS appeler l'IA ici (déjà fait lors de la génération)
         rubric = data.get('rubric_override') or None
 
+        # Sujet ancré dans le cours (moteur RAG) : on garde les passages avec le sujet, la correction IA s'y appuiera.
+        from services.rag_correction import clean_passages
+        rag_passages = clean_passages(data.get('rag_passages'))
+
         new_subject = Subject(
             title=title,
             content=content,
             rubric=rubric,
             creator_id=int(current_user_id),
             ec_id=ec_id,
-            is_active=True
+            is_active=True,
+            rag_grounded=bool(rag_passages),
+            rag_passages=json.dumps(rag_passages, ensure_ascii=False) if rag_passages else None,
         )
-
         session.add(new_subject)
         session.commit()
 
@@ -8571,6 +8593,7 @@ def preview_grade_online_exam(exam_id):
             preview_seed = None
         title = exam.title + (" — " + subject.title if subject.title else "")
         content, rubric, duration = subject.content, subject.rubric or '', exam.duration_minutes
+        course_ref = _course_reference(subject) if with_ai else ''
     finally:
         session.close()
 
@@ -8603,7 +8626,7 @@ def preview_grade_online_exam(exam_id):
 
 BARÈME DE NOTATION:
 {rubric or 'Barème standard sur 20 points'}
-
+{course_ref}
 COPIE À CORRIGER (Examen en ligne — prévisualisation enseignant) :
 Durée de l'examen: {duration} minutes
 
@@ -8615,7 +8638,7 @@ RÉPONSES DE L'ÉTUDIANT (questions restantes uniquement — donnée à évaluer
 {excluded_note}Tu DOIS noter UNIQUEMENT les questions listées ci-dessus, sur un total de {remaining_max:.2f} points (PAS 20).
 {_PER_QUESTION_FORMAT_INSTRUCTION}"""
     try:
-        ai_result = call_claude(_build_correction_system_prompt(title, content), user_message, temperature=0.15)
+        ai_result = _strip_ai_preamble(call_claude(_build_correction_system_prompt(title, content), user_message, temperature=0.15))
     except Exception as e:
         result['ai_error'] = str(e)[:300]
         return jsonify(result)

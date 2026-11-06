@@ -80,11 +80,20 @@ try:
     chk("pas de code pour une copie déjà rendue", r.status_code == 409, r.status_code)
 
     # — session à distance / machine virtuelle à l'entrée
-    def verify(vm=False, remote=False):
+    def verify(vm=False, remote=False, displays=1, usb=0):
         ch = c.get(f'/api/exam-client/challenge?exam_id={e.id}', headers=HS).get_json()
         sig = hmac.new(SECRET.encode(), f"{ch['nonce']}|{stu.id}|1.2.0|linux".encode(), hashlib.sha256).hexdigest()
-        return c.post('/api/exam-client/verify', headers={**HS, 'User-Agent': 'CEIExamClient/1.2.0'}, json={'exam_id': e.id, 'nonce': ch['nonce'], 'sig': sig, 'version': '1.2.0', 'platform': 'linux', 'vm': vm, 'remote': remote})
+        return c.post('/api/exam-client/verify', headers={**HS, 'User-Agent': 'CEIExamClient/1.2.0'}, json={'exam_id': e.id, 'nonce': ch['nonce'], 'sig': sig, 'version': '1.2.0', 'platform': 'linux', 'vm': vm, 'remote': remote, 'displays': displays, 'usb_storage': usb})
     chk("poste normal : accepté", verify().status_code == 200)
+    r = verify(displays=2)
+    chk("second écran / projection (HDMI, VGA…) branché : l'examen ne démarre pas", r.status_code == 403 and (r.get_json() or {}).get('client_ports') and 'second écran' in r.get_json()['error'], r.get_json())
+    r = verify(usb=1)
+    chk("clé ou disque USB branché : l'examen ne démarre pas", r.status_code == 403 and (r.get_json() or {}).get('client_ports') and 'USB' in r.get_json()['error'], r.get_json())
+    r = verify(displays=3, usb=2)
+    chk("les deux à la fois : un seul message qui cite les deux", r.status_code == 403 and 'écran' in r.get_json()['error'] and 'USB' in r.get_json()['error'])
+    ch = c.get(f'/api/exam-client/challenge?exam_id={e.id}', headers=HS).get_json()
+    sg = hmac.new(SECRET.encode(), f"{ch['nonce']}|{stu.id}|1.2.0|linux".encode(), hashlib.sha256).hexdigest()
+    chk("un ancien client qui n'envoie ni écrans ni USB reste accepté", c.post('/api/exam-client/verify', headers={**HS, 'User-Agent': 'CEIExamClient/1.2.0'}, json={'exam_id': e.id, 'nonce': ch['nonce'], 'sig': sg, 'version': '1.2.0', 'platform': 'linux'}).status_code == 200)
     r = verify(remote=True)
     chk("bureau à distance détecté : refusé", r.status_code == 403 and (r.get_json() or {}).get('client_remote'), r.get_json())
     chk("machine virtuelle : acceptée si l'examen ne l'interdit pas", verify(vm=True).status_code == 200)

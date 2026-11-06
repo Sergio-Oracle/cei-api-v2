@@ -79,6 +79,19 @@ def exam_client_verify():
     if data.get('remote'):
         return jsonify({'error': "Une session de bureau à distance est détectée : l'examen doit être passé directement sur l'ordinateur de l'étudiant.",
                         'client_remote': True}), 403
+    # Ports : second écran / projection (HDMI, VGA, DisplayPort, sans fil) ou disque USB branché → l'examen ne démarre pas tant que ce n'est pas débranché
+    try:
+        n_disp, n_usb = int(data.get('displays') or 1), int(data.get('usb_storage') or 0)
+    except (TypeError, ValueError):
+        n_disp, n_usb = 1, 0
+    if n_disp >= 2 or n_usb >= 1:
+        what = []
+        if n_disp >= 2:
+            what.append("le second écran ou le câble de projection (HDMI, VGA, DisplayPort…)")
+        if n_usb >= 1:
+            what.append("la clé USB ou le disque externe")
+        return jsonify({'error': "Débranchez " + " et ".join(what) + " puis recommencez : aucun port d'extension n'est autorisé pendant l'examen.",
+                        'client_ports': True, 'displays': n_disp, 'usb_storage': n_usb}), 403
     if data.get('vm'):
         s = get_session()
         try:

@@ -144,4 +144,31 @@ R._parse_ai_question_scores = lambda t: (cap.setdefault('t', t), _orig_parse2(t)
 a3 = attempt(subject(9990, False)); _corr(a3, corrected_by_id=1)
 R._parse_ai_question_scores = _orig_parse2
 chk("correction complète : texte enregistré sans raisonnement", 'Attendez' not in cap.get('t', 'Attendez') and 'Regardons' not in cap.get('t', ''))
+# 8. l'IA est priée de REFAIRE une réponse fautive (une seule fois) avant tout recours à la phrase neutre
+LEAKY = "### Question 1\nPoints : 3.00/4.00\nBien. Attendez, regardons le corrigé : non.\n\n### Question 2\nPoints : 6.00/6.00\nParfait.\n\nPoints obtenus : 9.00"
+CLEAN = "### Question 1\nPoints : 3.00/4.00\nTu as bien défini la notion, il manque son rôle.\n\n### Question 2\nPoints : 6.00/6.00\nParfait.\n\nPoints obtenus : 9.00"
+def scripted(*answers):
+    seq = list(answers); calls = []
+    def f(sp, um, temperature=0.15, **k):
+        calls.append(um); return seq[min(len(calls) - 1, len(seq) - 1)]
+    return f, calls
+f1, c1 = scripted(CLEAN); R.call_claude = f1
+o = R._call_ai_correction_clean("sys", "msg", set())
+chk("réponse propre : un seul appel à l'IA", len(c1) == 1 and 'bien défini' in o)
+f2, c2 = scripted(LEAKY, CLEAN); R.call_claude = f2
+o = R._call_ai_correction_clean("sys", "msg", set())
+chk("réponse fautive : l'IA est priée de refaire, et la version propre est gardée", len(c2) == 2 and 'ATTENTION' in c2[1] and 'bien défini' in o and 'Attendez' not in o and 'indisponible' not in o)
+f3, c3 = scripted(LEAKY, LEAKY); R.call_claude = f3
+o = R._call_ai_correction_clean("sys", "msg", set())
+chk("deux réponses fautives : un seul nouvel essai puis phrase neutre, jamais de raisonnement affiché", len(c3) == 2 and 'Attendez' not in o and 'à vérifier par l\'enseignant' in o)
+def boom(sp, um, temperature=0.15, **k):
+    if 'ATTENTION' in um: raise RuntimeError('IA indisponible')
+    return LEAKY
+R.call_claude = boom
+o = R._call_ai_correction_clean("sys", "msg", set())
+chk("nouvel essai impossible : première réponse nettoyée, pas d'erreur", 'Attendez' not in o and 'Parfait' in o)
+f4, c4 = scripted("### Question 1\nPoints : 0.00/0.25\nBonne réponse.\n\n### Question 2\nPoints : 6.00/6.00\nParfait.\n\nPoints obtenus : 6.00", CLEAN.replace("### Question 1\nPoints : 3.00/4.00\nTu as bien défini la notion, il manque son rôle.\n\n", ""))
+R.call_claude = f4
+o = R._call_ai_correction_clean("sys", "msg", {'1'})
+chk("bloc pour une question déjà notée : redemandé puis absent du texte final", '### Question 1' not in o and 'Parfait' in o)
 print(f"{sum(RES)}/{len(RES)} vérifications réussies"); sys.exit(0 if all(RES) else 1)

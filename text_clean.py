@@ -40,6 +40,20 @@ _AI_HEAD = re.compile(r'(?m)^[ \t]*#{1,6}[ \t]*Question[ \t]+(\d{1,3})[ \t]*\n[ 
 _AI_FINAL = re.compile(r'(?m)^[ \t]*Points\s+obtenus\s*:\s*[\d.,]+[ \t]*$')
 
 
+def ai_result_problems(text, excluded=()) -> int:
+    """Nombre de blocs fautifs (raisonnement de l'IA, bloc pour une question déjà notée automatiquement) dans une réponse brute."""
+    text = strip_ai_preamble(text)
+    if not text or not isinstance(text, str):
+        return 0
+    excluded = {str(x) for x in (excluded or ())}
+    marks = list(_AI_HEAD.finditer(text)); n = 0
+    for i, m in enumerate(marks):
+        end = marks[i + 1].start() if i + 1 < len(marks) else len(text)
+        if m.group(1) in excluded or _LEAK.search(text[m.end():end]):
+            n += 1
+    return n
+
+
 def sanitize_ai_result(text, excluded=()):
     """Nettoie la réponse brute de l'IA AVANT d'en extraire les notes et de l'enregistrer :
     1. tout texte avant le premier bloc « ### Question N » est retiré (strip_ai_preamble) ;

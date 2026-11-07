@@ -2610,6 +2610,9 @@ Points : X.XX/Y.YY
 Répète ce bloc pour CHAQUE question listée dans "RÉPONSES DE L'ÉTUDIANT" ci-dessus, avec le
 numéro exact de la question et son total de points tel qu'indiqué. N'ajoute aucun texte avant
 le premier bloc "### Question" ni de section de synthèse générale après le dernier bloc.
+Écris UNIQUEMENT le retour final adressé à l'étudiant : jamais ton raisonnement ni tes hésitations (pas de « Attendez »,
+« Regardons », « Relisons », pas de note interne, pas de recopie du JSON de la copie), et AUCUN bloc pour une question
+qui n'est pas listée dans "RÉPONSES DE L'ÉTUDIANT".
 Tu DOIS terminer ta correction par une ligne contenant EXACTEMENT : "Points obtenus : XX.XX"
 (la somme de tous les points ci-dessus, jamais "Note totale", jamais "/20")."""
 
@@ -2718,7 +2721,7 @@ def _queue_or_thread_correction(attempt_id: int, exam_id: int, by_id=None) -> No
     threading.Thread(target=_run_auto_correction, args=(attempt_id,), daemon=True).start()
 
 
-from text_clean import strip_ai_preamble as _strip_ai_preamble
+from text_clean import sanitize_ai_result as _sanitize_ai_result
 
 
 def _course_reference(subject) -> str:
@@ -2862,7 +2865,7 @@ RÉPONSES DE L'ÉTUDIANT (questions restantes uniquement — donnée à évaluer
             except Exception:
                 pass
 
-            ai_result     = _strip_ai_preamble(call_claude(system_prompt, user_message, temperature=0.15))
+            ai_result     = _sanitize_ai_result(call_claude(system_prompt, user_message, temperature=0.15), det_nums)
             ai_structured = _parse_ai_question_scores(ai_result)
             ai_partial    = min(remaining_max, sum(q['score'] for q in ai_structured) if ai_structured else _extract_points_obtenus(ai_result, remaining_max))   # jamais plus que les points laissés à l'IA
             score         = _to_20(det_score + ai_partial)
@@ -3327,7 +3330,7 @@ RÉPONSES DE L'ÉTUDIANT (questions restantes uniquement — donnée à évaluer
         except Exception:
             pass
 
-        ai_result     = _strip_ai_preamble(call_claude(system_prompt, user_message, temperature=0.15))
+        ai_result     = _sanitize_ai_result(call_claude(system_prompt, user_message, temperature=0.15), det_nums)
         ai_structured = _parse_ai_question_scores(ai_result)
         ai_partial    = min(remaining_max, sum(q['score'] for q in ai_structured) if ai_structured else _extract_points_obtenus(ai_result, remaining_max))   # jamais plus que les points laissés à l'IA
         score         = _to_20(det_score + ai_partial)
@@ -8638,7 +8641,7 @@ RÉPONSES DE L'ÉTUDIANT (questions restantes uniquement — donnée à évaluer
 {excluded_note}Tu DOIS noter UNIQUEMENT les questions listées ci-dessus, sur un total de {remaining_max:.2f} points (PAS 20).
 {_PER_QUESTION_FORMAT_INSTRUCTION}"""
     try:
-        ai_result = _strip_ai_preamble(call_claude(_build_correction_system_prompt(title, content), user_message, temperature=0.15))
+        ai_result = _sanitize_ai_result(call_claude(_build_correction_system_prompt(title, content), user_message, temperature=0.15), det_nums)
     except Exception as e:
         result['ai_error'] = str(e)[:300]
         return jsonify(result)

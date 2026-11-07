@@ -31,6 +31,7 @@ def fake_claude(system_prompt, user_message, temperature=0.15, **k):
     SEEN['msg'] = user_message; SEEN['n'] = SEEN.get('n', 0) + 1
     return "### Question 1\nPoints : 3.00/4.00\nBien.\n\n### Question 2\nPoints : 6.00/6.00\nParfait.\n\nPoints obtenus : 9.00"
 R.call_claude = fake_claude
+_corr = getattr(R, '_run_ai_correction_impl', None) or R._run_ai_correction   # la prod n'a pas le garde-fou « impl »
 
 def subject(sid, grounded, passages=None):
     return NS(id=sid, ec_id=5, title='OS', content=CONTENT, rubric=RUBRIC, rag_grounded=grounded,
@@ -38,7 +39,8 @@ def subject(sid, grounded, passages=None):
 
 def attempt(subj):
     ans = json.dumps({'pq_1': 'La cache est une mémoire rapide.', 'pq_2': 'FIFO et Round Robin'})
-    return NS(id=7, answers=ans, score=None, feedback=None, question_scores=None, corrected_at=None, corrected_by_id=None,
+    return NS(id=-7, answers=ans,   # identifiant fictif : aucune vraie copie ne peut être touchée
+               score=None, feedback=None, question_scores=None, corrected_at=None, corrected_by_id=None,
               exam=NS(subject=subj, title='Examen OS', duration_minutes=60), student=NS(full_name='Étudiant Test'))
 
 # cache Redis : repartir de zéro pour ces sujets de test
@@ -51,7 +53,7 @@ except Exception:
 # 1. sujet NON ancré : message strictement sans passages ni règles d'ancrage
 SEEN.clear()
 a = attempt(subject(9990, False))
-SC = R._run_ai_correction_impl(a, corrected_by_id=1)
+SC = _corr(a, corrected_by_id=1)
 chk("sujet ordinaire : note enregistrée", SC is not None and SC > 0)
 chk("sujet ordinaire : aucun passage ni règle d'ancrage dans la demande à l'IA",
     'PASSAGES DU COURS' not in SEEN['msg'] and 'ANCRÉE DANS LE COURS' not in SEEN['msg'])
@@ -61,7 +63,7 @@ live = {1: [{'filename': 'cours_os.pdf', 'content': 'Le cache L1 est plus rapide
 RC._live_by_question = lambda subj, stored: live
 SEEN.clear()
 a = attempt(subject(9991, True, PASSAGES))
-SC = R._run_ai_correction_impl(a, corrected_by_id=1)
+SC = _corr(a, corrected_by_id=1)
 m = SEEN['msg']
 chk("sujet ancré : note enregistrée", SC is not None and SC > 0)
 chk("sujet ancré : règles d'ancrage transmises", 'RÈGLES DE CORRECTION ANCRÉE DANS LE COURS' in m)
@@ -76,7 +78,7 @@ def down(subj, stored): return {}
 RC._live_by_question = down
 SEEN.clear()
 a = attempt(subject(9992, True, PASSAGES))
-SC = R._run_ai_correction_impl(a, corrected_by_id=1)
+SC = _corr(a, corrected_by_id=1)
 chk("moteur arrêté : copie corrigée quand même", SC is not None and SC > 0)
 chk("moteur arrêté : passages enregistrés toujours transmis", 'mémoire rapide placée entre le processeur' in SEEN['msg'])
 
@@ -90,7 +92,7 @@ try:
     cache_delete_pattern('cei:ragref:9993*')
     s4 = subject(9993, True, PASSAGES)
     for _ in range(3):
-        R._run_ai_correction_impl(attempt(s4), corrected_by_id=1)
+        _corr(attempt(s4), corrected_by_id=1)
     chk("3 copies du même sujet : une seule recherche dans le moteur", calls['n'] == 1, calls['n'])
 except Exception as e:
     print('  (cache Redis indisponible, contrôle ignoré :', e, ')')
@@ -117,7 +119,29 @@ captured = {}
 import routes.exams as _R
 _orig_parse = _R._parse_ai_question_scores
 _R._parse_ai_question_scores = lambda t: (captured.setdefault('t', t), _orig_parse(t))[1]
-_R._run_ai_correction_impl(a2, corrected_by_id=1)
+_corr(a2, corrected_by_id=1)
 _R._parse_ai_question_scores = _orig_parse
 chk("correction : le texte retenu commence au premier bloc", captured.get('t', '').startswith('### Question 1'), captured.get('t', '')[:40])
+# 7. filet à la source : questions déjà notées automatiquement, raisonnement au milieu d'un bloc
+from text_clean import sanitize_ai_result as SAN
+raw = ("### Question 1\nPoints : 0.00/0.25\nTu as répondu C. La bonne réponse est C.\n*Note interne : déjà notée automatiquement.*\n\n"
+       "### Question 2\nPoints : 3.00/4.00\nTrès bien, tu as bien défini la notion de cache et son rôle.\n*Note interne : rien à ajouter.*\n\n"
+       "### Question 3\nPoints : 2.00/6.00\nFIFO est juste. Attendez, regardons le corrigé : Round Robin ? Relisons.\n\n"
+       "### Question 4\nPoints : 4.00/4.00\nParfait, tu cites bien les deux ordonnancements du cours.\n\nPoints obtenus : 9.00")
+out = SAN(raw, excluded={'1'})
+chk("question déjà notée automatiquement : bloc supprimé", '### Question 1' not in out and 'Tu as répondu C' not in out)
+chk("simple note interne finale : retour conservé, note retirée", 'bien défini la notion de cache' in out and 'rien à ajouter' not in out)
+chk("raisonnement dans un bloc : phrase neutre, rien du raisonnement", 'Attendez' not in out and 'Relisons' not in out and 'à vérifier par l\'enseignant' in out)
+chk("bloc correct intact + ligne « Points obtenus » conservée", 'tu cites bien les deux ordonnancements' in out and out.rstrip().endswith('Points obtenus : 9.00'))
+chk("notes des blocs conservées pour la relecture", 'Points : 3.00/4.00' in out and 'Points : 2.00/6.00' in out and 'Points : 4.00/4.00' in out)
+chk("retour déjà propre : inchangé", SAN("### Question 2\nPoints : 1.00/1.00\nBien.\n\nPoints obtenus : 1.00") == "### Question 2\nPoints : 1.00/1.00\nBien.\n\nPoints obtenus : 1.00")
+chk("format inattendu : laissé tel quel", SAN("Bravo, 12/20.", {'1'}) == "Bravo, 12/20.")
+# la correction complète n'enregistre plus de bloc pour une question déjà notée, ni de raisonnement
+R.call_claude = lambda sp, um, temperature=0.15, **k: raw
+cap = {}
+_orig_parse2 = R._parse_ai_question_scores
+R._parse_ai_question_scores = lambda t: (cap.setdefault('t', t), _orig_parse2(t))[1]
+a3 = attempt(subject(9990, False)); _corr(a3, corrected_by_id=1)
+R._parse_ai_question_scores = _orig_parse2
+chk("correction complète : texte enregistré sans raisonnement", 'Attendez' not in cap.get('t', 'Attendez') and 'Regardons' not in cap.get('t', ''))
 print(f"{sum(RES)}/{len(RES)} vérifications réussies"); sys.exit(0 if all(RES) else 1)

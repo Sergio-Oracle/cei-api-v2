@@ -3909,15 +3909,11 @@ def get_exam_attempts(exam_id):
         limit = min(200, max(1, request.args.get('limit', 50, type=int)))
         search = (request.args.get('search') or '').strip().lower()
         status_filter = (request.args.get('status') or '').strip()
-        seen_filter = (request.args.get('seen') or '').strip()     # '1' = copie affichée à l'étudiant, '0' = jamais affichée
 
+        # Une tentative dont la copie n'a jamais été affichée (et sans réponse) n'est pas une copie : elle n'apparaît nulle part
         query = session.query(ExamAttempt).options(
             joinedload(ExamAttempt.student)
-        ).filter_by(exam_id=exam_id)
-        if seen_filter == '1':
-            query = query.filter(ExamAttempt.exam_seen_at.isnot(None))
-        elif seen_filter == '0':
-            query = query.filter(ExamAttempt.exam_seen_at.is_(None))
+        ).filter_by(exam_id=exam_id).filter(_real_copy_sql())
 
         if status_filter:
             try:
@@ -3948,9 +3944,7 @@ def get_exam_attempts(exam_id):
         # Participants réels = étudiants qui ont eu leur copie sous les yeux ; les autres ont créé une tentative puis
         # n'ont pas pu aller jusqu'à la page d'examen (caméra, micro, réseau…). Indépendant de la pagination/recherche.
         participants_count = session.query(ExamAttempt).filter(
-            ExamAttempt.exam_id == exam_id, ExamAttempt.exam_seen_at.isnot(None)).count()
-        not_reached_count = session.query(ExamAttempt).filter(
-            ExamAttempt.exam_id == exam_id, ExamAttempt.exam_seen_at.is_(None)).count()
+            ExamAttempt.exam_id == exam_id, _real_copy_sql()).count()
 
         attempts_list = []
         for attempt in attempts:
@@ -3970,7 +3964,6 @@ def get_exam_attempts(exam_id):
             'total_pages': max(1, (total + limit - 1) // limit),
             'needs_correction_count': needs_correction_count,
             'participants_count': participants_count,
-            'not_reached_count': not_reached_count,
         })
 
     except Exception as e:
@@ -4340,7 +4333,6 @@ def get_exam_stats(exam_id):
             return jsonify({'error': 'Accès non autorisé'}), 403
         attempts = session.query(ExamAttempt).filter_by(exam_id=exam_id).all()
         # Participant = étudiant qui a eu sa copie sous les yeux ; une tentative créée puis bloquée (caméra, réseau…) n'en est pas un
-        not_reached = sum(1 for a in attempts if a.exam_seen_at is None)
         attempts = [a for a in attempts if a.exam_seen_at is not None]
         done = [a for a in attempts if a.status.value in ('submitted', 'auto_submitted')]
         scores = [a.score for a in done if a.score is not None]
@@ -4359,7 +4351,6 @@ def get_exam_stats(exam_id):
         return jsonify({
             'exam_title':       exam.title,
             'total':            len(attempts),
-            'not_reached':      not_reached,
             'submitted':        len(done),
             'in_progress':      sum(1 for a in attempts if a.status.value == 'in_progress'),
             'banned':           sum(1 for a in attempts if a.status.value == 'banned'),
@@ -4483,7 +4474,7 @@ def get_exam_bilan_pdf(exam_id):
             session.close()
             return jsonify({'error': 'Accès non autorisé'}), 403
 
-        attempts = session.query(ExamAttempt).filter_by(exam_id=exam_id).all()
+        attempts = [a for a in session.query(ExamAttempt).filter_by(exam_id=exam_id).all() if not _never_seen(a)]
         exam_title = exam.title
         generated_at = utcnow().strftime('%d/%m/%Y %H:%M')
 
@@ -4501,7 +4492,7 @@ def get_exam_bilan_pdf(exam_id):
                 dur = round((a.submitted_at - a.started_at).total_seconds() / 60, 0)
             rows_data.append({
                 'name':    a.student.full_name if a.student else '—',
-                'status':  'Copie non affichée' if a.exam_seen_at is None else status_labels.get(sv, sv),
+                'status':  status_labels.get(sv, sv),
                 'score':   a.score,
                 'risk':    a.risk_score or 0,
                 'dur':     int(dur) if dur is not None else None,
@@ -4852,6 +4843,8 @@ def get_student_exam_history():
         ).filter_by(student_id=user_id).order_by(ExamAttempt.started_at.desc()).all()
         history = []
         for a in attempts:
+            if _never_seen(a):       # copie jamais affichée : l'examen n'a pas eu lieu pour cet étudiant
+                continue
             exam = a.exam
             dur  = int((a.submitted_at - a.started_at).total_seconds() / 60) if a.submitted_at and a.started_at else None
             # Retour #29 — même gate que get_student_online_results : note
@@ -5701,7 +5694,6 @@ def get_exams_history():
                 'end_time': exam.end_time.isoformat(),
                 'duration_minutes': exam.duration_minutes,
                 'total_attempts': len(attempts),
-                'not_reached_count': len(_all_att) - len(attempts),
                 'submitted_count': submitted_count,
                 'banned_count': banned_count,
                 'corrected_count': corrected_count,

@@ -66,14 +66,14 @@ try:
     ex = s.get(OnlineExam, ex.id)
     check('carte d\'examen : 4 participants', ex.to_dict()['attempts_count'] == 4, ex.to_dict()['attempts_count'])
     r = c.get(f'/api/online_exams/{ex.id}/stats', headers=H(adm)).get_json()
-    check('statistiques : 4 participants, 4 jamais affichées signalées à part', r['total'] == 4 and r['not_reached'] == 4, (r['total'], r.get('not_reached')))
+    check('statistiques : 4 participants (rien sur les tentatives jamais affichées)', r['total'] == 4 and 'not_reached' not in r, (r['total'], r.get('not_reached')))
     check('statistiques : la moyenne ne compte pas les 0/20 des copies jamais affichées', r['avg_score'] == 14.0 and r['submitted'] == 1, (r['avg_score'], r['submitted']))
     check('statistiques : « en cours » = ceux qui ont vu leur copie (pas ceux bloqués avant)', r['in_progress'] == 3, r['in_progress'])
     r = c.get(f'/api/online_exams/{ex.id}/attempts?limit=50', headers=H(adm)).get_json()
-    check('liste des copies : participants_count = 4, not_reached_count = 4', r['participants_count'] == 4 and r['not_reached_count'] == 4, (r['participants_count'], r['not_reached_count']))
-    check('liste des copies : TOUTES les tentatives restent visibles, marquées', r['total'] == 8 and sum(1 for a in r['attempts'] if a['exam_seen'] is False) == 4)
+    check('liste des copies : participants_count = 4, aucun compteur de « non affichées »', r['participants_count'] == 4 and 'not_reached_count' not in r, (r['participants_count'], r.get('not_reached_count')))
+    check('liste des copies : les tentatives jamais affichées n\'y figurent pas', r['total'] == 4 and all(a['exam_seen'] is True for a in r['attempts']), r['total'])
     r = c.get(f'/api/online_exams/{ex.id}/attempts?seen=0', headers=H(adm)).get_json()
-    check('filtre seen=0 : seulement les 4 jamais affichées', r['total'] == 4 and all(a['exam_seen'] is False for a in r['attempts']))
+    check('même avec l\'ancien filtre seen=0 : jamais de tentative jamais affichée', r['total'] == 4 and all(a['exam_seen'] is True for a in r['attempts']))
     r = c.get(f'/api/online_exams/{ex.id}/attempts?seen=1', headers=H(adm)).get_json()
     check('filtre seen=1 : seulement les 4 affichées', r['total'] == 4 and all(a['exam_seen'] is True for a in r['attempts']))
 
@@ -135,7 +135,12 @@ try:
     print('\n== Surveillance en direct ==')
     r = c.get(f'/api/online_exams/{ex.id}/active_proctoring', headers=H(adm)).get_json()
     rows = {x['attempt_id']: x for x in (r.get('students') or r.get('attempts') or [])} if isinstance(r, dict) else {}
-    check('liste live : exam_seen exposé (vu = true, jamais affiché = false)', rows.get(ids[0], {}).get('exam_seen') is True and rows.get(ids[1], {}).get('exam_seen') is False, list(r.keys()) if isinstance(r, dict) else r)
+    check('liste live : l\'étudiant qui a vu sa copie y est, celui qui ne l\'a jamais vue n\'y est pas', ids[0] in rows and ids[1] not in rows, list(r.keys()) if isinstance(r, dict) else r)
+
+    r = c.get('/api/student/exam-history', headers=H(studs[1])).get_json()
+    check('historique de l\'étudiant qui n\'a jamais vu sa copie : cet examen n\'y figure pas', all(h['exam_id'] != ex.id for h in r['history']), r)
+    r = c.get('/api/student/exam-history', headers=H(studs[0])).get_json()
+    check('historique de l\'étudiant qui a vu sa copie : l\'examen y figure', any(h['exam_id'] == ex.id for h in r['history']), r)
 
     print('\n== Clôture à l\'heure de fin : une copie jamais affichée est soumise SANS note ==')
     s.query(ExamAttempt).filter(ExamAttempt.id.in_([ids[1], ids[7]])).update({'status': AttemptStatus.IN_PROGRESS, 'submitted_at': None, 'score': None}, synchronize_session=False)

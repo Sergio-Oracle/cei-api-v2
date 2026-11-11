@@ -1029,6 +1029,10 @@ def get_active_proctoring(exam_id):
                 joinedload(ExamAttempt.student)
             ).filter_by(exam_id=exam_id).all()
 
+        # Une tentative dont la copie n'a jamais été affichée n'est pas une copie : elle n'est pas listée
+        from routes.exams import _never_seen
+        attempts = [a for a in attempts if not _never_seen(a)]
+
         # Lecture pure — l'affectation elle-même se fait au démarrage de la
         # tentative (routes/exams.py::start_exam_attempt →
         # services.proctor_service.assign_single_attempt), pas ici. Avant ce
@@ -1056,7 +1060,6 @@ def get_active_proctoring(exam_id):
                 'student_name': a.student.full_name if a.student else '?',
                 'student_email': a.student.email if a.student else '',
                 'status': a.status.value,
-                'exam_seen': a.exam_seen_at is not None,          # False = pas encore sa copie sous les yeux (en connexion)
                 'risk_score': a.risk_score or 0,
                 'warnings_count': a.warnings_count,
                 'tab_switches': a.tab_switches,
@@ -2092,20 +2095,15 @@ def get_surveillant_exams():
                     'status':        'not_started',
                     'risk_score':    0,
                 }
-                if pa.attempt:
-                    s_info['attempt_id']  = pa.attempt.id
-                    s_info['status']      = pa.attempt.status.value
-                    s_info['risk_score']  = pa.attempt.risk_score or 0
-                    s_info['exam_seen']   = pa.attempt.exam_seen_at is not None    # a eu sa copie sous les yeux
-                elif pa.student_id:
-                    attempt = session.query(ExamAttempt).filter_by(
-                        exam_id=ep.exam_id, student_id=pa.student_id
-                    ).first()
-                    if attempt:
-                        s_info['attempt_id'] = attempt.id
-                        s_info['status']     = attempt.status.value
-                        s_info['risk_score'] = attempt.risk_score or 0
-                        s_info['exam_seen']  = attempt.exam_seen_at is not None
+                from routes.exams import _never_seen
+                _att = pa.attempt
+                if _att is None and pa.student_id:
+                    _att = session.query(ExamAttempt).filter_by(
+                        exam_id=ep.exam_id, student_id=pa.student_id).first()
+                if _att is not None and not _never_seen(_att):      # copie jamais affichée = pas encore commencé
+                    s_info['attempt_id'] = _att.id
+                    s_info['status']     = _att.status.value
+                    s_info['risk_score'] = _att.risk_score or 0
                 students.append(s_info)
 
             d['my_students']      = students

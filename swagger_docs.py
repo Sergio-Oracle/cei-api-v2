@@ -2401,8 +2401,8 @@ OPENAPI_SPEC = {
         }},
         "/api/online_exams/{exam_id}/attempts": {"get": {
             "tags": ["Examens en ligne"], "summary": "Toutes les tentatives d'un examen (prof/admin)",
-            "description": "Réponse paginée `{attempts, total, page, limit, total_pages, needs_correction_count, participants_count, not_reached_count}`. `participants_count` = étudiants qui ont eu leur copie sous les yeux, `not_reached_count` = tentatives créées mais jamais affichées (caméra, micro, réseau…) ; chaque tentative porte `exam_seen`. Filtre `seen=1` / `seen=0`.",
-            "parameters": [{"name": "exam_id", "in": "path", "required": True, "schema": {"type": "integer"}}, {"name": "seen", "in": "query", "required": False, "schema": {"type": "string", "enum": ["0", "1"]}}],
+            "description": "Réponse paginée `{attempts, total, page, limit, total_pages, needs_correction_count, participants_count}`. Seules les copies réelles sont listées : une tentative jamais affichée à l'étudiant (et sans réponse) n'apparaît pas.",
+            "parameters": [{"name": "exam_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
             "responses": {"200": {"description": "Tentatives", "content": {"application/json": {"schema": {
                 "type": "array", "items": {"$ref": "#/components/schemas/ExamAttempt"}
             }}}}}
@@ -2579,12 +2579,9 @@ OPENAPI_SPEC = {
                 "historique, analytics, mails de clôture, rapport de sécurité et compteur « en cours » de la surveillance ne comptent que "
                 "les tentatives vues. Idempotent (le premier instant est conservé). Secours côté serveur : le heartbeat et la première "
                 "sauvegarde de réponses non vides renseignent aussi `exam_seen_at`. L'étudiant ne peut marquer que sa propre tentative. "
-                "Les tentatives jamais vues restent listées (`exam_seen: false`, filtre `?seen=0` sur /attempts, compteur `not_reached`) "
-                "et leurs notes éventuelles ne sont pas modifiées. "
-                "**Une tentative jamais affichée (aucune réponse) n'est pas une copie** : la correction automatique, la file de correction, "
-                "« Corriger » (400) et la clôture automatique ne lui attribuent AUCUNE note (jamais de 0/20) et ne la comptent pas « à "
-                "corriger » ; `POST /start` la laisse reprendre SANS code de reprise (et sans alerte « reprise » au surveillant) ; la "
-                "surveillance en direct (`/active_proctoring`, `my_students`) l'expose avec `exam_seen: false` (« en connexion », non comptée présente)."
+                "Une tentative jamais affichée (aucune réponse) n'est pas une copie : elle n'apparaît dans AUCUNE liste (tentatives, surveillance "
+                "en direct, `my_students`, export de présence, historique étudiant), n'est jamais corrigée ni notée (jamais de 0/20), n'est pas comptée « à "
+                "corriger » ; `POST /start` la laisse reprendre SANS code de reprise ni alerte au surveillant."
             ),
             "parameters": [{"name": "attempt_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
             "responses": {"200": {"description": "Enregistré", "content": {"application/json": {"schema": {"type": "object", "properties": {

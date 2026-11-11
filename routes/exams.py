@@ -1098,12 +1098,6 @@ def start_exam_attempt(exam_id):
             # pendant toute la fenêtre de l'examen. Le surveillant/superviseur
             # assigné est notifié à chaque reprise pour pouvoir rappeler
             # l'étudiant après coup si besoin — voir _notify_resume ci-dessous.
-            if _never_seen(existing):
-                # Il n'a jamais vu l'examen (bloqué avant la copie : caméra, micro, réseau…) : aucune triche possible, donc aucun code
-                # de reprise ni alerte « reprise » au surveillant — il reprend simplement là où il en était.
-                attempt_dict = existing.to_dict()
-                session.close()
-                return jsonify({'success': True, 'attempt': attempt_dict, 'continuing': True})
             now_utc = datetime.utcnow()
             body = request.get_json(silent=True) or {}
             access_code = (body.get('access_code') or '').strip()

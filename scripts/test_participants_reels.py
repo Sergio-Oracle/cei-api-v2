@@ -125,10 +125,10 @@ try:
     check('… et reste « à corriger » (jamais exclue à tort)', r['needs_correction_count'] == 1, r['needs_correction_count'])
     s.query(ExamAttempt).filter(ExamAttempt.id == ids[4]).update({'exam_seen_at': datetime.utcnow()}, synchronize_session=False); s.commit()
 
-    print('\n== Reprise : jamais vu = aucun code ; déjà vu = code de reprise comme avant ==')
+    print('\n== Reprise : comme avant, le code de reprise est exigé (jamais vu ou déjà vu) ==')
     s.query(ExamAttempt).filter(ExamAttempt.id.in_([ids[1], ids[0]])).update({'status': AttemptStatus.IN_PROGRESS, 'submitted_at': None}, synchronize_session=False); s.commit()
     r = c.post(f'/api/online_exams/{ex.id}/start', json={}, headers=H(studs[1]))
-    check('étudiant qui n\'a jamais vu sa copie : il rentre sans code de reprise', r.status_code == 200 and r.get_json().get('continuing') is True and not r.get_json().get('code_required'), (r.status_code, r.get_json()))
+    check('étudiant qui n\'a jamais vu sa copie : le code de reprise reste exigé (comportement d\'origine)', r.status_code == 403 and r.get_json().get('code_required') is True, (r.status_code, r.get_json()))
     r = c.post(f'/api/online_exams/{ex.id}/start', json={}, headers=H(studs[0]))
     check('étudiant qui a déjà vu sa copie : le code de reprise reste exigé', r.status_code == 403 and r.get_json().get('code_required') is True, (r.status_code, r.get_json()))
 

@@ -201,3 +201,59 @@ def delete_exam_waves(exam_id):
         return jsonify({'success': True, **W.summary(session, exam)})
     finally:
         session.close()
+
+
+@exam_waves_bp.route('/api/online_exams/<int:exam_id>/makeup/candidates', methods=['GET'])
+@paseto_required
+def makeup_candidates(exam_id):
+    """Étudiants inscrits qui n'ont aucune copie (jamais entrés, sans moyens, bloqués avant les questions) : ils peuvent passer le
+    rattrapage. Paramètres : search, limit (≤ 500), offset."""
+    from services import exam_makeup as M
+    session = get_session()
+    try:
+        exam, _, err = _load(session, exam_id)
+        if err:
+            return err
+        limit = request.args.get('limit', 200, type=int)
+        offset = request.args.get('offset', 0, type=int)
+        return jsonify(M.candidates(session, exam, request.args.get('search') or '', limit, offset))
+    finally:
+        session.close()
+
+
+@exam_waves_bp.route('/api/online_exams/<int:exam_id>/makeup', methods=['POST'])
+@paseto_required
+def schedule_exam_makeup(exam_id):
+    """Organise le rattrapage. Corps : {student_ids: [..], start_time (ISO), end_time (ISO), name?}.
+    Les étudiants choisis composent le même sujet sur ce créneau ; les autres ne sont pas touchés."""
+    from services import exam_makeup as M
+    session = get_session()
+    try:
+        exam, _, err = _load(session, exam_id)
+        if err:
+            return err
+        data = request.get_json(silent=True) or {}
+        try:
+            start = _parse_utc_naive(data.get('start_time'))
+            end = _parse_utc_naive(data.get('end_time'))
+        except (TypeError, ValueError):
+            return jsonify({'error': "Début et fin du rattrapage requis."}), 400
+        try:
+            out = M.schedule_makeup(session, exam, data.get('student_ids') or [], start, end, data.get('name'))
+        except W.WaveError as e:
+            session.rollback()
+            return jsonify({'error': str(e)}), 400
+        session.commit()
+        _rebalance_proctors(session, exam)
+        try:
+            from services.moodle_calendar import schedule_sync
+            schedule_sync(exam.id)
+        except Exception:
+            pass
+        return jsonify({'success': True, **out}), 201
+    except Exception as e:
+        session.rollback()
+        print(f"Erreur schedule_exam_makeup: {e}")
+        return jsonify({'error': str(e)}), 500
+    finally:
+        session.close()

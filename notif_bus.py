@@ -51,10 +51,19 @@ _HIST_TTL = 30 * 24 * 3600  # 30 jours
 _executor = ThreadPoolExecutor(max_workers=16, thread_name_prefix='notif_bus')
 
 # Pool dédié aux écritures (opérations courtes, max 5 connexions)
-_pool = _redis.ConnectionPool.from_url(
+# Le pool est volontairement petit : chaque processus Gunicorn possède le
+# sien et une multiplication du plafond par tous les workers épuiserait Redis.
+# En revanche, un ConnectionPool ordinaire lève immédiatement « Too many
+# connections » quand les 16 tâches du bus se réveillent ensemble (notamment
+# à la publication de centaines de résultats) et la notification est perdue.
+# Le pool bloquant met les tâches excédentaires en attente quelques secondes :
+# elles sont courtes et l'événement reste livré, sans augmenter le nombre de
+# connexions simultanées à Redis.
+_pool = _redis.BlockingConnectionPool.from_url(
     _REDIS_URL,
     decode_responses=True,
     max_connections=5,
+    timeout=5,
     socket_connect_timeout=1,
 )
 
@@ -103,6 +112,69 @@ def _enqueue_many(user_ids, payload: dict) -> None:
         p.execute()
     except Exception as exc:
         _log.warning('Redis enqueue_many failed: %s', exc)
+
+
+# Une publication de résultats peut concerner 1 500 étudiants, avec un message
+# différent par note. Il ne faut alors ni créer 1 500 tâches, ni tenter de les
+# faire passer simultanément dans les cinq connexions Redis du processus.
+# Les écritures sont regroupées en petites transactions non atomiques : chaque
+# lot correspond à des clés d'utilisateurs distinctes et peut être rejoué sans
+# altérer une note ou une copie.
+_PERSONAL_BATCH_SIZE = 200
+_PERSONAL_BATCH_RETRIES = 3
+
+
+def _enqueue_personal_batch(events: list[tuple[int, dict]]) -> None:
+    """Ajoute des notifications personnalisées en lots bornés.
+
+    `events` contient ``(user_id, payload)``. Cette primitive est utilisée
+    pour les publications de résultats, où le message varie d'un étudiant à
+    l'autre. Elle reste interne afin que les appelants ordinaires continuent
+    d'employer :func:`notify_user`.
+    """
+    if not events:
+        return
+    for start in range(0, len(events), _PERSONAL_BATCH_SIZE):
+        batch = events[start:start + _PERSONAL_BATCH_SIZE]
+        for attempt in range(_PERSONAL_BATCH_RETRIES):
+            try:
+                pipe = _get_redis().pipeline(transaction=False)
+                for user_id, payload in batch:
+                    key = f'cei:notif:user:{user_id}'
+                    hkey = f'cei:notif:history:{user_id}'
+                    data = json.dumps(payload)
+                    pipe.rpush(key, data)
+                    pipe.ltrim(key, -_QUEUE_MAX, -1)
+                    pipe.expire(key, _QUEUE_TTL)
+                    pipe.rpush(hkey, data)
+                    pipe.ltrim(hkey, -_HIST_MAX, -1)
+                    pipe.expire(hkey, _HIST_TTL)
+                pipe.execute()
+                break
+            except Exception as exc:
+                if attempt + 1 == _PERSONAL_BATCH_RETRIES:
+                    _log.warning('Redis personal batch failed (%s event(s)): %s', len(batch), exc)
+                else:
+                    time.sleep(0.1 * (attempt + 1))
+
+
+def notify_users(events) -> None:
+    """Programme des notifications personnalisées sans saturer Redis.
+
+    Chaque élément est ``(user_id, event_type, title, message)``. Les
+    priorités et tags ne changent pas la file Redis actuelle, donc ils ne sont
+    volontairement pas exposés ici. L'appel est non bloquant, comme
+    :func:`notify_user`.
+    """
+    payloads = []
+    for event in events or ():
+        try:
+            user_id, event_type, title, message = event
+            payloads.append((int(user_id), _payload(event_type, title, message)))
+        except (TypeError, ValueError):
+            _log.warning('notification personnalisée ignorée : format invalide')
+    if payloads:
+        _executor.submit(_enqueue_personal_batch, payloads)
 
 
 def _payload(event_type: str, title: str, message: str, extra: dict | None = None) -> dict:

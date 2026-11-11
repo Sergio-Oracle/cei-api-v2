@@ -4483,7 +4483,7 @@ OPENAPI_SPEC = {
         }},
         "/api/exam_attempts/{attempt_id}/manual-grade": {"put": {
             "tags": ["Examens en ligne"], "summary": "Note manuelle GLOBALE d'une tentative (prof/admin) — écrase la correction IA",
-            "description": "Remplace intégralement la note et le feedback, que la copie ait été corrigée par l'IA ou non. Vide `question_scores` (voir /question-grades) : une note globale rend le détail par question obsolète, il est donc effacé plutôt que laissé silencieusement incohérent.",
+            "description": "Remplace intégralement la note et le feedback, que la copie ait été corrigée par l'IA ou non. Vide `question_scores` (voir /question-grades) : une note globale rend le détail par question obsolète, il est donc effacé plutôt que laissé silencieusement incohérent. **Résultats déjà publiés** : si la note change réellement (écart ≥ 0,01), l'étudiant reçoit un avis (cloche + e-mail « ancienne → nouvelle note ») envoyé 30 s après la dernière modification — plusieurs ajustements de suite donnent un seul avis, la même note n'est jamais annoncée deux fois, rien n'est envoyé avant la publication. Même comportement pour /question-grades, la correction IA d'une copie, l'import de notes et le recalcul de notes.",
             "parameters": [{"name": "attempt_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
             "requestBody": {"required": True, "content": {"application/json": {"schema": {
                 "type": "object", "required": ["score"],

@@ -85,8 +85,10 @@ def recompute(session, exam_id: int, apply: bool = False, backup_dir=None) -> di
             json.dump(backup, f, ensure_ascii=False)
         report['backup'] = path
         now = datetime.utcnow()
+        changed_notes = []
         for a, new, breakdown, entries, has_ai in todo:
             old_score = a.score
+            changed_notes.append((a.id, old_score))
             if has_ai and a.feedback and _FINAL_LINE.search(a.feedback):
                 a.feedback = _FINAL_LINE.sub(f"Note totale: {new:.2f}/20", a.feedback)       # le retour de l'IA est conservé
             else:
@@ -101,4 +103,6 @@ def recompute(session, exam_id: int, apply: bool = False, backup_dir=None) -> di
                  'reason': "total de points aligné sur les questions posées, points comptés deux fois retirés"})))
         session.commit()
         R._push_grades_if_published(exam)
+        for _aid, _old in changed_notes:                       # résultats déjà publiés : chaque étudiant concerné est averti
+            R._notify_grade_change(exam, _aid, _old)
     return report

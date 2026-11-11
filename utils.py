@@ -964,6 +964,83 @@ Vous avez 7 jours pour déposer une réclamation via l'application.
 """
     return send_email(student_email, subject, html_body, attachments, text_body=text_body)
 
+
+def send_grade_updated_email(student_email, student_name, subject_title, old_score, new_score, paper_id):
+    """Email envoyé quand une note DÉJÀ PUBLIÉE change : ancienne et nouvelle note, pour que l'étudiant ne croie pas
+    à une erreur (cas réel : « 5/20 par e-mail, 7,75 sur le site »). `old_score` peut être None (copie corrigée
+    après la publication)."""
+    import html as _html
+    smtp_cfg  = _smtp_config()
+    app_url   = smtp_cfg['app_url']
+    from_name = smtp_cfg.get('from_name', "CEI — Centre d'Examen Intelligent")
+
+    def _f(x):
+        return f"{float(x):.2f}".rstrip('0').rstrip('.').replace('.', ',')
+
+    title_h, name_h = _html.escape(str(subject_title)), _html.escape(str(student_name or ''))
+    new_txt = _f(new_score)
+    if old_score is None:
+        subject = f"Votre copie ({subject_title}) a été corrigée"
+        intro = f"Votre copie pour <strong>{title_h}</strong> vient d'être corrigée."
+        intro_txt = f"Votre copie pour {subject_title} vient d'être corrigée."
+        before_html = ''
+        before_txt = ''
+    else:
+        subject = f"Votre note ({subject_title}) a été mise à jour"
+        intro = (f"La note de votre copie pour <strong>{title_h}</strong> a été mise à jour par l'enseignant. "
+                 f"<strong>Cette note remplace celle que vous avez reçue précédemment.</strong>")
+        intro_txt = (f"La note de votre copie pour {subject_title} a été mise à jour par l'enseignant. "
+                     f"Cette note remplace celle que vous avez reçue précédemment.")
+        before_html = (f'<p style="font-size:14px;color:#64748b;margin:0 0 6px;">Ancienne note : '
+                       f'<span style="text-decoration:line-through;">{_f(old_score)}/20</span></p>')
+        before_txt = f"Ancienne note : {_f(old_score)}/20\n"
+    ok = float(new_score) >= 10
+    color, bg, border = ('#16a34a', '#f0fdf4', '#bbf7d0') if ok else ('#dc2626', '#fef2f2', '#fecaca')
+
+    html_body = f"""<!DOCTYPE html>
+<html lang="fr"><head><meta charset="UTF-8"></head>
+<body style="font-family:Arial,Helvetica,sans-serif;background:#f8fafc;margin:0;padding:24px;">
+<div style="max-width:520px;margin:0 auto;background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,0.08);">
+  <div style="background:#1d4ed8;padding:30px 36px;text-align:center;">
+    <h1 style="color:#fff;font-size:21px;font-weight:800;margin:0 0 6px;">Note mise à jour</h1>
+    <p style="color:rgba(255,255,255,.88);font-size:14px;margin:0;">{title_h}</p>
+  </div>
+  <div style="padding:34px 36px;">
+    <p style="font-size:15px;color:#0f172a;margin:0 0 18px;">Bonjour <strong>{name_h}</strong>,</p>
+    <p style="font-size:14px;color:#475569;line-height:1.7;margin:0 0 24px;">{intro}</p>
+    <div style="background:{bg};border:2px solid {border};border-radius:12px;padding:24px;text-align:center;margin-bottom:26px;">
+      {before_html}
+      <p style="font-size:13px;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:.06em;margin:0 0 10px;">Votre note</p>
+      <p style="font-size:48px;font-weight:900;color:{color};margin:0;line-height:1;">{new_txt}<span style="font-size:24px;font-weight:600;">/20</span></p>
+    </div>
+    <div style="text-align:center;margin-bottom:6px;">
+      <a href="{app_url}/login" style="display:inline-block;padding:13px 32px;background:#2563eb;color:#fff;text-decoration:none;border-radius:9px;font-size:15px;font-weight:700;">
+        Consulter le détail de ma copie
+      </a>
+    </div>
+  </div>
+  <div style="background:#f8fafc;border-top:1px solid #e2e8f0;padding:16px 36px;text-align:center;">
+    <p style="margin:0;font-size:12px;color:#94a3b8;">{from_name} &nbsp;·&nbsp; <a href="{app_url}" style="color:#94a3b8;">{app_url}</a></p>
+  </div>
+</div>
+</body></html>"""
+
+    text_body = f"""Note mise à jour — {subject_title}
+
+Bonjour {student_name or ''},
+
+{intro_txt}
+
+{before_txt}Votre note : {new_txt}/20
+
+Consultez le détail de votre copie : {app_url}/login
+
+---
+{from_name}
+{app_url}
+"""
+    return send_email(student_email, subject, html_body, None, text_body=text_body)
+
 # ============================================================================
 # VALIDATION DE FICHIERS
 # ============================================================================

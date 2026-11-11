@@ -94,6 +94,22 @@ if jb:
 else:
     check("lecteur navigateur exécutable (node + typescript)", False, "node ou typescript introuvable")
 
+# Champs à compléter : le titre ne doit pas être collé au texte à trous (capture d'aperçu du 11/11)
+cloze = ("Question 1 — Champs dans un texte ............. (1 pts) [CLOZE]\nLa capitale est {1}, le pays compte {2} régions.\n- 1 COURT\n- 2 NUM\n\n"
+         "Question 2 — La capitale du pays est\n(1 pts) [CLOZE]\n")
+cloze_old = "Question 1 — La capitale du Sénégal est [CLOZE]\n{1} et le pays compte {2} régions.\n- 1 COURT\n- 2 NUM\n"
+sc = [b for b in R._parse_subject_blocks_ordered(cloze) if b['type'] not in ('section', 'text')]
+check("serveur : champs à compléter — le titre reste le titre (« Champs dans un texte (1 pts) »)", sc[0]['text'] == 'Champs dans un texte (1 pts)', sc[0]['text'])
+sco = [b for b in R._parse_subject_blocks_ordered(cloze_old) if b['type'] not in ('section', 'text')]
+check("serveur : ancien format (texte coupé sans points) — la suite reste jointe", '{1}' in sco[0]['text'] and 'capitale' in sco[0]['text'], sco[0]['text'])
+jc = js_blocks([cloze, cloze_old])
+if jc:
+    a = [b for b in jc[0] if b['type'] not in ('section', 'text')][0]; o = [b for b in jc[1] if b['type'] not in ('section', 'text')][0]
+    check("navigateur : titre « Champs dans un texte (1 pts) » et texte à trous dans les lignes suivantes", a['text'] == 'Champs dans un texte (1 pts)' and any('{1}' in l for l in a.get('extraLines', [])), (a['text'], a.get('extraLines')))
+    check("navigateur = serveur : ancien format identique", o['text'] == sco[0]['text'], (o['text'], sco[0]['text']))
+else:
+    check("lecteur navigateur exécutable (cloze)", False, "node ou typescript introuvable")
+
 c = A.app.test_client()
 def H(u): return {'Authorization': 'Bearer ' + create_access_token(u.id, u.role.value, u.email)}
 s = get_session(); tag = uuid.uuid4().hex[:6]; made = {'users': [], 'ex': [], 'sub': []}

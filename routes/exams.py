@@ -670,7 +670,7 @@ def edit_online_exam(exam_id):
                 session.close()
                 return jsonify({'error': str(_pe), 'field': 'subject_id'}), 403
             from services.subject_check import analyze as _sa
-            _chk = _sa(new_subject.content or '')
+            _chk = _sa(new_subject.content or '', new_subject.rubric)
             if not _chk['ok'] and not data.get('force'):
                 session.close()
                 return jsonify({'error': 'Le sujet contient des problèmes de lecture : ' + ' | '.join(i['message'] for i in _chk['issues'] if i['level'] == 'error'),
@@ -2095,6 +2095,11 @@ def _parse_subject_blocks_ordered(raw: str) -> list:
                     i += 1
                     continue
                 if q['markerType'] == 'CLOZE' and not g_items and not g_grid and not choices and not C_RE.match(strip(lines[i])):
+                    if re.search(r'\(\s*\d+(?:[.,]\d+)?\s*pts?\s*\)\s*$', q['text'], re.I):
+                        # Titre complet (« Titre court (2 pts) ») : le texte à trous qui suit est le corps de la question, pas la suite du titre
+                        extra_lines.append(lines[i])
+                        i += 1
+                        continue
                     # Suite du texte à trous coupée par un retour à la ligne (« … le \n (I) et le {1} ») : elle n'est pas une proposition
                     q['text'] = (q['text'] + ' ' + strip(lines[i])).strip()
                     i += 1
@@ -2388,6 +2393,17 @@ def _push_grades_if_published(exam):
         if exam is not None and exam.results_published:
             from services.lti import schedule_push
             schedule_push(exam.id, delay=15)
+    except Exception:
+        pass
+
+
+def _notify_grade_change(exam, attempt_id, old_score):
+    """Une note modifiée APRÈS la publication : l'étudiant en est averti (cloche + e-mail, ancienne → nouvelle note),
+    un seul avis même si le professeur ajuste la copie plusieurs fois de suite. Sans effet avant la publication."""
+    try:
+        if exam is not None and exam.results_published:
+            from services.grade_change_notice import schedule
+            schedule(attempt_id, old_score, True)
     except Exception:
         pass
 
@@ -2801,6 +2817,32 @@ def _course_reference(subject) -> str:
 
 
 def _run_auto_correction(attempt_id: int, notify_failure: bool = True):
+    """Correction automatique d'une copie. Si les résultats de l'examen sont DÉJÀ publiés (vague tardive, copie rendue
+    après la publication), l'étudiant est averti de sa note ; avant la publication, aucun effet."""
+    _old, _pub = None, False
+    try:
+        _s = get_session()
+        try:
+            _row = _s.query(ExamAttempt.score, OnlineExam.results_published).join(
+                OnlineExam, OnlineExam.id == ExamAttempt.exam_id).filter(ExamAttempt.id == attempt_id).first()
+            if _row:
+                _old, _pub = _row[0], bool(_row[1])
+        finally:
+            _s.close()
+    except Exception:
+        pass
+    try:
+        return _run_auto_correction_core(attempt_id, notify_failure)
+    finally:
+        if _pub:
+            try:
+                from services.grade_change_notice import schedule
+                schedule(attempt_id, _old, True)
+            except Exception:
+                pass
+
+
+def _run_auto_correction_core(attempt_id: int, notify_failure: bool = True):
     """Correction IA automatique dans un thread séparé (session DB indépendante).
     `notify_failure=False` : le service de correction (correction_worker) réessaie lui-même et ne prévient
     l'enseignant qu'après le dernier essai."""
@@ -3476,6 +3518,7 @@ def correct_exam_attempt(attempt_id):
             session.close()
             return jsonify({'error': 'Vous ne pouvez corriger que vos propres examens'}), 403
 
+        _old_score = attempt.score
         try:
             score = _run_ai_correction(attempt, corrected_by_id=user_id)
         except ValueError as ve:
@@ -3484,6 +3527,7 @@ def correct_exam_attempt(attempt_id):
 
         session.commit()
         _push_grades_if_published(attempt.exam)
+        _notify_grade_change(attempt.exam, attempt.id, _old_score)
 
         # Pas d'email ici : la note reste masquée à l'étudiant tant que le
         # professeur n'a pas explicitement publié les résultats (voir
@@ -3995,6 +4039,7 @@ def import_exam_grades(exam_id):
             return jsonify({'error': "Colonnes requises: 'email' et 'note'"}), 400
 
         imported, updated, errors = [], [], []
+        _imp_old = []
         for idx, row in df.iterrows():
             line = idx + 2
             email = str(row[email_col]).strip().lower() if pd.notna(row[email_col]) else ''
@@ -4017,6 +4062,7 @@ def import_exam_grades(exam_id):
 
             attempt = session.query(ExamAttempt).filter_by(exam_id=exam_id, student_id=student.id).first()
             if attempt:
+                _imp_old.append((attempt.id, attempt.score))
                 attempt.score = score
                 attempt.corrected_at = utcnow()
                 attempt.corrected_by_id = user_id
@@ -4041,6 +4087,8 @@ def import_exam_grades(exam_id):
         session.commit()
         try:
             _push_grades_if_published(session.get(OnlineExam, exam_id))
+            for _aid, _old in _imp_old:                        # résultats déjà publiés : l'étudiant est averti du changement
+                _notify_grade_change(session.get(OnlineExam, exam_id), _aid, _old)
         except Exception:
             pass
         session.close()
@@ -4146,12 +4194,14 @@ def publish_exam_results(exam_id):
         # l'envoi réel des emails continue derrière.
         def _send_publish_notifications(notify_list, email_list, exam_id):
             try:
-                from notif_bus import notify_user
-                for sid, message in notify_list:
-                    try:
-                        notify_user(sid, 'correction_done', 'Copie corrigée', message, priority='high', tags=['white_check_mark'])
-                    except Exception as _nb_err:
-                        print(f"notif_bus publish exam {exam_id} notify {sid}: {_nb_err}")
+                # Une publication de promotion (ex. 1 499 étudiants) ne doit
+                # pas soumettre une tâche Redis par étudiant : le pool dédié
+                # est volontairement petit et les notifications pouvaient être
+                # perdues sous la rafale. Le bus groupe maintenant les messages
+                # personnalisés, sans retarder la réponse HTTP de publication.
+                from notif_bus import notify_users
+                notify_users((sid, 'correction_done', 'Copie corrigée', message)
+                             for sid, message in notify_list)
             except Exception:
                 pass
             for email, name, subj, score, pid in email_list:
@@ -4587,6 +4637,7 @@ def manual_grade_attempt(attempt_id):
         if not (0 <= score <= 20):
             session.close()
             return jsonify({'error': 'Note doit être entre 0 et 20'}), 400
+        _old_score = attempt.score
         attempt.score          = score
         attempt.feedback       = feedback
         # Une note globale écrase la correction dans son ensemble — le détail
@@ -4598,6 +4649,7 @@ def manual_grade_attempt(attempt_id):
         attempt.corrected_by_id = user_id
         session.commit()
         _push_grades_if_published(attempt.exam)
+        _notify_grade_change(attempt.exam, attempt.id, _old_score)
         student_email = attempt.student.email if attempt.student else None
         attempt_id_copy = attempt.id
         session.close()
@@ -4673,6 +4725,7 @@ def update_question_grades(attempt_id):
             lines.append(f"Question {q.get('num')} : {q.get('score', 0):.2f}/{q.get('max', 0):.2f} pt" + (f"\n{fb}" if fb else ""))
         result_text = "\n\n".join(lines) + f"\n\nNote totale: {new_score:.2f}/20"
 
+        _old_score              = attempt.score
         attempt.question_scores = json.dumps(updated)
         attempt.score           = new_score
         attempt.feedback        = result_text
@@ -4680,6 +4733,7 @@ def update_question_grades(attempt_id):
         attempt.corrected_by_id = user_id
         session.commit()
         _push_grades_if_published(attempt.exam)
+        _notify_grade_change(attempt.exam, attempt.id, _old_score)
         result = {'success': True, 'score': new_score, 'question_scores': updated, 'feedback': result_text}
         session.close()
         return jsonify(result)

@@ -68,9 +68,11 @@ def _manual(attempt_id: int, by_id: int) -> None:
                                          joinedload(ExamAttempt.student)).filter_by(id=attempt_id).first()
         if a is None or a.status not in SUBMITTED:
             return
+        old_score = a.score
         R._run_ai_correction(a, corrected_by_id=by_id)
         s.commit()
         R._push_grades_if_published(a.exam)
+        R._notify_grade_change(a.exam, a.id, old_score)       # note publiée qui change : l'étudiant en est averti
     finally:
         s.close()
 

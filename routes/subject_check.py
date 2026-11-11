@@ -23,7 +23,7 @@ def exam_subject_check(exam_id):
             return jsonify({'error': 'Accès non autorisé'}), 403
         if user.role == UserRole.PROFESSOR and not can_view_exam(session, exam, user.id):
             return jsonify({'error': 'Accès non autorisé'}), 403
-        return jsonify(analyze(exam.subject.content if exam.subject else ''))
+        return jsonify(analyze(exam.subject.content if exam.subject else '', exam.subject.rubric if exam.subject else None))
     finally:
         session.close()
 

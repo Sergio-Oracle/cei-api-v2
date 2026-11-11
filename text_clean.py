@@ -22,6 +22,17 @@ def clean_ai_feedback(text):
 _FIRST_BLOCK = re.compile(r'(?m)^[ \t]*#{1,6}[ \t]*Question[ \t]+\d')
 
 
+_GLUED_HEAD = re.compile(r'(?<=\S)[ \t]+(#{1,6}[ \t]*Question[ \t]+\d{1,3}[ \t]*\n[ \t]*Points\s*:)')
+
+
+def unglue_ai_headers(text):
+    """« Voici la correction : ### Question 41\\nPoints : 1.50/2.50 » → l'en-tête repasse en début de ligne. Collé à une phrase,
+    il n'était plus reconnu comme bloc : les points de la question étaient perdus sans aucune erreur (la note baissait)."""
+    if not text or not isinstance(text, str):
+        return text
+    return _GLUED_HEAD.sub(r'\n\1', text)
+
+
 def strip_ai_preamble(text):
     """La consigne interdit tout texte avant le premier bloc « ### Question N » ; certains modèles y écrivent quand même
     leur raisonnement (« Regardons le JSON fourni… », « Le format demande… »), qui se retrouvait dans le retour affiché à
@@ -29,6 +40,7 @@ def strip_ai_preamble(text):
     reconnu, le texte est laissé tel quel (jamais de perte silencieuse d'un retour au format inattendu)."""
     if not text or not isinstance(text, str):
         return text
+    text = unglue_ai_headers(text)
     m = _FIRST_BLOCK.search(text)
     return text[m.start():] if m and m.start() > 0 else text
 

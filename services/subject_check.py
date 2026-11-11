@@ -15,7 +15,7 @@ _MARKER_RE = re.compile(r'\[(QCM_MULTI|QCM|VF|OUVERT|SUBOPEN|APPARIEMENT|CODE|AS
 _QUESTION_WORD_RE = re.compile(r'^\s*(?:Question|Q)\.?\s*\d+', re.I | re.M)
 
 
-def analyze(content: str) -> dict:
+def analyze(content: str, rubric: str = None) -> dict:
     from routes.exams import _parse_subject_blocks_ordered   # import tardif : évite le cycle routes ↔ services
     content = content or ''
     issues = []
@@ -75,7 +75,11 @@ def analyze(content: str) -> dict:
     if nums:
         dup = sorted({n for n in nums if nums.count(n) > 1}, key=lambda x: int(x) if str(x).isdigit() else 0)
         if dup:
-            issues.append({'level': 'warn', 'message': f"Numéro(s) de question en double : {', '.join(map(str, dup))}."})
+            # Les réponses sont rangées par numéro (pq_<n>) : deux questions de même numéro s'écrasent, et la notation
+            # lit une question de moins que l'affichage (sujet 102 : 30 notées pour 37 affichées).
+            issues.append({'level': 'error', 'message':
+                f"Numéro(s) de question en double : {', '.join(map(str, dup))} — deux questions de même numéro "
+                "partageraient la même réponse. Renumérotez-les de 1 à N sans répétition."})
         try:
             ints = sorted({int(n) for n in nums})
             missing = [i for i in range(ints[0], ints[-1] + 1) if i not in ints]
@@ -85,6 +89,12 @@ def analyze(content: str) -> dict:
         except ValueError:
             pass
 
+    if rubric is not None and (rubric or '').strip():
+        try:
+            issues += _rubric_issues(content, rubric, blocks)
+        except Exception as e:                   # le contrôle du barème ne doit jamais empêcher l'examen
+            _log.warning('contrôle du barème indisponible: %s', e)
+
     try:
         from services.subject_coverage import coverage_issues
         issues += coverage_issues(content)
@@ -93,6 +103,29 @@ def analyze(content: str) -> dict:
 
     ok = not any(i['level'] == 'error' for i in issues)
     return {'ok': ok, 'questions': len(blocks), 'by_type': by_type, 'issues': issues}
+
+
+def _rubric_issues(content: str, rubric: str, blocks: list) -> list:
+    """Barème d'un sujet enregistré : ce que le contrôle de l'éditeur (rubric_check) vérifie déjà (bonne réponse absente ou hors
+    propositions, points absents, total différent), plus le modèle de format laissé tel quel et le total ≠ 20 (note ramenée sur 20)."""
+    from routes.exams import _question_points_map
+    from services.generation_check import rubric_issues
+    from services.rubric_check import grading_report
+    issues = []
+    for num, msg in rubric_issues(content, rubric):
+        issues.append({'level': 'error', 'message': f"Question {num} : {msg} — la correction automatique ne pourra pas la noter."})
+    seen = {i['message'] for i in issues}
+    for i in grading_report(content, rubric)['issues']:
+        if i['message'] not in seen and not (i['level'] == 'warn' and 'ne correspond pas à la somme' in i['message']):
+            issues.append({'level': i['level'], 'message': i['message']})
+    points = _question_points_map(content, rubric)
+    posed = {str(b.get('num')) for b in blocks if b.get('num')}
+    total = round(sum(v for n, v in points.items() if n in posed), 2)
+    if points and abs(total - 20) > 0.01:
+        issues.append({'level': 'warn', 'message':
+            f"Les questions posées totalisent {total:g} points, pas 20 : la note affichée sera ramenée sur 20 "
+            f"({total:g} points = 20/20). Ajustez les points si ce n'est pas voulu."})
+    return issues
 
 
 def alert_if_unreadable(exam, pages: dict) -> None:

@@ -1867,6 +1867,15 @@ OPENAPI_SPEC = {
                            {"name": "seed", "in": "query", "schema": {"type": "integer"}}],
             "responses": {"200": {"description": "Examen + subject_content + preview {seed, pages} + subject_edit {subject_id, can_edit, reason, validated_at, validated_by}"}, "403": {"description": "Non autorisé"}}
         }},
+        "/api/online_exams/{exam_id}/subject_check": {"get": {
+            "tags": ["Examens en ligne"], "summary": "Contrôle de lisibilité et de barème du sujet d'un examen (enseignant, admin)",
+            "description": "Ce que les étudiants verraient et ce que la correction fera : questions reconnues par type, lignes jamais affichées, numéros de question en double (erreur : deux réponses s'écraseraient), "
+                           "et, pour le barème : modèle de format laissé tel quel (« [justification courte] »), QCM sans bonne réponse ou dont la lettre n'est pas parmi les propositions, "
+                           "questions du barème absentes du sujet, et total des points posés ≠ 20 (la note est alors ramenée sur 20). `ok` est faux s'il existe une erreur ; "
+                           "l'activation de l'examen exige alors une confirmation (`force`).",
+            "parameters": [{"name": "exam_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+            "responses": {"200": {"description": "{ok, questions, by_type, issues: [{level: error|warn, message}]}"}, "403": {"description": "Accès non autorisé"}, "404": {"description": "Examen non trouvé"}}
+        }},
         "/api/online_exams/{exam_id}/subject_validation": {"post": {
             "tags": ["Examens en ligne"], "summary": "Valider (ou retirer la validation de) l'affichage du sujet après « Prévisualiser »",
             "description": "L'enseignant confirme que ce que voient les étudiants correspond à son sujet. La validation est remise à zéro dès que le texte du sujet est modifié (PUT /api/subjects/{id}). Même droits que /preview.",
@@ -3696,6 +3705,9 @@ OPENAPI_SPEC = {
                 "des trois niveaux (Facile/Moyen/Difficile) — chaque titre de question porte un second marqueur juste après son marqueur de "
                 "type, ex. `[QCM] [Difficile]`, visible dans `content` pour l'enseignant mais retiré automatiquement de l'affichage étudiant "
                 "côté frontend (comme les marqueurs [QCM]/[VF]/[OUVERT]). "
+                "**Contrôle de chaque question générée** : une question sans propositions, sans bonne réponse lisible dans le barème, ou dont le barème est resté "
+                "le modèle de format (« Bonne réponse : X) — [justification courte] ») est refaite seule (jusqu'à 2 fois) ; si elle reste défectueuse, la réponse "
+                "porte `type_warnings` : [\"Question 5 : moins de 2 propositions … Corrigez-la dans la prévisualisation avant d'enregistrer.\"] — jamais de clé de réponse inventée en silence. "
                 "`suggestion.total_points` (défaut 20) et `suggestion.points_by_type` (Retour Atelier CEI 7/08 — barème choisi par "
                 "l'enseignant, plus jamais réparti également par l'IA) remplacent le total fixe à 20 points d'origine : si plusieurs types de "
                 "questions sont sélectionnés, `points_by_type` (ex. `{\"qcm\": 8, \"open\": 12}`) impose le nombre de points de CHAQUE partie ; "

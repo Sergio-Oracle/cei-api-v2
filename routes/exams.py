@@ -395,7 +395,7 @@ def activate_online_exam(exam_id):
         # Contrôle du sujet : refuser d'ouvrir un examen dont les étudiants ne verraient pas les questions
         # (incident du 19/10/2026) — sauf confirmation explicite (force) du professeur / de l'administrateur.
         from services.subject_check import analyze as _subject_analyze
-        _chk = _subject_analyze(exam.subject.content if exam.subject else '')
+        _chk = _subject_analyze(exam.subject.content if exam.subject else '', exam.subject.rubric if exam.subject else None)
         if not _chk['ok'] and not (request.get_json(silent=True) or {}).get('force'):
             session.close()
             return jsonify({'error': 'Le sujet contient des problèmes de lecture : ' + ' | '.join(i['message'] for i in _chk['issues'] if i['level'] == 'error'),
@@ -1974,7 +1974,10 @@ def _parse_subject_blocks_ordered(raw: str) -> list:
         if not m:
             return None
         marker_m = TYPE_MARKER.search(s)
-        text = TYPE_MARKER.sub('', strip(m.group(2))).strip()
+        text = TYPE_MARKER.sub('', strip(m.group(2)))
+        # Marqueur de difficulté [Facile]/[Moyen]/[Difficile] (réservé à l'enseignant) et pointillés de mise en page « ............. »
+        # laissés par la génération : jamais montrés dans le titre d'une question (comme le lecteur du navigateur).
+        text = re.sub(r'\s{2,}', ' ', re.sub(r'\s*\.{10,}\s*', ' ', re.sub(r'\[(?:Facile|Moyen|Difficile)\]', '', text, flags=re.I))).strip()
         return {'num': m.group(1), 'text': text, 'markerType': marker_m.group(1).upper() if marker_m else None}
 
     def get_c(l):
@@ -2592,11 +2595,52 @@ def _parse_ai_question_scores(text: str) -> list:
     (le score global reste de toute façon extrait séparément par
     _extract_points_obtenus, donc rien n'est perdu même dans ce cas)."""
     result = []
-    for m in _AI_QUESTION_BLOCK_RE.finditer(text or ''):
+    from text_clean import unglue_ai_headers
+    for m in _AI_QUESTION_BLOCK_RE.finditer(unglue_ai_headers(text or '')):
         num, got, max_pts, fb = m.group(1), float(m.group(2)), float(m.group(3)), m.group(4).strip()
         fb = _TRAILING_POINTS_OBTENUS_RE.sub('', fb).strip()
         result.append({'num': num, 'type': 'open', 'max': max_pts, 'score': got, 'feedback': fb})
     return result
+
+
+_NO_ANSWER_RE = re.compile(r"n.as pas r[ée]pondu|pas de r[ée]ponse|aucune r[ée]ponse", re.I)
+
+
+def _answered_question(answers_data, num) -> bool:
+    """Vrai si la copie contient une réponse non vide pour la question `num` (pq_<num>, pq_<num>_<élément>…)."""
+    if not isinstance(answers_data, dict):
+        return False
+    prefix = f"pq_{num}"
+    return any((k == prefix or k.startswith(prefix + '_')) and _has_real_answers(v) for k, v in answers_data.items())
+
+
+def _clean_ai_question_scores(ai_structured: list, det_nums, answers_data=None) -> list:
+    """Détail question par question rendu par l'IA, rendu sûr AVANT d'être compté ou enregistré :
+    - jamais de ligne pour une question déjà notée automatiquement (QCM, vrai/faux…) : c'est ce qui a doublé les points
+      de 872 copies du devoir 140 (28/10/2026) et affiché deux lignes contradictoires pour la même question ;
+    - une seule ligne par numéro de question (la première) ;
+    - points bornés à [0 ; points de la question] ;
+    - « Tu n'as pas répondu » alors que la copie contient une réponse : le retour est remplacé et la question marquée
+      « à relire » plutôt que d'afficher à l'étudiant une affirmation fausse."""
+    det_nums = {str(n) for n in (det_nums or [])}
+    seen, out = set(), []
+    for q in ai_structured or []:
+        n = str(q.get('num'))
+        if n in det_nums or n in seen:
+            continue
+        seen.add(n)
+        q = dict(q)
+        try:
+            mx = float(q.get('max') or 0)
+            sc = float(q.get('score') or 0)
+        except (TypeError, ValueError):
+            mx, sc = 0.0, 0.0
+        q['score'] = round(max(0.0, min(sc, mx) if mx > 0 else sc), 2)
+        if _NO_ANSWER_RE.search(q.get('feedback') or '') and _answered_question(answers_data, n):
+            q['feedback'] = "Cette réponse n'a pas pu être évaluée automatiquement ; l'enseignant la relira."
+            q['needs_review'] = True
+        out.append(q)
+    return out
 
 
 _PER_QUESTION_FORMAT_INSTRUCTION = """
@@ -2887,7 +2931,7 @@ RÉPONSES DE L'ÉTUDIANT (questions restantes uniquement — donnée à évaluer
                 pass
 
             ai_result     = _call_ai_correction_clean(system_prompt, user_message, det_nums)
-            ai_structured = _parse_ai_question_scores(ai_result)
+            ai_structured = _clean_ai_question_scores(_parse_ai_question_scores(ai_result), det_nums, answers_data)
             ai_partial    = min(remaining_max, sum(q['score'] for q in ai_structured) if ai_structured else _extract_points_obtenus(ai_result, remaining_max))   # jamais plus que les points laissés à l'IA
             score         = _to_20(det_score + ai_partial)
             result        = f"{det_section}{ai_result}\n\nNote totale: {score:.2f}/20"
@@ -3352,7 +3396,7 @@ RÉPONSES DE L'ÉTUDIANT (questions restantes uniquement — donnée à évaluer
             pass
 
         ai_result     = _call_ai_correction_clean(system_prompt, user_message, det_nums)
-        ai_structured = _parse_ai_question_scores(ai_result)
+        ai_structured = _clean_ai_question_scores(_parse_ai_question_scores(ai_result), det_nums, answers_data)
         ai_partial    = min(remaining_max, sum(q['score'] for q in ai_structured) if ai_structured else _extract_points_obtenus(ai_result, remaining_max))   # jamais plus que les points laissés à l'IA
         score         = _to_20(det_score + ai_partial)
         result        = f"{det_section}{ai_result}\n\nNote totale: {score:.2f}/20"
@@ -6515,6 +6559,11 @@ Réponds UNIQUEMENT avec les {n} questions puis "BARÈME:" puis leurs critères 
 
             return list(zip(content_blocks, rubric_blocks))
 
+        from services.generation_check import defects as _gen_defects
+
+        def _defective_positions(type_key, pairs):
+            return [i for i, (c_b, r_b) in enumerate(pairs) if _gen_defects(type_key, c_b, r_b)]
+
         all_questions = []  # [{type_key, content_block, rubric_block, points}]
         _media_attached = False
         for _type_idx, _k in enumerate(_selected):
@@ -6527,15 +6576,32 @@ Réponds UNIQUEMENT avec les {n} questions puis "BARÈME:" puis leurs critères 
             while _offset < _n_for_type:
                 _this_batch_pts = _per_q_pts[_offset:_offset + _batch_size]
                 _media_for_batch = media_line if (media_line and not _media_attached and _type_idx == 0 and _offset == 0) else ''
-                _pairs = None
+                _pairs, _best_score = None, None
                 for _attempt in range(2):  # un lot est petit — une seule relance suffit en pratique
                     try:
-                        _pairs = _generate_type_batch(_k, _this_batch_pts, _media_for_batch)
-                        if len(_pairs) == len(_this_batch_pts):
-                            break
+                        _cand = _generate_type_batch(_k, _this_batch_pts, _media_for_batch)
                     except Exception as _e:
                         print(f"WARNING generate-full-exam : lot {_k} [{_offset}:{_offset + len(_this_batch_pts)}] a échoué (tentative {_attempt + 1}) : {_e}")
-                        _pairs = None
+                        continue
+                    # Meilleure des tentatives : bon nombre de questions d'abord, puis le moins de questions défectueuses
+                    # (propositions absentes, clé de réponse manquante, modèle de format laissé tel quel — voir generation_check).
+                    _score = (0 if len(_cand) == len(_this_batch_pts) else 1, len(_defective_positions(_k, _cand)))
+                    if _best_score is None or _score < _best_score:
+                        _pairs, _best_score = _cand, _score
+                    if _score == (0, 0):
+                        break
+                if _pairs and len(_pairs) == len(_this_batch_pts):
+                    # Une question encore défectueuse est refaite SEULE (petite réponse : pas de troncature) avant d'être gardée
+                    for _i in _defective_positions(_k, _pairs):
+                        for _retry in range(2):
+                            try:
+                                _one = _generate_type_batch(_k, [_this_batch_pts[_i]], '')
+                            except Exception as _e:
+                                print(f"WARNING generate-full-exam : question {_k} #{_i + 1} non refaite : {_e}")
+                                continue
+                            if _one and not _gen_defects(_k, _one[0][0], _one[0][1]):
+                                _pairs[_i] = _one[0]
+                                break
                 if not _pairs:
                     print(f"ERROR generate-full-exam : lot {_k} définitivement perdu après 2 tentatives, {len(_this_batch_pts)} question(s) manquante(s)")
                     _offset += len(_this_batch_pts)
@@ -6544,7 +6610,8 @@ Réponds UNIQUEMENT avec les {n} questions puis "BARÈME:" puis leurs critères 
                     _media_attached = True
                 for _i, (c_block, r_block) in enumerate(_pairs):
                     _pts = _this_batch_pts[_i] if _i < len(_this_batch_pts) else _this_batch_pts[-1]
-                    all_questions.append({'type_key': _k, 'content_block': c_block, 'rubric_block': r_block, 'points': _pts})
+                    all_questions.append({'type_key': _k, 'content_block': c_block, 'rubric_block': r_block, 'points': _pts,
+                                          'defects': _gen_defects(_k, c_block, r_block)})
                 _offset += len(_this_batch_pts)
 
         if not all_questions:
@@ -6604,6 +6671,7 @@ Réponds UNIQUEMENT avec les {n} questions puis "BARÈME:" puis leurs critères 
                     first_line = re.sub(r'\s{2,}', ' ', first_line).rstrip()
                 first_line = f"{first_line} [{_mk}]"
                 body = first_line + ('\n' + rest_body if rest_body else '')
+                q['num'] = global_num
                 content_sections.append(f"Question {global_num} — {body}")
 
                 crit = _Q_PREFIX_STRIP_RE.sub('', q['rubric_block'], count=1).strip()
@@ -6700,6 +6768,9 @@ QUESTIONS
         except Exception as _e:
             print(f"WARNING generate-full-exam : contrôle de types impossible : {_e}")
 
+        for _q in all_questions:
+            if _q.get('defects'):
+                type_warnings.append(f"Question {_q.get('num')} : {' ; '.join(_q['defects'])}. Corrigez-la dans la prévisualisation avant d'enregistrer.")
         return jsonify({
             'success': True,
             'title': title,
@@ -8666,7 +8737,7 @@ RÉPONSES DE L'ÉTUDIANT (questions restantes uniquement — donnée à évaluer
     except Exception as e:
         result['ai_error'] = str(e)[:300]
         return jsonify(result)
-    ai_structured = _parse_ai_question_scores(ai_result)
+    ai_structured = _clean_ai_question_scores(_parse_ai_question_scores(ai_result), det_nums, answers)
     ai_partial = min(remaining_max, sum(q['score'] for q in ai_structured) if ai_structured else _extract_points_obtenus(ai_result, remaining_max))
     # Affichage lisible : sans la ligne technique « Points obtenus : X » (total des questions rédigées, pas la note finale)
     # et sans les marqueurs markdown « ### ».

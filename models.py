@@ -861,7 +861,7 @@ class OnlineExam(Base):
             'creator_name': self.creator.full_name if self.creator else None,
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'is_active': self.status == ExamStatus.ACTIVE,
-            'attempts_count': len(self.attempts) if self.attempts else 0
+            'attempts_count': sum(1 for a in (self.attempts or []) if a.exam_seen_at is not None)
         }
 
 def _json_list(raw):
@@ -927,6 +927,12 @@ class ExamAttempt(Base):
     # log_exam_activity). NULL tant qu'aucun heartbeat n'a encore été reçu.
     last_seen_at = Column(DateTime, nullable=True)
 
+    # Instant où l'étudiant a RÉELLEMENT eu sa copie sous les yeux (page d'examen affichée avec les questions).
+    # La tentative est créée plus tôt, au clic sur « Démarrer » : un étudiant bloqué ensuite (caméra, micro, réseau…)
+    # n'a jamais vu l'examen et ne doit être compté ni comme participant ni dans les statistiques.
+    # NULL = jamais affichée.
+    exam_seen_at = Column(DateTime, nullable=True)
+
     # Réponses (JSON ou texte selon format)
     answers = Column(Text)  # JSON stockant les réponses
     
@@ -978,6 +984,8 @@ class ExamAttempt(Base):
             'ban_reason': self.ban_reason,
             'risk_score': self.risk_score or 0,
             'last_seen_at': self.last_seen_at.isoformat() if self.last_seen_at else None,
+            'exam_seen': self.exam_seen_at is not None,
+            'exam_seen_at': utc_iso(self.exam_seen_at) if self.exam_seen_at else None,
             'answers': self.answers,
             'score': self.score,
             'feedback': self.feedback,
@@ -1894,6 +1902,13 @@ def init_db():
         ("SELECT 1 FROM information_schema.columns WHERE table_name='subjects' AND column_name='image_filename'",
          "ALTER TABLE subjects ADD COLUMN image_filename VARCHAR(255)"),
         # Correction ancrée dans le cours (06/11) — passages du cours gardés avec le sujet
+        # 11/11/2026 — « participant » = a vu sa copie. Anciennes tentatives : vues si signal de présence (heartbeat, présent depuis
+        # le 09/10/2026), réponse enregistrée, ou antérieures au heartbeat ; sinon jamais affichées.
+        ("SELECT 1 FROM information_schema.columns WHERE table_name='exam_attempts' AND column_name='exam_seen_at'",
+         "ALTER TABLE exam_attempts ADD COLUMN exam_seen_at TIMESTAMP; "
+         "UPDATE exam_attempts SET exam_seen_at = COALESCE(last_seen_at, started_at, NOW() AT TIME ZONE 'UTC') "
+         "WHERE last_seen_at IS NOT NULL OR started_at < TIMESTAMP '2026-10-09 10:00:00' "
+         "OR (answers IS NOT NULL AND answers NOT IN ('', '{}', 'null'))"),
         ("SELECT 1 FROM information_schema.columns WHERE table_name='subjects' AND column_name='rag_grounded'",
          "ALTER TABLE subjects ADD COLUMN rag_grounded BOOLEAN NOT NULL DEFAULT FALSE"),
         ("SELECT 1 FROM information_schema.columns WHERE table_name='subjects' AND column_name='rag_passages'",

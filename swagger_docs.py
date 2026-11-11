@@ -313,7 +313,7 @@ _SCHEMAS = {
             "creator_name":        {"type": "string"},
             "created_at":          {"type": "string", "format": "date-time"},
             "is_active":           {"type": "boolean"},
-            "attempts_count":      {"type": "integer"}
+            "attempts_count":      {"type": "integer", "description": "Participants RÉELS : étudiants qui ont eu leur copie sous les yeux (exam_seen_at renseigné). Une tentative créée au clic sur « Démarrer » puis bloquée avant la page d'examen (caméra, micro, réseau) n'est pas comptée."}
         }
     },
     "ExamAttempt": {
@@ -2401,7 +2401,8 @@ OPENAPI_SPEC = {
         }},
         "/api/online_exams/{exam_id}/attempts": {"get": {
             "tags": ["Examens en ligne"], "summary": "Toutes les tentatives d'un examen (prof/admin)",
-            "parameters": [{"name": "exam_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+            "description": "Réponse paginée `{attempts, total, page, limit, total_pages, needs_correction_count, participants_count, not_reached_count}`. `participants_count` = étudiants qui ont eu leur copie sous les yeux, `not_reached_count` = tentatives créées mais jamais affichées (caméra, micro, réseau…) ; chaque tentative porte `exam_seen`. Filtre `seen=1` / `seen=0`.",
+            "parameters": [{"name": "exam_id", "in": "path", "required": True, "schema": {"type": "integer"}}, {"name": "seen", "in": "query", "required": False, "schema": {"type": "string", "enum": ["0", "1"]}}],
             "responses": {"200": {"description": "Tentatives", "content": {"application/json": {"schema": {
                 "type": "array", "items": {"$ref": "#/components/schemas/ExamAttempt"}
             }}}}}
@@ -2567,6 +2568,23 @@ OPENAPI_SPEC = {
                     "ban_reason":     {"type": "string"}
                 }
             }}}}}
+        }},
+        "/api/exam_attempts/{attempt_id}/seen": {"post": {
+            "tags": ["Examens en ligne"],
+            "summary": "L'étudiant a réellement sa copie sous les yeux (participant réel)",
+            "description": (
+                "Appelé UNE fois par la page d'examen de l'étudiant, quand les questions sont affichées (jamais en aperçu). "
+                "Renseigne `ExamAttempt.exam_seen_at`. C'est ce signal — et non la création de la tentative (`POST /start`, avant "
+                "l'étape caméra/micro) — qui fait d'un étudiant un participant : cartes d'examen (`attempts_count`), statistiques, "
+                "historique, analytics, mails de clôture, rapport de sécurité et compteur « en cours » de la surveillance ne comptent que "
+                "les tentatives vues. Idempotent (le premier instant est conservé). Secours côté serveur : le heartbeat et la première "
+                "sauvegarde de réponses non vides renseignent aussi `exam_seen_at`. L'étudiant ne peut marquer que sa propre tentative. "
+                "Les tentatives jamais vues restent listées (`exam_seen: false`, filtre `?seen=0` sur /attempts, compteur `not_reached`) "
+                "et leurs notes éventuelles ne sont pas modifiées."
+            ),
+            "parameters": [{"name": "attempt_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+            "responses": {"200": {"description": "Enregistré", "content": {"application/json": {"schema": {"type": "object", "properties": {
+                "success": {"type": "boolean"}, "exam_seen": {"type": "boolean"}}}}}}, "404": {"description": "Tentative introuvable (ou d'un autre étudiant)"}}
         }},
         "/api/exam_attempts/{attempt_id}/heartbeat": {"post": {
             "tags": ["Examens en ligne"],

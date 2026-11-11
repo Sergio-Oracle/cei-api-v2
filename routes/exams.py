@@ -1228,6 +1228,8 @@ def save_exam_answers(attempt_id):
         # jamais ce qui a déjà été enregistré.
         if not (_is_blank_answers(incoming) and not _is_blank_answers(attempt.answers)):
             attempt.answers = incoming
+        if attempt.exam_seen_at is None and not _is_blank_answers(incoming):
+            attempt.exam_seen_at = datetime.utcnow()       # il a répondu : il a forcément vu sa copie
         
         session.commit()
         session.close()
@@ -1364,6 +1366,31 @@ def download_attempt_attachment(attempt_id):
         session.close()
 
 
+@exams_bp.route('/api/exam_attempts/<int:attempt_id>/seen', methods=['POST'])
+@paseto_required
+@limiter.exempt
+def exam_copy_seen(attempt_id):
+    """L'étudiant a RÉELLEMENT sa copie sous les yeux (page d'examen affichée avec les questions). C'est ce signal, et
+    non la création de la tentative (au clic sur « Démarrer », avant la caméra), qui fait de lui un participant.
+    Idempotent : le premier appel fixe l'instant, les suivants ne changent rien."""
+    user_id = get_current_user_id()
+    session = get_session()
+    try:
+        attempt = session.query(ExamAttempt).filter_by(id=attempt_id, student_id=user_id).first()
+        if not attempt:
+            return jsonify({'error': 'Tentative introuvable'}), 404
+        if attempt.exam_seen_at is None:
+            attempt.exam_seen_at = datetime.utcnow()
+            session.commit()
+        return jsonify({'success': True, 'exam_seen': True})
+    except Exception as e:
+        try: session.rollback()
+        except Exception: pass
+        return jsonify({'error': str(e)}), 500
+    finally:
+        session.close()
+
+
 @exams_bp.route('/api/exam_attempts/<int:attempt_id>/heartbeat', methods=['POST'])
 @paseto_required
 @limiter.exempt
@@ -1382,6 +1409,8 @@ def exam_heartbeat(attempt_id):
         if not attempt:
             return jsonify({'error': 'Tentative introuvable'}), 404
         attempt.last_seen_at = datetime.utcnow()
+        if attempt.exam_seen_at is None:       # le heartbeat ne part que de la page d'examen affichée : secours si l'appel /seen a échoué
+            attempt.exam_seen_at = attempt.last_seen_at
         session.commit()
         return jsonify({'success': True})
     except Exception as e:
@@ -3839,10 +3868,15 @@ def get_exam_attempts(exam_id):
         limit = min(200, max(1, request.args.get('limit', 50, type=int)))
         search = (request.args.get('search') or '').strip().lower()
         status_filter = (request.args.get('status') or '').strip()
+        seen_filter = (request.args.get('seen') or '').strip()     # '1' = copie affichée à l'étudiant, '0' = jamais affichée
 
         query = session.query(ExamAttempt).options(
             joinedload(ExamAttempt.student)
         ).filter_by(exam_id=exam_id)
+        if seen_filter == '1':
+            query = query.filter(ExamAttempt.exam_seen_at.isnot(None))
+        elif seen_filter == '0':
+            query = query.filter(ExamAttempt.exam_seen_at.is_(None))
 
         if status_filter:
             try:
@@ -3869,6 +3903,13 @@ def get_exam_attempts(exam_id):
             ExamAttempt.score.is_(None),
         ).count()
 
+        # Participants réels = étudiants qui ont eu leur copie sous les yeux ; les autres ont créé une tentative puis
+        # n'ont pas pu aller jusqu'à la page d'examen (caméra, micro, réseau…). Indépendant de la pagination/recherche.
+        participants_count = session.query(ExamAttempt).filter(
+            ExamAttempt.exam_id == exam_id, ExamAttempt.exam_seen_at.isnot(None)).count()
+        not_reached_count = session.query(ExamAttempt).filter(
+            ExamAttempt.exam_id == exam_id, ExamAttempt.exam_seen_at.is_(None)).count()
+
         attempts_list = []
         for attempt in attempts:
             attempt_dict = attempt.to_dict()
@@ -3886,6 +3927,8 @@ def get_exam_attempts(exam_id):
             'limit': limit,
             'total_pages': max(1, (total + limit - 1) // limit),
             'needs_correction_count': needs_correction_count,
+            'participants_count': participants_count,
+            'not_reached_count': not_reached_count,
         })
 
     except Exception as e:
@@ -4067,6 +4110,8 @@ def import_exam_grades(exam_id):
                 attempt.corrected_at = utcnow()
                 attempt.corrected_by_id = user_id
                 attempt.imported_grade = True
+                if attempt.exam_seen_at is None:
+                    attempt.exam_seen_at = utcnow()   # note importée = il a composé (hors plateforme) : participant réel
                 updated.append(email)
             else:
                 attempt = ExamAttempt(
@@ -4075,6 +4120,7 @@ def import_exam_grades(exam_id):
                     status=AttemptStatus.SUBMITTED,
                     started_at=utcnow(),
                     submitted_at=utcnow(),
+                    exam_seen_at=utcnow(),          # composition hors plateforme : participant réel, sans passer par la page d'examen
                     score=score,
                     corrected_at=utcnow(),
                     corrected_by_id=user_id,
@@ -4251,6 +4297,9 @@ def get_exam_stats(exam_id):
             session.close()
             return jsonify({'error': 'Accès non autorisé'}), 403
         attempts = session.query(ExamAttempt).filter_by(exam_id=exam_id).all()
+        # Participant = étudiant qui a eu sa copie sous les yeux ; une tentative créée puis bloquée (caméra, réseau…) n'en est pas un
+        not_reached = sum(1 for a in attempts if a.exam_seen_at is None)
+        attempts = [a for a in attempts if a.exam_seen_at is not None]
         done = [a for a in attempts if a.status.value in ('submitted', 'auto_submitted')]
         scores = [a.score for a in done if a.score is not None]
         distribution = [0] * 5  # [0-4, 5-9, 10-13, 14-16, 17-20]
@@ -4268,6 +4317,7 @@ def get_exam_stats(exam_id):
         return jsonify({
             'exam_title':       exam.title,
             'total':            len(attempts),
+            'not_reached':      not_reached,
             'submitted':        len(done),
             'in_progress':      sum(1 for a in attempts if a.status.value == 'in_progress'),
             'banned':           sum(1 for a in attempts if a.status.value == 'banned'),
@@ -5256,7 +5306,7 @@ def download_exam_security_report(exam_id):
 
         story.append(Paragraph('Synthèse', h2_style))
         summary_data = [
-            ['Participants', str(len(attempts))],
+            ['Participants', str(sum(1 for a in attempts if a.exam_seen_at is not None))],
             ['Exclus (bannis)', str(banned)],
             ['Risque élevé (≥ 70%)', str(risky)],
             ['Risque moyen', f'{avg_risk}%'],
@@ -5584,7 +5634,8 @@ def get_exams_history():
         
         history_list = []
         for exam in closed_exams:
-            attempts = session.query(ExamAttempt).filter_by(exam_id=exam.id).all()
+            _all_att = session.query(ExamAttempt).filter_by(exam_id=exam.id).all()
+            attempts = [a for a in _all_att if a.exam_seen_at is not None]     # participants réels (copie affichée)
             
             submitted_count = len([a for a in attempts if a.status in [AttemptStatus.SUBMITTED, AttemptStatus.AUTO_SUBMITTED]])
             banned_count = len([a for a in attempts if a.status == AttemptStatus.BANNED])
@@ -5608,6 +5659,7 @@ def get_exams_history():
                 'end_time': exam.end_time.isoformat(),
                 'duration_minutes': exam.duration_minutes,
                 'total_attempts': len(attempts),
+                'not_reached_count': len(_all_att) - len(attempts),
                 'submitted_count': submitted_count,
                 'banned_count': banned_count,
                 'corrected_count': corrected_count,
@@ -7969,7 +8021,7 @@ def _send_exam_closure_summary(exam_id: int, professor_email: str, professor_nam
         if not exam:
             session.close()
             return
-        attempts  = session.query(ExamAttempt).filter_by(exam_id=exam_id).all()
+        attempts  = [a for a in session.query(ExamAttempt).filter_by(exam_id=exam_id).all() if a.exam_seen_at is not None]   # participants réels
         total     = len(attempts)
         submitted = sum(1 for a in attempts if a.status.value in ('submitted', 'auto_submitted'))
         banned    = sum(1 for a in attempts if a.status.value == 'banned')
@@ -8298,7 +8350,7 @@ def get_professor_analytics():
         exam_ids = [e.id for e in exams]
 
         all_attempts = session.query(ExamAttempt).filter(
-            ExamAttempt.exam_id.in_(exam_ids)
+            ExamAttempt.exam_id.in_(exam_ids), ExamAttempt.exam_seen_at.isnot(None)       # participants réels uniquement
         ).options(joinedload(ExamAttempt.student)).all() if exam_ids else []
 
         submitted = [a for a in all_attempts if a.status.value in ('submitted', 'auto_submitted')]

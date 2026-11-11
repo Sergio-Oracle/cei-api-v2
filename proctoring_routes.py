@@ -2095,6 +2095,7 @@ def get_surveillant_exams():
                     s_info['attempt_id']  = pa.attempt.id
                     s_info['status']      = pa.attempt.status.value
                     s_info['risk_score']  = pa.attempt.risk_score or 0
+                    s_info['exam_seen']   = pa.attempt.exam_seen_at is not None    # a eu sa copie sous les yeux
                 elif pa.student_id:
                     attempt = session.query(ExamAttempt).filter_by(
                         exam_id=ep.exam_id, student_id=pa.student_id
@@ -2103,6 +2104,7 @@ def get_surveillant_exams():
                         s_info['attempt_id'] = attempt.id
                         s_info['status']     = attempt.status.value
                         s_info['risk_score'] = attempt.risk_score or 0
+                        s_info['exam_seen']  = attempt.exam_seen_at is not None
                 students.append(s_info)
 
             d['my_students']      = students

@@ -107,7 +107,8 @@ def get_subject_statistics(subject_id):
                 joinedload(ExamAttempt.exam)
             ).filter(
                 ExamAttempt.exam_id.in_(online_exam_ids),
-                ExamAttempt.score.isnot(None)
+                ExamAttempt.score.isnot(None),
+                ExamAttempt.exam_seen_at.isnot(None)       # participants réels (copie affichée)
             ).all():
                 attempts_details.append({
                     'id':           att.id,
@@ -201,7 +202,8 @@ def get_subjects_statistics_bulk():
                 joinedload(ExamAttempt.exam)
             ).filter(
                 ExamAttempt.exam_id.in_(list(exam_to_subject.keys())),
-                ExamAttempt.score.isnot(None)
+                ExamAttempt.score.isnot(None),
+                ExamAttempt.exam_seen_at.isnot(None)       # participants réels (copie affichée)
             ).all():
                 sid = exam_to_subject.get(att.exam_id)
                 if sid is None:

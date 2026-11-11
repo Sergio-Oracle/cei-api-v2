@@ -3,7 +3,7 @@
 Données temporaires supprimées en fin de test ; e-mail et cloche interceptés."""
 import os, sys, json, time, uuid
 from datetime import datetime, timedelta
-sys.path.insert(0,'/root/cei-api-v2')
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import app as A
 from services import grade_change_notice as G
 G.DELAY = 0

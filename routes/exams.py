@@ -1098,6 +1098,12 @@ def start_exam_attempt(exam_id):
             # pendant toute la fenêtre de l'examen. Le surveillant/superviseur
             # assigné est notifié à chaque reprise pour pouvoir rappeler
             # l'étudiant après coup si besoin — voir _notify_resume ci-dessous.
+            if _never_seen(existing):
+                # Il n'a jamais vu l'examen (bloqué avant la copie : caméra, micro, réseau…) : aucune triche possible, donc aucun code
+                # de reprise ni alerte « reprise » au surveillant — il reprend simplement là où il en était.
+                attempt_dict = existing.to_dict()
+                session.close()
+                return jsonify({'success': True, 'attempt': attempt_dict, 'continuing': True})
             now_utc = datetime.utcnow()
             body = request.get_json(silent=True) or {}
             access_code = (body.get('access_code') or '').strip()
@@ -2845,6 +2851,31 @@ def _course_reference(subject) -> str:
         return ''
 
 
+def _real_copy_sql():
+    """Condition SQL : la copie a été vue OU contient une réponse (même si le signal « copie affichée » a manqué). Seule une tentative
+    jamais affichée ET sans aucune réponse n'est pas une copie. Approximation SQL de `_never_seen` (réponses vides : '', '{}', 'null')."""
+    from sqlalchemy import or_ as _or_, and_ as _and_
+    return _or_(ExamAttempt.exam_seen_at.isnot(None),
+                _and_(ExamAttempt.answers.isnot(None), ~ExamAttempt.answers.in_(['', '{}', 'null'])))
+
+
+NEVER_SEEN_MSG = ("Cette copie n'a jamais été affichée à l'étudiant (problème d'accès avant le début de l'épreuve : caméra, micro, "
+                  "réseau…) : il n'a pas composé, aucune note n'est attribuée.")
+
+
+def _never_seen(attempt) -> bool:
+    """Tentative créée (clic sur « Démarrer ») mais dont l'étudiant n'a jamais eu la copie sous les yeux ET qui ne contient
+    aucune réponse : il n'a pas composé. Aucune note — surtout pas un 0/20 — ne doit lui être attribuée."""
+    try:
+        if attempt.exam_seen_at is not None:
+            return False
+        raw = attempt.answers
+        data = json.loads(raw) if isinstance(raw, str) and raw.strip() else (raw or {})
+        return not _has_real_answers(data)
+    except Exception:
+        return False
+
+
 def _run_auto_correction(attempt_id: int, notify_failure: bool = True):
     """Correction automatique d'une copie. Si les résultats de l'examen sont DÉJÀ publiés (vague tardive, copie rendue
     après la publication), l'étudiant est averti de sa note ; avant la publication, aucun effet."""
@@ -2856,6 +2887,10 @@ def _run_auto_correction(attempt_id: int, notify_failure: bool = True):
                 OnlineExam, OnlineExam.id == ExamAttempt.exam_id).filter(ExamAttempt.id == attempt_id).first()
             if _row:
                 _old, _pub = _row[0], bool(_row[1])
+            _a = _s.query(ExamAttempt).filter_by(id=attempt_id).first()
+            if _a is not None and _a.score is None and _never_seen(_a):
+                print(f"Auto-correction {attempt_id} ignorée : copie jamais affichée à l'étudiant (aucune note attribuée)")
+                return
         finally:
             _s.close()
     except Exception:
@@ -3113,6 +3148,8 @@ def submit_exam_attempt(attempt_id):
 
         attempt.status = AttemptStatus.SUBMITTED
         attempt.submitted_at = utcnow()
+        if attempt.exam_seen_at is None and not _is_blank_answers(attempt.answers):
+            attempt.exam_seen_at = attempt.submitted_at           # il a répondu : il a vu sa copie
 
         # Charger le flag auto_correct avant de fermer la session
         exam = session.query(OnlineExam).filter_by(id=attempt.exam_id).first()
@@ -3346,6 +3383,8 @@ def export_exam_results_csv(exam_id):
 # ============================================================================
 
 def _run_ai_correction_impl(attempt, corrected_by_id=None) -> float:
+    if attempt.score is None and _never_seen(attempt):
+        raise ValueError("Cette copie n'a jamais été affichée à l'étudiant : il n'a pas composé, rien à corriger.")
     """Corrige une tentative déjà soumise avec IA — logique de notation
     partagée entre la correction manuelle (bouton professeur,
     correct_exam_attempt) et la correction planifiée à heure précise
@@ -3601,6 +3640,7 @@ def correct_all_attempts(exam_id):
         ids = [r.id for r in session.query(ExamAttempt.id).filter(
             ExamAttempt.exam_id == exam_id,
             ExamAttempt.status.in_([AttemptStatus.SUBMITTED, AttemptStatus.AUTO_SUBMITTED]),
+            _real_copy_sql(),                                     # une tentative jamais affichée et sans réponse n'est pas une copie
             ExamAttempt.score.is_(None)).all()]
         added = _cq.enqueue(ids, exam_id, user_id, force=True)
         if ids:
@@ -3767,6 +3807,7 @@ def agent_run_scheduled_correction(exam_id):
         ).filter(
             ExamAttempt.exam_id == exam_id,
             ExamAttempt.status.in_([AttemptStatus.SUBMITTED, AttemptStatus.AUTO_SUBMITTED]),
+            _real_copy_sql(),                                     # une tentative jamais affichée et sans réponse n'est pas une copie
             ExamAttempt.score.is_(None),
         ).all()
 
@@ -3900,6 +3941,7 @@ def get_exam_attempts(exam_id):
         needs_correction_count = session.query(ExamAttempt).filter(
             ExamAttempt.exam_id == exam_id,
             ExamAttempt.status.in_([AttemptStatus.SUBMITTED, AttemptStatus.AUTO_SUBMITTED]),
+            _real_copy_sql(),                                     # une tentative jamais affichée et sans réponse n'est pas une copie
             ExamAttempt.score.is_(None),
         ).count()
 
@@ -3916,7 +3958,7 @@ def get_exam_attempts(exam_id):
             attempt_dict.pop('answers', None)
             # Ajouter info incidents
             attempt_dict['has_incidents'] = attempt.warnings_count > 0 or attempt.tab_switches > 0
-            attempt_dict['needs_correction'] = attempt.status in [AttemptStatus.SUBMITTED, AttemptStatus.AUTO_SUBMITTED] and attempt.score is None
+            attempt_dict['needs_correction'] = attempt.status in [AttemptStatus.SUBMITTED, AttemptStatus.AUTO_SUBMITTED] and attempt.score is None and not _never_seen(attempt)
             attempts_list.append(attempt_dict)
 
         session.close()
@@ -4459,7 +4501,7 @@ def get_exam_bilan_pdf(exam_id):
                 dur = round((a.submitted_at - a.started_at).total_seconds() / 60, 0)
             rows_data.append({
                 'name':    a.student.full_name if a.student else '—',
-                'status':  status_labels.get(sv, sv),
+                'status':  'Copie non affichée' if a.exam_seen_at is None else status_labels.get(sv, sv),
                 'score':   a.score,
                 'risk':    a.risk_score or 0,
                 'dur':     int(dur) if dur is not None else None,

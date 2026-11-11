@@ -136,12 +136,16 @@ def close_expired(grace=LOOP_GRACE_SECONDS) -> dict:
             running = session.query(ExamAttempt).filter_by(exam_id=exam.id, status=AttemptStatus.IN_PROGRESS).all()
             due = _deadlines(session, exam, running) if running else {}
             expired = [a for a in running if now > due[a.id] + timedelta(seconds=grace)]
+            from routes.exams import _never_seen
             for a in expired:
                 a.status = AttemptStatus.AUTO_SUBMITTED
                 a.submitted_at = now
+                if a.exam_seen_at is None and not _never_seen(a):
+                    a.exam_seen_at = now                          # des réponses existent : il a vu sa copie (signal manqué)
             stats['submitted'] += len(expired)
-            if expired and exam.auto_correct:
-                to_correct.append((exam.id, [a.id for a in expired]))
+            seen_expired = [a.id for a in expired if a.exam_seen_at is not None]      # jamais affichée et sans réponse = n'a pas composé : pas de correction, pas de 0/20
+            if seen_expired and exam.auto_correct:
+                to_correct.append((exam.id, seen_expired))
             if exam.status == ExamStatus.ACTIVE and exam.end_time < now:
                 exam.status = ExamStatus.CLOSED
                 stats['closed'] += 1

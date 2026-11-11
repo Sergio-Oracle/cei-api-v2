@@ -50,9 +50,15 @@ def _state(attempt_id: int):
     """(copie soumise ?, déjà corrigée ?) lus en base."""
     s = get_session()
     try:
-        a = s.query(ExamAttempt.status, ExamAttempt.score, ExamAttempt.corrected_at).filter_by(id=attempt_id).first()
+        a = s.query(ExamAttempt.status, ExamAttempt.score, ExamAttempt.corrected_at,
+                    ExamAttempt.exam_seen_at, ExamAttempt.answers).filter_by(id=attempt_id).first()
         if a is None:
             return False, True                      # disparue : rien à faire
+        if a.score is None and a.exam_seen_at is None:
+            from types import SimpleNamespace
+            from routes import exams as R
+            if R._never_seen(SimpleNamespace(exam_seen_at=a.exam_seen_at, answers=a.answers)):
+                return False, True                  # jamais affichée à l'étudiant : il n'a pas composé, rien à corriger
         return a.status in SUBMITTED, (a.score is not None and a.corrected_at is not None)
     finally:
         s.close()

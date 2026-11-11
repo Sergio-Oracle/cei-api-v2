@@ -2580,7 +2580,11 @@ OPENAPI_SPEC = {
                 "les tentatives vues. Idempotent (le premier instant est conservé). Secours côté serveur : le heartbeat et la première "
                 "sauvegarde de réponses non vides renseignent aussi `exam_seen_at`. L'étudiant ne peut marquer que sa propre tentative. "
                 "Les tentatives jamais vues restent listées (`exam_seen: false`, filtre `?seen=0` sur /attempts, compteur `not_reached`) "
-                "et leurs notes éventuelles ne sont pas modifiées."
+                "et leurs notes éventuelles ne sont pas modifiées. "
+                "**Une tentative jamais affichée (aucune réponse) n'est pas une copie** : la correction automatique, la file de correction, "
+                "« Corriger » (400) et la clôture automatique ne lui attribuent AUCUNE note (jamais de 0/20) et ne la comptent pas « à "
+                "corriger » ; `POST /start` la laisse reprendre SANS code de reprise (et sans alerte « reprise » au surveillant) ; la "
+                "surveillance en direct (`/active_proctoring`, `my_students`) l'expose avec `exam_seen: false` (« en connexion », non comptée présente)."
             ),
             "parameters": [{"name": "attempt_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
             "responses": {"200": {"description": "Enregistré", "content": {"application/json": {"schema": {"type": "object", "properties": {

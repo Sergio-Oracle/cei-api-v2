@@ -98,12 +98,68 @@ try:
         check('ancienne tentative AVEC réponse : vue', seen['rep'])
         check('ancienne tentative d\'avant le heartbeat (09/10) : vue (rien à reprocher aux anciennes données)', seen['ancien'])
         check('ancienne tentative récente SANS présence ni réponse : jamais affichée', not seen['vide'], seen)
+    s.query(ExamAttempt).filter(ExamAttempt.id.in_(list(old_ids.values()))).delete(synchronize_session=False); s.commit()   # copies de la section « migration »
+    print('\n== Un étudiant qui n\'a jamais vu sa copie ne subit rien : ni 0/20, ni « à corriger », ni code de reprise ==')
+    from routes import exams as R
+    from services import exam_closer as EC
+    import correction_worker as W
+    # remise à zéro : 1 et 7 = jamais affichées, soumises sans note ; 4 = vue et soumise sans note (à corriger) ; 0 = vue, en cours
+    s.query(ExamAttempt).filter(ExamAttempt.id.in_([ids[1], ids[7]])).update({'status': AttemptStatus.AUTO_SUBMITTED, 'score': None, 'submitted_at': now}, synchronize_session=False)
+    s.query(ExamAttempt).filter(ExamAttempt.id == ids[4]).update({'score': None, 'status': AttemptStatus.SUBMITTED}, synchronize_session=False)
+    s.commit(); s.expire_all()
+    a1, a4 = s.get(ExamAttempt, ids[1]), s.get(ExamAttempt, ids[4])
+    check('jamais affichée + aucune réponse : reconnue comme « n\'a pas composé »', R._never_seen(a1) and not R._never_seen(a4))
+    R._run_auto_correction(ids[1]); s.expire_all()
+    check('correction automatique : aucune note (surtout pas 0/20) pour une copie jamais affichée', s.get(ExamAttempt, ids[1]).score is None)
+    r = c.post(f'/api/exam_attempts/{ids[1]}/correct', json={}, headers=H(adm))
+    check('bouton « Corriger » sur une copie jamais affichée : refusé avec explication', r.status_code == 400 and 'jamais été affichée' in str(r.get_json()), (r.status_code, r.get_json()))
+    check('file de correction : la copie jamais affichée est classée « rien à faire »', W._state(ids[1]) == (False, True), W._state(ids[1]))
+    check('file de correction : une copie vue et soumise reste à corriger', W._state(ids[4]) == (True, False), W._state(ids[4]))
+    r = c.get(f'/api/online_exams/{ex.id}/attempts?limit=50', headers=H(adm)).get_json()
+    check('« à corriger » : seulement la copie vue (1), pas les 2 jamais affichées', r['needs_correction_count'] == 1 and sum(1 for x in r['attempts'] if x['needs_correction']) == 1, (r['needs_correction_count']))
+
+    # signal « copie affichée » manqué MAIS vraies réponses enregistrées : c'est une vraie copie, elle doit être corrigée
+    s.query(ExamAttempt).filter(ExamAttempt.id == ids[4]).update({'exam_seen_at': None, 'answers': '{"pq_1":"A"}'}, synchronize_session=False); s.commit(); s.expire_all()
+    check('copie avec réponses mais sans signal « affichée » : reste une vraie copie', not R._never_seen(s.get(ExamAttempt, ids[4])))
+    r = c.get(f'/api/online_exams/{ex.id}/attempts?limit=50', headers=H(adm)).get_json()
+    check('… et reste « à corriger » (jamais exclue à tort)', r['needs_correction_count'] == 1, r['needs_correction_count'])
+    s.query(ExamAttempt).filter(ExamAttempt.id == ids[4]).update({'exam_seen_at': datetime.utcnow()}, synchronize_session=False); s.commit()
+
+    print('\n== Reprise : jamais vu = aucun code ; déjà vu = code de reprise comme avant ==')
+    s.query(ExamAttempt).filter(ExamAttempt.id.in_([ids[1], ids[0]])).update({'status': AttemptStatus.IN_PROGRESS, 'submitted_at': None}, synchronize_session=False); s.commit()
+    r = c.post(f'/api/online_exams/{ex.id}/start', json={}, headers=H(studs[1]))
+    check('étudiant qui n\'a jamais vu sa copie : il rentre sans code de reprise', r.status_code == 200 and r.get_json().get('continuing') is True and not r.get_json().get('code_required'), (r.status_code, r.get_json()))
+    r = c.post(f'/api/online_exams/{ex.id}/start', json={}, headers=H(studs[0]))
+    check('étudiant qui a déjà vu sa copie : le code de reprise reste exigé', r.status_code == 403 and r.get_json().get('code_required') is True, (r.status_code, r.get_json()))
+
+    print('\n== Surveillance en direct ==')
+    r = c.get(f'/api/online_exams/{ex.id}/active_proctoring', headers=H(adm)).get_json()
+    rows = {x['attempt_id']: x for x in (r.get('students') or r.get('attempts') or [])} if isinstance(r, dict) else {}
+    check('liste live : exam_seen exposé (vu = true, jamais affiché = false)', rows.get(ids[0], {}).get('exam_seen') is True and rows.get(ids[1], {}).get('exam_seen') is False, list(r.keys()) if isinstance(r, dict) else r)
+
+    print('\n== Clôture à l\'heure de fin : une copie jamais affichée est soumise SANS note ==')
+    s.query(ExamAttempt).filter(ExamAttempt.id.in_([ids[1], ids[7]])).update({'status': AttemptStatus.IN_PROGRESS, 'submitted_at': None, 'score': None}, synchronize_session=False)
+    s.query(OnlineExam).filter(OnlineExam.id == ex.id).update({'end_time': now - timedelta(hours=1), 'auto_correct': True}, synchronize_session=False); s.commit()
+    enq = []
+    from services import correction_queue as _cq
+    _real_alive, _real_enq = _cq.worker_alive, _cq.enqueue
+    _cq.worker_alive = lambda: True; _cq.enqueue = lambda ids_, exam_id, *a, **k: enq.append(list(ids_)) or len(ids_)
+    try: EC.close_expired(grace=0)
+    finally: _cq.worker_alive, _cq.enqueue = _real_alive, _real_enq
+    s.expire_all()
+    u1, u7 = s.get(ExamAttempt, ids[1]), s.get(ExamAttempt, ids[7])
+    check('clôture : copies jamais affichées soumises, sans note', u1.status == AttemptStatus.AUTO_SUBMITTED and u7.status == AttemptStatus.AUTO_SUBMITTED and u1.score is None and u7.score is None, (u1.status, u1.score))
+    flat = [i for batch in enq for i in batch]
+    check('clôture : seules les copies vues sont confiées à la correction', ids[1] not in flat and ids[7] not in flat and ids[0] in flat, flat)
 finally:
     try:
         s.rollback()
         if made['ex']:
             att = [x[0] for x in s.query(ExamAttempt.id).filter(ExamAttempt.exam_id == made['ex'])]
             if att: s.query(ExamActivityLog).filter(ExamActivityLog.attempt_id.in_(att)).delete(synchronize_session=False)
+            if att:
+                from models import ExamAccessCode
+                s.query(ExamAccessCode).filter(ExamAccessCode.attempt_id.in_(att)).delete(synchronize_session=False)
             s.query(ExamAttempt).filter(ExamAttempt.exam_id == made['ex']).delete(synchronize_session=False)
             s.query(OnlineExam).filter(OnlineExam.id == made['ex']).delete(synchronize_session=False)
         if made['sub']: s.query(Subject).filter(Subject.id == made['sub']).delete(synchronize_session=False)

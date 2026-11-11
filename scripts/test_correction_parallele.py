@@ -128,7 +128,7 @@ try:
     empty = []
     for u in sts[:4]:
         a = s.query(ExamAttempt).filter_by(exam_id=ex.id, student_id=u.id).first()
-        a.answers = '{}'; a.score = None; a.corrected_at = None; empty.append(a.id)
+        a.answers = '{}'; a.score = None; a.corrected_at = None; a.exam_seen_at = datetime.utcnow(); empty.append(a.id)   # vue puis rendue blanche : 0/20 (une copie JAMAIS affichée, elle, n'a aucune note)
     s.commit()
     start_service(4)
     Q.enqueue(empty, ex.id); wait(lambda: Q.pending_count(ex.id) == 0, 30); s.expire_all()

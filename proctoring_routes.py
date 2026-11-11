@@ -1056,6 +1056,7 @@ def get_active_proctoring(exam_id):
                 'student_name': a.student.full_name if a.student else '?',
                 'student_email': a.student.email if a.student else '',
                 'status': a.status.value,
+                'exam_seen': a.exam_seen_at is not None,          # False = pas encore sa copie sous les yeux (en connexion)
                 'risk_score': a.risk_score or 0,
                 'warnings_count': a.warnings_count,
                 'tab_switches': a.tab_switches,

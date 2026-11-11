@@ -3383,8 +3383,6 @@ def export_exam_results_csv(exam_id):
 # ============================================================================
 
 def _run_ai_correction_impl(attempt, corrected_by_id=None) -> float:
-    if attempt.score is None and _never_seen(attempt):
-        raise ValueError("Cette copie n'a jamais été affichée à l'étudiant : il n'a pas composé, rien à corriger.")
     """Corrige une tentative déjà soumise avec IA — logique de notation
     partagée entre la correction manuelle (bouton professeur,
     correct_exam_attempt) et la correction planifiée à heure précise
@@ -3393,6 +3391,8 @@ def _run_ai_correction_impl(attempt, corrected_by_id=None) -> float:
     l'objet `attempt` mais NE COMMIT PAS — laissé à l'appelant (permet un
     commit par lot lors d'une correction planifiée sur tout un examen).
     Lève ValueError si rien n'est corrigeable (aucune réponse)."""
+    if attempt.score is None and _never_seen(attempt):
+        raise ValueError("Cette copie n'a jamais été affichée à l'étudiant : il n'a pas composé, rien à corriger.")
     exam = attempt.exam
     subject = exam.subject
 

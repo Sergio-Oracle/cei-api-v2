@@ -134,6 +134,7 @@ from routes.professor      import professor_bp;       app.register_blueprint(pro
 from routes.question_bank  import question_bank_bp;   app.register_blueprint(question_bank_bp)
 from routes.exams          import exams_bp;           app.register_blueprint(exams_bp)
 from routes.exam_waves     import exam_waves_bp;      app.register_blueprint(exam_waves_bp)
+from routes.exam_makeup     import exam_makeup_bp;     app.register_blueprint(exam_makeup_bp)   # rattrapage : session à part (distincte des vagues)
 from routes.subject_check   import subject_check_bp;   app.register_blueprint(subject_check_bp)
 from routes.exam_client     import exam_client_bp;     app.register_blueprint(exam_client_bp)   # application « CEI Examen » : poignée de main + téléchargements
 from routes.audit          import audit_bp;           app.register_blueprint(audit_bp)

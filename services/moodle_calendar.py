@@ -74,6 +74,8 @@ def _target(session, exam):
     from models import ExamStatus, Subject, EC
     if not exam or exam.status == ExamStatus.DRAFT:
         return None, 'examen absent ou brouillon'
+    if getattr(exam, 'makeup_of_id', None):
+        return None, 'rattrapage (étudiants choisis, pas tout le cours)'
     subject = session.get(Subject, exam.subject_id)
     ec = session.get(EC, subject.ec_id) if subject and subject.ec_id else None
     if not ec:

@@ -623,6 +623,7 @@ OPENAPI_SPEC = {
         {"name": "Sujets",                   "description": "Upload et gestion des sujets d'examen"},
         {"name": "Copies",                   "description": "Upload, correction IA et export des copies étudiants"},
         {"name": "Examens en ligne",         "description": "Création, gestion du cycle de vie et tentatives étudiants"},
+        {"name": "Rattrapage",              "description": "Session de rattrapage : un examen à part, mêmes questions, réservé aux étudiants choisis (absents, sans moyens, empêchés). Distinct des vagues."},
         {"name": "Surveillant",              "description": "Routes dédiées aux surveillants : examens assignés, monitoring en direct, avertissements, bannissements, messages, enregistrements"},
         {"name": "Superviseur",              "description": "Rôle positionné au-dessus des surveillants : suivi de leur engagement réel (niveaux de vigilance A/B/C) et réponse aux demandes de reprise après déconnexion quand aucun surveillant n'est assigné"},
         {"name": "Proctoring",               "description": "Infrastructure de surveillance vidéo LiveKit — tokens, snapshots caméra, événements, enregistrements"},
@@ -2581,7 +2582,7 @@ OPENAPI_SPEC = {
                 "sauvegarde de réponses non vides renseignent aussi `exam_seen_at`. L'étudiant ne peut marquer que sa propre tentative. "
                 "Une tentative jamais affichée (aucune réponse) n'est pas une copie : elle n'apparaît dans AUCUNE liste (tentatives, surveillance "
                 "en direct, `my_students`, export de présence, historique étudiant), n'est jamais corrigée ni notée (jamais de 0/20), n'est pas comptée « à "
-                "corriger ». À la reconnexion, le code de reprise reste exigé comme pour toute tentative. Pour les faire recomposer : `POST /makeup`."
+                "corriger ». À la reconnexion, le code de reprise reste exigé comme pour toute tentative. Pour les faire recomposer : `POST /makeups` (session de rattrapage à part)."
             ),
             "parameters": [{"name": "attempt_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
             "responses": {"200": {"description": "Enregistré", "content": {"application/json": {"schema": {"type": "object", "properties": {
@@ -4621,23 +4622,39 @@ OPENAPI_SPEC = {
             "responses": {"200": {"description": "Vague mise à jour"}, "400": {"description": "Créneau invalide (plus court que la durée de l'examen, fin avant début)"}, "404": {"description": "Vague introuvable"}}
         }},
         "/api/online_exams/{exam_id}/makeup/candidates": {"get": {
-            "tags": ["Examens en ligne"], "summary": "Étudiants pouvant passer le rattrapage",
-            "description": "Étudiants inscrits à l'examen qui n'ont AUCUNE copie : jamais entrés (sans moyens, absents) ou bloqués avant d'avoir vu les questions. Un étudiant qui a une copie (vue ou avec réponses) n'est jamais proposé. Réservé au personnel qui gère l'examen. Réponse `{candidates: [{id, name, email}], total}`.",
+            "tags": ["Rattrapage"], "summary": "Étudiants pouvant être admis au rattrapage",
+            "description": "Étudiants inscrits à l'examen. Par défaut ceux qui n'ont PAS composé (absents, sans moyens de connexion, empêchés avant les questions) ; `include_composed=1` renvoie tous les inscrits, y compris ceux qui ont une copie (connexion perdue en cours d'épreuve) : leur copie d'origine reste intacte. Chaque ligne : `id, name, email, composed, score, makeup` (titre du rattrapage où l'étudiant est déjà admis). Si `exam_id` est un rattrapage, la liste vient de l'examen d'origine. Réservé au personnel qui gère l'examen.",
             "parameters": [{"name": "exam_id", "in": "path", "required": True, "schema": {"type": "integer"}},
                            {"name": "search", "in": "query", "required": False, "schema": {"type": "string"}},
+                           {"name": "include_composed", "in": "query", "required": False, "schema": {"type": "string", "enum": ["0", "1"]}},
                            {"name": "limit", "in": "query", "required": False, "schema": {"type": "integer", "maximum": 500}},
                            {"name": "offset", "in": "query", "required": False, "schema": {"type": "integer"}}],
-            "responses": {"200": {"description": "Candidats"}, "403": {"description": "Accès non autorisé"}}
+            "responses": {"200": {"description": "`{candidates, total, composed_total}`"}, "403": {"description": "Accès non autorisé"}}
         }},
-        "/api/online_exams/{exam_id}/makeup": {"post": {
-            "tags": ["Examens en ligne"], "summary": "Organiser le rattrapage d'un examen",
-            "description": "Les étudiants choisis (sans copie) composent le MÊME sujet, dans le MÊME examen, sur un nouveau créneau. L'examen passe en mode vagues : la fenêtre d'origine devient la vague « Session normale » (les autres étudiants y restent), une vague « Rattrapage » est créée avec les seuls étudiants choisis. La tentative vide d'un étudiant bloqué avant les questions est retirée (il repart de zéro) ; une copie réelle n'est jamais effacée. L'examen terminé est rouvert jusqu'à la fin du rattrapage ; les étudiants reçoivent une notification et un e-mail avec leur créneau.",
+        "/api/online_exams/{exam_id}/makeups": {
+            "get": {
+                "tags": ["Rattrapage"], "summary": "Sessions de rattrapage d'un examen",
+                "description": "Réponse `{makeups: [{id, title, start_time, end_time, status, students, participants}], makeup_of_id}`.",
+                "parameters": [{"name": "exam_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+                "responses": {"200": {"description": "Rattrapages"}}
+            },
+            "post": {
+                "tags": ["Rattrapage"], "summary": "Organiser un rattrapage",
+                "description": "Crée une SESSION À PART : un nouvel examen (`makeup_of_id` = examen d'origine) avec le même sujet et les mêmes réglages, ses propres horaires, ses surveillants, ses copies et sa publication de résultats. Seuls les étudiants choisis y accèdent (l'inscription à l'UE ne suffit pas). L'examen d'origine n'est PAS modifié (statut, horaires, vagues, copies). Ce n'est pas une vague : le rattrapage peut lui-même être passé par vagues. L'examen d'origine doit être terminé. Les étudiants choisis reçoivent une notification et un e-mail avec la date et l'heure.",
+                "parameters": [{"name": "exam_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+                "requestBody": {"required": True, "content": {"application/json": {"schema": {"type": "object", "required": ["student_ids", "start_time", "end_time"],
+                    "properties": {"student_ids": {"type": "array", "items": {"type": "integer"}},
+                                   "start_time": {"type": "string", "format": "date-time"}, "end_time": {"type": "string", "format": "date-time"}}}}}},
+                "responses": {"201": {"description": "Rattrapage créé : `{success, exam, students}`"}, "400": {"description": "Examen non terminé, créneau invalide (passé, plus court que la durée), étudiant non inscrit, ou examen déjà un rattrapage"}, "403": {"description": "Accès non autorisé"}}
+            }
+        },
+        "/api/online_exams/{exam_id}/makeup_students": {"post": {
+            "tags": ["Rattrapage"], "summary": "Ajouter des étudiants à un rattrapage existant",
+            "description": "`exam_id` = le rattrapage. Ajoute des étudiants inscrits à l'examen d'origine (jamais en double) et les prévient. Refusé quand le rattrapage est terminé.",
             "parameters": [{"name": "exam_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
-            "requestBody": {"required": True, "content": {"application/json": {"schema": {"type": "object", "required": ["student_ids", "start_time", "end_time"],
-                "properties": {"student_ids": {"type": "array", "items": {"type": "integer"}},
-                               "start_time": {"type": "string", "format": "date-time"}, "end_time": {"type": "string", "format": "date-time"},
-                               "name": {"type": "string", "description": "Nom de la vague (défaut : Rattrapage)"}}}}}},
-            "responses": {"201": {"description": "Rattrapage organisé"}, "400": {"description": "Créneau invalide (passé, plus court que la durée), étudiant ayant déjà une copie ou non inscrit"}, "403": {"description": "Accès non autorisé"}}
+            "requestBody": {"required": True, "content": {"application/json": {"schema": {"type": "object", "required": ["student_ids"],
+                "properties": {"student_ids": {"type": "array", "items": {"type": "integer"}}}}}}},
+            "responses": {"200": {"description": "`{success, added}`"}, "400": {"description": "Pas un rattrapage, rattrapage terminé, étudiant non inscrit"}}
         }},
         "/api/online_exams/{exam_id}/waves/{wave_id}/students": {"post": {
             "tags": ["Examens en ligne"], "summary": "Rattacher des étudiants à une vague",

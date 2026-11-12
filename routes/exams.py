@@ -8442,6 +8442,8 @@ def get_professor_analytics():
 
         eligible_per_exam = []
         for exam in exams:
+            if exam.makeup_of_id:
+                continue                      # rattrapage : étudiants choisis, pas tous les inscrits de l'UE
             ec = exam.subject.ec if exam.subject else None
             if ec and ec.ue_id:
                 n = session.query(StudentUEEnrollment).filter_by(ue_id=ec.ue_id).count()

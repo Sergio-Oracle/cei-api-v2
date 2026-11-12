@@ -1,140 +1,214 @@
-"""Rattrapage d'un examen : faire recomposer des étudiants qui n'ont pas pu composer.
+"""Rattrapage : une SESSION À PART pour les étudiants qui n'ont pas pu composer l'examen.
 
-Cas réel : des étudiants sans moyens (pas de connexion, pas de matériel) ou bloqués avant d'avoir vu leur copie n'ont pas composé.
-Jusqu'ici la plateforme ne permettait pas de les faire passer à nouveau. Le personnel choisit ces étudiants et une nouvelle fenêtre ;
-ils composent le MÊME sujet, dans le MÊME examen, sur ce créneau — les autres étudiants ne sont pas touchés.
+Cas réel : des étudiants absents, sans moyens (pas de connexion, pas de matériel) ou empêchés avant d'avoir vu les questions n'ont pas
+composé. Le personnel les choisit et fixe une nouvelle date ; ils composent les MÊMES questions, dans une session distincte.
 
-Principe (réutilise les vagues, voir services/exam_waves.py) :
-  - l'examen passe en mode « vagues » : la fenêtre d'origine devient la vague « Session normale » (tous les autres étudiants y restent) ;
-  - une vague « Rattrapage » est créée avec la nouvelle fenêtre et SEULEMENT les étudiants choisis ;
-  - la tentative vide d'un étudiant jamais affiché (aucune copie) est retirée pour qu'il reparte de zéro ;
-  - l'examen est rouvert jusqu'à la fin du rattrapage ; les étudiants sont prévenus (notification + e-mail) ;
-  - une copie réelle (vue ou avec des réponses) n'est JAMAIS effacée : ces étudiants ne sont pas candidats.
+Ce n'est PAS une vague. Les vagues étalent la charge d'UNE session entre tous ses étudiants ; le rattrapage est une seconde session,
+pour des étudiants choisis, à une autre date. Les deux mécanismes ne se touchent pas :
+  - le rattrapage est un examen à part (`OnlineExam.makeup_of_id` = examen d'origine) : mêmes questions et mêmes réglages, ses propres
+    horaires, ses surveillants, ses copies, ses statistiques, sa correction et sa publication de résultats ;
+  - l'examen d'origine n'est PAS modifié : ni son statut, ni ses horaires, ni ses vagues, ni ses copies (aucune copie n'est effacée) ;
+  - seuls les étudiants de la liste du rattrapage y accèdent (voir services/exam_access.py) : être inscrit à l'UE ne suffit pas ;
+  - le rattrapage peut lui-même être passé par vagues, comme n'importe quel examen.
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta
-
-from sqlalchemy.dialects.postgresql import insert as pg_insert
+import threading
+import time
+from datetime import datetime, timedelta, timezone
 
 from models import (
-    ExamWave, ExamWaveStudent, ExamAttempt, ExamAccessCode, ExamActivityLog, CameraLog, ProctorAssignment,
-    OnlineExam, User, ExamStatus, AttemptStatus,
+    ExamAttempt, ExamMakeupStudent, OnlineExam, User, ExamStatus, AttemptStatus,
 )
 from services import exam_waves as W
 
-MAKEUP_NAME = 'Rattrapage'
+# Colonnes de l'examen d'origine qui ne sont PAS recopiées dans le rattrapage
+_NOT_COPIED = {
+    'id', 'title', 'start_time', 'end_time', 'status', 'created_at', 'makeup_of_id',
+    'results_published', 'results_published_at',          # le rattrapage a sa propre publication
+    'scheduled_correction_at', 'correction_triggered_at',  # la correction planifiée de l'examen d'origine ne le concerne pas
+}
+MAX_STUDENTS = 3000
 
 
-def _real_attempt(session, exam, attempt) -> bool:
-    """Vrai si l'étudiant a une vraie copie (vue ou avec réponses), ou compose encore."""
+class MakeupError(ValueError):
+    """Erreur de saisie, message prêt à afficher."""
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def _composed(attempt) -> bool:
+    """Vrai si l'étudiant a une vraie copie dans l'examen d'origine (vue ou avec réponses)."""
     from routes.exams import _never_seen
-    if attempt is None:
-        return False
-    if not _never_seen(attempt):
-        return True
-    # tentative vide mais encore dans son temps : il peut encore entrer, on ne la retire pas
-    if attempt.status == AttemptStatus.IN_PROGRESS and W.attempt_deadline(session, exam, attempt) > W._utcnow():
-        return True
-    return False
+    return attempt is not None and not _never_seen(attempt)
 
 
-def candidates(session, exam, search: str = '', limit: int = 200, offset: int = 0) -> dict:
-    """Étudiants inscrits à l'examen qui n'ont aucune copie : jamais entrés, ou bloqués avant d'avoir vu les questions."""
-    eligible = W.eligible_student_ids(session, exam)
+def _makeups(session, base_exam):
+    return session.query(OnlineExam).filter(OnlineExam.makeup_of_id == base_exam.id).order_by(OnlineExam.id).all()
+
+
+def _in_makeups(session, base_exam) -> dict:
+    """{student_id: titre du rattrapage} pour les étudiants déjà admis à un rattrapage de cet examen."""
+    ids = [m.id for m in _makeups(session, base_exam)]
+    if not ids:
+        return {}
+    titles = {m.id: m.title for m in _makeups(session, base_exam)}
+    return {sid: titles[eid] for (sid, eid) in session.query(ExamMakeupStudent.student_id, ExamMakeupStudent.exam_id)
+            .filter(ExamMakeupStudent.exam_id.in_(ids)).all()}
+
+
+def candidates(session, base_exam, search: str = '', include_composed: bool = False, limit: int = 200, offset: int = 0) -> dict:
+    """Étudiants inscrits à l'examen pouvant être admis au rattrapage.
+
+    Par défaut : ceux qui n'ont PAS composé (absents, sans moyens de connexion, empêchés avant les questions). Avec
+    `include_composed` : tous les inscrits, y compris ceux qui ont une copie (connexion perdue en cours d'épreuve, par exemple) ;
+    leur copie d'origine reste intacte. Chaque ligne : id, name, email, composed, score, makeup (titre du rattrapage où il est déjà)."""
+    eligible = W.eligible_student_ids(session, base_exam)
     if not eligible:
-        return {'candidates': [], 'total': 0}
+        return {'candidates': [], 'total': 0, 'composed_total': 0}
     attempts = {a.student_id: a for a in session.query(ExamAttempt).filter(
-        ExamAttempt.exam_id == exam.id, ExamAttempt.student_id.in_(eligible)).all()}
-    ids = [sid for sid in eligible if not _real_attempt(session, exam, attempts.get(sid))]
-    q = session.query(User.id, User.full_name, User.email).filter(User.id.in_(ids)) if ids else None
-    rows = q.all() if q is not None else []
+        ExamAttempt.exam_id == base_exam.id, ExamAttempt.student_id.in_(eligible)).all()}
+    taken = _in_makeups(session, base_exam)
+    users = {r[0]: (r[1], r[2]) for r in session.query(User.id, User.full_name, User.email).filter(User.id.in_(eligible)).all()}
+    rows = []
+    composed_total = 0
+    for sid in eligible:
+        a = attempts.get(sid)
+        comp = _composed(a)
+        composed_total += 1 if comp else 0
+        if comp and not include_composed:
+            continue
+        name, email = users.get(sid, ('', ''))
+        rows.append({'id': sid, 'name': name, 'email': email, 'composed': comp,
+                     'score': a.score if (comp and a is not None) else None, 'makeup': taken.get(sid)})
     s = (search or '').strip().lower()
     if s:
-        rows = [r for r in rows if s in (r[1] or '').lower() or s in (r[2] or '').lower()]
-    rows.sort(key=lambda r: ((r[1] or '').lower(), r[0]))
+        rows = [r for r in rows if s in (r['name'] or '').lower() or s in (r['email'] or '').lower()]
+    rows.sort(key=lambda r: ((r['name'] or '').lower(), r['id']))
     total = len(rows)
-    page = rows[max(0, offset):max(0, offset) + max(1, min(limit, 500))]
-    return {'candidates': [{'id': r[0], 'name': r[1], 'email': r[2]} for r in page], 'total': total}
+    off = max(0, offset)
+    return {'candidates': rows[off:off + max(1, min(limit, 500))], 'total': total, 'composed_total': composed_total}
 
 
-def schedule_makeup(session, exam, student_ids, start: datetime, end: datetime, name: str = None) -> dict:
-    """Crée (ou complète) la vague de rattrapage. Sans commit : l'appelant valide. Lève WaveError si la demande est invalide."""
-    name = (name or MAKEUP_NAME).strip()[:80] or MAKEUP_NAME
+def list_makeups(session, base_exam) -> list:
+    out = []
+    for m in _makeups(session, base_exam):
+        n = session.query(ExamMakeupStudent.id).filter_by(exam_id=m.id).count()
+        started = session.query(ExamAttempt.id).filter(ExamAttempt.exam_id == m.id, ExamAttempt.exam_seen_at.isnot(None)).count()
+        d = m.to_dict()
+        out.append({'id': m.id, 'title': m.title, 'start_time': d['start_time'], 'end_time': d['end_time'],
+                    'status': m.status.value, 'students': n, 'participants': started})
+    return out
+
+
+def _check_window(base_exam, start, end):
+    if start is None or end is None or end <= start:
+        raise MakeupError("La fin du rattrapage doit être postérieure à son début.")
+    if start < _now() - timedelta(minutes=1):
+        raise MakeupError("Le rattrapage doit commencer dans le futur.")
+    if (end - start) < timedelta(minutes=(base_exam.duration_minutes or 0)):
+        raise MakeupError(f"La fenêtre de rattrapage ne peut pas être plus courte que la durée de l'examen ({base_exam.duration_minutes} min).")
+
+
+def _check_students(session, base_exam, student_ids) -> list:
     try:
         ids = sorted({int(i) for i in (student_ids or [])})
     except (TypeError, ValueError):
-        raise W.WaveError("Liste d'étudiants invalide.")
+        raise MakeupError("Liste d'étudiants invalide.")
     if not ids:
-        raise W.WaveError("Choisissez au moins un étudiant.")
-    if len(ids) > 3000:
-        raise W.WaveError("Trop d'étudiants d'un coup (3 000 au maximum).")
-    if start is None or end is None or end <= start:
-        raise W.WaveError("La fin du rattrapage doit être postérieure à son début.")
-    if start < W._utcnow() - timedelta(minutes=1):
-        raise W.WaveError("Le rattrapage doit commencer dans le futur.")
-    if (end - start) < timedelta(minutes=(exam.duration_minutes or 0)):
-        raise W.WaveError(f"La fenêtre de rattrapage ne peut pas être plus courte que la durée de l'examen ({exam.duration_minutes} min).")
-    if exam.status == ExamStatus.DRAFT:
-        raise W.WaveError("Cet examen n'a pas encore eu lieu : modifiez simplement ses horaires.")
-
-    eligible = set(W.eligible_student_ids(session, exam))
+        raise MakeupError("Choisissez au moins un étudiant.")
+    if len(ids) > MAX_STUDENTS:
+        raise MakeupError(f"Trop d'étudiants d'un coup ({MAX_STUDENTS} au maximum).")
+    eligible = set(W.eligible_student_ids(session, base_exam))
     if any(i not in eligible for i in ids):
-        raise W.WaveError("Certains étudiants ne sont pas inscrits à cet examen.")
-    attempts = {a.student_id: a for a in session.query(ExamAttempt).filter(
-        ExamAttempt.exam_id == exam.id, ExamAttempt.student_id.in_(ids)).all()}
-    blocked = [i for i in ids if _real_attempt(session, exam, attempts.get(i))]
-    if blocked:
-        raise W.WaveError(f"{len(blocked)} étudiant(s) ont déjà une copie : seuls ceux qui n'ont pas composé peuvent passer le rattrapage.")
+        raise MakeupError("Certains étudiants ne sont pas inscrits à cet examen.")
+    return ids
 
-    # 1) Mode « vagues » : la fenêtre d'origine devient la session normale, tous les autres y restent
-    waves = W.waves_of(session, exam.id)
-    if not waves:
-        first = ExamWave(exam_id=exam.id, position=1, name='Session normale', start_time=exam.start_time, end_time=exam.end_time)
-        session.add(first)
-        session.flush()
-        waves = [first]
-    base_wave = min(waves, key=lambda w: w.start_time)
-    already = {sid for (sid,) in session.query(ExamWaveStudent.student_id).filter_by(exam_id=exam.id)}
-    with_attempt = {sid for (sid,) in session.query(ExamAttempt.student_id).filter_by(exam_id=exam.id)}
-    selected = set(ids)
-    for sid in (eligible | with_attempt) - already - selected:
-        session.execute(pg_insert(ExamWaveStudent.__table__).values(
-            wave_id=base_wave.id, exam_id=exam.id, student_id=sid
-        ).on_conflict_do_nothing(index_elements=['exam_id', 'student_id']))
 
-    # 2) Les tentatives vides des étudiants choisis sont retirées : ils repartent de zéro
-    removed = 0
-    for sid, att in attempts.items():
-        session.query(ExamAccessCode).filter_by(attempt_id=att.id).delete(synchronize_session=False)
-        session.query(ExamActivityLog).filter_by(attempt_id=att.id).delete(synchronize_session=False)
-        session.query(CameraLog).filter_by(attempt_id=att.id).delete(synchronize_session=False)
-        session.query(ProctorAssignment).filter_by(attempt_id=att.id).update({'attempt_id': None}, synchronize_session=False)
-        session.delete(att)
-        removed += 1
+def _next_title(session, base_exam) -> str:
+    n = len(_makeups(session, base_exam))
+    base = f"{base_exam.title} — Rattrapage"
+    return base if n == 0 else f"{base} {n + 1}"
+
+
+def create_makeup(session, base_exam, student_ids, start: datetime, end: datetime, actor_id=None) -> OnlineExam:
+    """Crée la session de rattrapage : un examen à part, ouvert, réservé aux étudiants choisis. Sans commit (l'appelant valide).
+    L'examen d'origine n'est pas touché."""
+    if base_exam.makeup_of_id:
+        raise MakeupError("Ouvrez l'examen d'origine pour organiser un rattrapage.")
+    if base_exam.status in (ExamStatus.DRAFT, ExamStatus.SCHEDULED) or base_exam.end_time > _now():
+        raise MakeupError("L'examen n'est pas encore terminé : le rattrapage s'organise une fois l'examen passé.")
+    ids = _check_students(session, base_exam, student_ids)
+    _check_window(base_exam, start, end)
+
+    values = {c.name: getattr(base_exam, c.name) for c in OnlineExam.__table__.columns if c.name not in _NOT_COPIED}
+    m = OnlineExam(**values, title=_next_title(session, base_exam), start_time=start, end_time=end,
+                   status=ExamStatus.ACTIVE, makeup_of_id=base_exam.id, results_published=False)
+    session.add(m)
     session.flush()
+    for sid in ids:
+        session.add(ExamMakeupStudent(exam_id=m.id, student_id=sid, added_by_id=actor_id))
+    session.flush()
+    return m
 
-    # 3) La vague de rattrapage (une seule par créneau : si une vague porte déjà ce nom et ces horaires, on la complète)
-    wave = next((w for w in waves if w.name == name and w.start_time == start and w.end_time == end), None)
-    if wave is None:
-        wave = ExamWave(exam_id=exam.id, position=max(w.position for w in waves) + 1, name=name, start_time=start, end_time=end)
-        session.add(wave)
-        session.flush()
-    W.move_students(session, exam, wave, ids)
-    W.sync_envelope(session, exam)
 
-    # 4) L'examen est rouvert jusqu'à la fin du rattrapage
-    reopened = False
-    if exam.status == ExamStatus.CLOSED:
-        exam.status = ExamStatus.ACTIVE
-        reopened = True
-    if reopened:
+def add_students(session, makeup_exam, student_ids, actor_id=None) -> list:
+    """Ajoute des étudiants à un rattrapage existant (jamais terminé). Renvoie les identifiants réellement ajoutés."""
+    if not makeup_exam.makeup_of_id:
+        raise MakeupError("Cet examen n'est pas un rattrapage.")
+    if makeup_exam.end_time <= _now():
+        raise MakeupError("Ce rattrapage est terminé.")
+    base = session.get(OnlineExam, makeup_exam.makeup_of_id)
+    ids = _check_students(session, base, student_ids)
+    have = {sid for (sid,) in session.query(ExamMakeupStudent.student_id).filter_by(exam_id=makeup_exam.id)}
+    added = [i for i in ids if i not in have]
+    for sid in added:
+        session.add(ExamMakeupStudent(exam_id=makeup_exam.id, student_id=sid, added_by_id=actor_id))
+    session.flush()
+    return added
+
+
+# ── Avis aux étudiants (notification + e-mail), en arrière-plan ─────────────────
+
+def notify_students(exam_id: int, student_ids) -> None:
+    """Prévient chaque étudiant admis : notification + e-mail avec date et heure. Jamais bloquant, une personne après l'autre."""
+    ids = list(student_ids)
+    if not ids:
+        return
+
+    def run():
+        import os
+        from models import get_session
+        s = get_session()
         try:
-            from cache import cache_delete
-            cache_delete(f'cei:room_closed:{exam.id}')
-        except Exception:
-            pass
-    W.queue_notices(session, exam.id, ids, 'assigned')
-    out = W.summary(session, exam)
-    out.update({'makeup_wave_id': wave.id, 'students': len(ids), 'attempts_removed': removed, 'reopened': reopened})
-    return out
+            exam = s.get(OnlineExam, exam_id)
+            if exam is None:
+                return
+            slot = W.slot_label(exam.start_time, exam.end_time)
+            title, duration = exam.title, exam.duration_minutes
+            users = [(u.id, u.email, u.full_name, bool(u.has_email), bool(u.is_active))
+                     for u in s.query(User).filter(User.id.in_(ids)).all()]
+        finally:
+            s.close()
+        app_url = os.getenv('APP_URL', 'https://dev-cei.ddns.net').rstrip('/')
+        from notif_bus import notify_user
+        from utils import send_exam_makeup_email
+        for uid, email, name, has_email, active in users:
+            if not active:
+                continue
+            try:
+                notify_user(uid, 'exam_makeup', 'Rattrapage',
+                            f"{title} : {slot}. Connectez-vous à l'heure indiquée.",
+                            priority='high', tags=['calendar'], extra={'exam_id': exam_id})
+            except Exception as e:
+                print(f"[rattrapage] notification {uid}: {e}")
+            if has_email and email and '@temp.edu' not in email:
+                try:
+                    send_exam_makeup_email(email, name, title, slot, duration, f"{app_url}/exam/{exam_id}")
+                except Exception as e:
+                    print(f"[rattrapage] e-mail {uid}: {e}")
+                time.sleep(0.15)                      # cadence douce vers le serveur SMTP
+
+    threading.Thread(target=run, daemon=True, name='makeup-notices').start()

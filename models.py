@@ -816,6 +816,8 @@ class OnlineExam(Base):
 
     status = Column(SQLEnum(ExamStatus), default=ExamStatus.DRAFT)
     created_by_id = Column(Integer, ForeignKey('users.id'), nullable=False)
+    # Rattrapage : renseigné sur une SESSION DE RATTRAPAGE (examen à part, mêmes questions, étudiants choisis) ; NULL pour un examen normal.
+    makeup_of_id = Column(Integer, ForeignKey('online_exams.id', ondelete='SET NULL'), nullable=True, index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     
     subject = relationship('Subject', back_populates='online_exams')
@@ -861,7 +863,8 @@ class OnlineExam(Base):
             'creator_name': self.creator.full_name if self.creator else None,
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'is_active': self.status == ExamStatus.ACTIVE,
-            'attempts_count': sum(1 for a in (self.attempts or []) if a.exam_seen_at is not None)
+            'attempts_count': sum(1 for a in (self.attempts or []) if a.exam_seen_at is not None),
+            'makeup_of_id': self.makeup_of_id,
         }
 
 def _json_list(raw):
@@ -1415,6 +1418,21 @@ class ExamWaveStudent(Base):
     student = relationship('User', foreign_keys=[student_id])
 
 
+class ExamMakeupStudent(Base):
+    """Étudiant admis à une session de rattrapage (examen à part, voir services/exam_makeup.py). Sans rapport avec les vagues."""
+    __tablename__ = 'exam_makeup_students'
+
+    id = Column(Integer, primary_key=True)
+    exam_id = Column(Integer, ForeignKey('online_exams.id', ondelete='CASCADE'), nullable=False, index=True)
+    student_id = Column(Integer, ForeignKey('users.id', ondelete='CASCADE'), nullable=False, index=True)
+    added_by_id = Column(Integer, ForeignKey('users.id', ondelete='SET NULL'), nullable=True)
+    added_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (UniqueConstraint('exam_id', 'student_id', name='unique_exam_makeup_student'),)
+
+    student = relationship('User', foreign_keys=[student_id])
+
+
 class StaffAuditLog(Base):
     """Journal d'activité des comptes à privilèges (administrateurs et responsables d'examen) : qui a fait
     quoi, quand, d'où. Alimenté automatiquement pour chaque requête de ces comptes (services/audit.py) ;
@@ -1909,6 +1927,9 @@ def init_db():
          "UPDATE exam_attempts SET exam_seen_at = COALESCE(last_seen_at, started_at, NOW() AT TIME ZONE 'UTC') "
          "WHERE last_seen_at IS NOT NULL OR started_at < TIMESTAMP '2026-10-09 10:00:00' "
          "OR (answers IS NOT NULL AND answers NOT IN ('', '{}', 'null'))"),
+        # 12/11/2026 — rattrapage : session de rattrapage = examen à part rattaché à l'examen d'origine
+        ("SELECT 1 FROM information_schema.columns WHERE table_name='online_exams' AND column_name='makeup_of_id'",
+         "ALTER TABLE online_exams ADD COLUMN makeup_of_id INTEGER REFERENCES online_exams(id) ON DELETE SET NULL"),
         ("SELECT 1 FROM information_schema.columns WHERE table_name='subjects' AND column_name='rag_grounded'",
          "ALTER TABLE subjects ADD COLUMN rag_grounded BOOLEAN NOT NULL DEFAULT FALSE"),
         ("SELECT 1 FROM information_schema.columns WHERE table_name='subjects' AND column_name='rag_passages'",

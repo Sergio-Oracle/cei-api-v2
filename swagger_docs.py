@@ -1872,7 +1872,7 @@ OPENAPI_SPEC = {
             "tags": ["Examens en ligne"], "summary": "Contrôle de lisibilité et de barème du sujet d'un examen (enseignant, admin)",
             "description": "Ce que les étudiants verraient et ce que la correction fera : questions reconnues par type, lignes jamais affichées, numéros de question en double (erreur : deux réponses s'écraseraient), "
                            "et, pour le barème : modèle de format laissé tel quel (« [justification courte] »), QCM sans bonne réponse ou dont la lettre n'est pas parmi les propositions, "
-                           "questions du barème absentes du sujet, et total des points posés ≠ 20 (la note est alors ramenée sur 20). `ok` est faux s'il existe une erreur ; "
+                           "questions du barème absentes du sujet, et, en simple information (`level: info`, jamais un défaut), un total des points posés ≠ 20 (la note est alors ramenée automatiquement sur 20). `ok` est faux s'il existe une erreur ; "
                            "l'activation de l'examen exige alors une confirmation (`force`).",
             "parameters": [{"name": "exam_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
             "responses": {"200": {"description": "{ok, questions, by_type, issues: [{level: error|warn, message}]}"}, "403": {"description": "Accès non autorisé"}, "404": {"description": "Examen non trouvé"}}

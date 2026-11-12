@@ -263,6 +263,13 @@ try:
     def boom(p): raise RuntimeError('IA indisponible')
     check("IA indisponible : aucune alerte, jamais d'erreur", verify_keys(vq, vr, ask=boom) == [])
 
+    print('\n== Barème qui ne totalise pas 20 : information sobre, pas un défaut (« Test Blanc », 5 QCM de 2 points) ==')
+    tb_c = ''.join(f"Question {i} — Titre {i} ............. (2 pts) [QCM]\nÉnoncé {i} ?\nA) a\nB) b\nC) c\nD) d\n\n" for i in range(1, 6))
+    tb_r = "BARÈME DE NOTATION\n\n" + ''.join(f"Question {i} — Titre {i} (2 pts)\n  • Bonne réponse : B) — b\n\n" for i in range(1, 6)) + "TOTAL : 10 / 10 points"
+    rep = analyze(tb_c, tb_r)
+    check("sujet accepté, aucun avertissement ni erreur", rep['ok'] and not any(i['level'] in ('warn', 'error') for i in rep['issues']), rep['issues'])
+    check("une information sobre indique le barème sur 10 ramené sur 20", [i['level'] for i in rep['issues']] == ['info'] and 'ramenées automatiquement sur 20' in rep['issues'][0]['message'], rep['issues'])
+
     print('\n== Contrôle d\'un sujet déjà enregistré (cas du 09/11/2026) ==')
     bad_c = ''.join(qcm(i, '1') for i in range(1, 5)) + "Question 5 — Architecture (1 pts) [QCM]\n"
     bad_r = '=== BARÈME ===\n\n' + ''.join(f"Question {i} (1 pts) :\n{PLACEHOLDER_KEY}\n\n" for i in range(1, 6)) + "TOTAL : 5 / 5 points"
@@ -274,7 +281,7 @@ try:
     check("numéros de question en double = erreur (les réponses s'écraseraient)", not analyze(dup_c)['ok'])
     sub14 = ''.join(qcm(i) for i in range(1, 57)); rub14 = '=== BARÈME ===\n\n' + ''.join(bar(i) for i in range(1, 57)) + ''.join(bar(i) for i in range(57, 69))
     msgs = ' | '.join(i['message'] for i in analyze(sub14, rub14)['issues'])
-    check("barème de 68 questions pour 56 posées (devoir du 28/10) : signalé avant l'examen", 'absentes du sujet' in msgs and 'ramenée sur 20' in msgs, msgs[:250])
+    check("barème de 68 questions pour 56 posées (devoir du 28/10) : signalé avant l'examen", 'absentes du sujet' in msgs and 'ramenées automatiquement sur 20' in msgs, msgs[:250])
 finally:
     R.call_claude = real_ai
     s.rollback()

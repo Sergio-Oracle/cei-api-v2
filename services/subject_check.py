@@ -123,9 +123,10 @@ def _rubric_issues(content: str, rubric: str, blocks: list) -> list:
     posed = {str(b.get('num')) for b in blocks if b.get('num')}
     total = round(sum(v for n, v in points.items() if n in posed), 2)
     if points and abs(total - 20) > 0.01:
-        issues.append({'level': 'warn', 'message':
-            f"Les questions posées totalisent {total:g} points, pas 20 : la note affichée sera ramenée sur 20 "
-            f"({total:g} points = 20/20). Ajustez les points si ce n'est pas voulu."})
+        # Information, PAS un défaut : la note est toujours ramenée sur 20 (barème de 10 points : 5/10 = 10/20). Affichée sobrement,
+        # jamais dans les « points à vérifier » (« Test Blanc », barème de 10 points : situation normale).
+        issues.append({'level': 'info', 'message':
+            f"Barème sur {total:g} points : les notes sont ramenées automatiquement sur 20 ({total:g} points = 20/20)."})
     return issues
 
 

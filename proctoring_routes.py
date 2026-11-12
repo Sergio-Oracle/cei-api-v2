@@ -1071,7 +1071,7 @@ def get_active_proctoring(exam_id):
                 'banned': a.status == AttemptStatus.BANNED,
                 'ban_reason': a.ban_reason if hasattr(a, 'ban_reason') else None,
                 'duration_minutes': (
-                    int((a.submitted_at - a.started_at).total_seconds() / 60)
+                    int((a.submitted_at - (a.exam_seen_at or a.started_at)).total_seconds() / 60)
                     if a.submitted_at and a.started_at else None
                 ),
                 'livekit_identity': f'student-{a.student_id}',

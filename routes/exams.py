@@ -1382,7 +1382,9 @@ def exam_copy_seen(attempt_id):
         if attempt.exam_seen_at is None:
             attempt.exam_seen_at = datetime.utcnow()
             session.commit()
-        return jsonify({'success': True, 'exam_seen': True})
+        # L'horloge de l'examen démarre ici : le serveur donne le temps écoulé de référence (≈ 0 à la première copie affichée)
+        return jsonify({'success': True, 'exam_seen': True, 'elapsed_seconds': attempt.clock_elapsed_seconds(),
+                        'server_now': utc_iso(datetime.utcnow())})
     except Exception as e:
         try: session.rollback()
         except Exception: pass
@@ -1746,7 +1748,7 @@ def get_exam_attempt_subject(attempt_id):
             'extra_minutes': attempt.extra_minutes or 0,
             'started_at': utc_iso(attempt.started_at),
             'server_now': utc_iso(datetime.utcnow()),
-            'elapsed_seconds': max(0.0, (datetime.utcnow() - attempt.started_at).total_seconds()) if attempt.started_at else None,
+            'elapsed_seconds': attempt.clock_elapsed_seconds(),     # l'horloge court depuis l'affichage de la copie
             'current_answer': current_answer,
         }
 
@@ -3339,7 +3341,7 @@ def export_exam_results_csv(exam_id):
 
             duration = ''
             if a.started_at and a.submitted_at:
-                delta = a.submitted_at - a.started_at
+                delta = a.submitted_at - (a.exam_seen_at or a.started_at)
                 duration = str(round(delta.total_seconds() / 60, 1))
 
             incidents = incident_counts.get(a.id, 0)
@@ -4012,7 +4014,7 @@ def export_exam_csv(exam_id):
                 a.risk_score or 0,
                 a.tab_switches or 0,
                 a.warnings_count or 0,
-                int((a.submitted_at - a.started_at).total_seconds() / 60) if a.submitted_at and a.started_at else None,
+                int((a.submitted_at - (a.exam_seen_at or a.started_at)).total_seconds() / 60) if a.submitted_at and a.started_at else None,
                 a.submitted_at if a.submitted_at else None,
             ])
         session.close()
@@ -4340,7 +4342,7 @@ def get_exam_stats(exam_id):
         durations = []
         for a in done:
             if a.submitted_at and a.started_at:
-                durations.append(int((a.submitted_at - a.started_at).total_seconds() / 60))
+                durations.append(int((a.submitted_at - (a.exam_seen_at or a.started_at)).total_seconds() / 60))
         session.close()
         return jsonify({
             'exam_title':       exam.title,
@@ -4414,7 +4416,7 @@ def get_exam_bilan(exam_id):
         for a in attempts:
             duration_min = None
             if a.submitted_at and a.started_at:
-                duration_min = round((a.submitted_at - a.started_at).total_seconds() / 60, 1)
+                duration_min = round((a.submitted_at - (a.exam_seen_at or a.started_at)).total_seconds() / 60, 1)
             status_val = (a.status.value if hasattr(a.status, 'value') else str(a.status)) if a.status else ''
             rows_out.append({
                 'attempt_id':    a.id,
@@ -4483,7 +4485,7 @@ def get_exam_bilan_pdf(exam_id):
             sv = (a.status.value if hasattr(a.status, 'value') else str(a.status)) if a.status else ''
             dur = None
             if a.submitted_at and a.started_at:
-                dur = round((a.submitted_at - a.started_at).total_seconds() / 60, 0)
+                dur = round((a.submitted_at - (a.exam_seen_at or a.started_at)).total_seconds() / 60, 0)
             rows_data.append({
                 'name':    a.student.full_name if a.student else '—',
                 'status':  status_labels.get(sv, sv),
@@ -4840,7 +4842,7 @@ def get_student_exam_history():
             if _never_seen(a):       # copie jamais affichée : l'examen n'a pas eu lieu pour cet étudiant
                 continue
             exam = a.exam
-            dur  = int((a.submitted_at - a.started_at).total_seconds() / 60) if a.submitted_at and a.started_at else None
+            dur  = int((a.submitted_at - (a.exam_seen_at or a.started_at)).total_seconds() / 60) if a.submitted_at and a.started_at else None
             # Retour #29 — même gate que get_student_online_results : note
             # masquée tant que le professeur n'a pas publié les résultats.
             published = bool(exam.results_published) if exam else True
@@ -5173,7 +5175,7 @@ def download_integrity_report(attempt_id):
             ['Soumis le', attempt.submitted_at.strftime('%d/%m/%Y %H:%M') if attempt.submitted_at else '—'],
         ]
         if attempt.submitted_at and attempt.started_at:
-            dur = int((attempt.submitted_at - attempt.started_at).total_seconds() / 60)
+            dur = int((attempt.submitted_at - (attempt.exam_seen_at or attempt.started_at)).total_seconds() / 60)
             info_data.append(['Durée', f'{dur} minutes'])
         t = Table(info_data, colWidths=[5*cm, 12*cm])
         t.setStyle(TableStyle([
@@ -8133,7 +8135,7 @@ def download_corrections_zip(exam_id):
 
                 duration_str = '—'
                 if attempt.submitted_at and attempt.started_at:
-                    mins = int((attempt.submitted_at - attempt.started_at).total_seconds() / 60)
+                    mins = int((attempt.submitted_at - (attempt.exam_seen_at or attempt.started_at)).total_seconds() / 60)
                     duration_str = f"{mins} min"
 
                 content = (
@@ -8310,7 +8312,7 @@ def get_attempt_review(attempt_id):
 
         duration_min = None
         if attempt.submitted_at and attempt.started_at:
-            duration_min = round((attempt.submitted_at - attempt.started_at).total_seconds() / 60, 1)
+            duration_min = round((attempt.submitted_at - (attempt.exam_seen_at or attempt.started_at)).total_seconds() / 60, 1)
 
         # Collect all scalar values before closing session to avoid DetachedInstanceError
         result = {
@@ -8552,7 +8554,7 @@ def download_attempt_report_pdf(attempt_id):
 
         duration_str = '—'
         if attempt.submitted_at and attempt.started_at:
-            mins = int((attempt.submitted_at - attempt.started_at).total_seconds() / 60)
+            mins = int((attempt.submitted_at - (attempt.exam_seen_at or attempt.started_at)).total_seconds() / 60)
             duration_str = f"{mins} min"
 
         incident_count = sum(1 for log in attempt.activity_logs if log.event_type != 'proctor_note')

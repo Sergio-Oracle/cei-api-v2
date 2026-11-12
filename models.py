@@ -966,6 +966,18 @@ class ExamAttempt(Base):
     camera_logs = relationship('CameraLog', back_populates='attempt', cascade='all, delete-orphan')
     proctor_assignment = relationship('ProctorAssignment', back_populates='attempt', uselist=False)
     
+    def clock_elapsed_seconds(self, now=None) -> float:
+        """Secondes de COMPOSITION écoulées. L'horloge de l'examen démarre quand la copie s'affiche à l'étudiant (`exam_seen_at`),
+        pas au clic sur « Démarrer » : le temps passé à l'étape caméra / micro / réseau n'est pas retiré de sa composition.
+        Copie pas encore affichée : 0. Si le signal « affichée » a manqué mais que des réponses existent, l'étudiant compose :
+        l'horloge court depuis le clic (comportement d'origine)."""
+        start = self.exam_seen_at
+        if start is None and self.answers not in (None, '', '{}', 'null'):
+            start = self.started_at
+        if start is None:
+            return 0.0
+        return max(0.0, ((now or datetime.utcnow()) - start).total_seconds())
+
     def to_dict(self):
         return {
             'id': self.id,
@@ -979,7 +991,7 @@ class ExamAttempt(Base):
             # Temps écoulé calculé par le SERVEUR : le minuteur de l'examen ne dépend ainsi
             # ni de l'heure, ni du fuseau horaire de l'appareil de l'étudiant.
             'server_now': utc_iso(datetime.utcnow()),
-            'elapsed_seconds': max(0.0, (datetime.utcnow() - self.started_at).total_seconds()) if self.started_at else None,
+            'elapsed_seconds': self.clock_elapsed_seconds(),     # l'horloge court depuis l'affichage de la copie
             'tab_switches': self.tab_switches,
             'warnings_count': self.warnings_count,
             'no_face_count': self.no_face_count or 0,

@@ -459,6 +459,18 @@ class SubjectService:
             if _kr:
                 rubric, rubric_source = _kr, 'corrigé'
 
+        # ── Contrôles posés SUR LE BARÈME RÉDIGÉ PAR L'IA (jamais sur un corrigé officiel ni sur les points du document) ──────────
+        # (a) la bonne réponse écrite dans le document fait foi ; (b) le total des points est EXACTEMENT celui demandé.
+        # Constat du 12/11/2026 : l'IA avait écrit 10 points au lieu de 20 (« Test Blanc ») sans que rien ne le vérifie.
+        _points_note = None
+        _key_fixes = []
+        if rubric_source == 'ia' and (rubric or '').strip():
+            from services.points_total import enforce_total, reconcile_inline_keys
+            rubric, _key_fixes = reconcile_inline_keys(annotated, rubric)
+            annotated, rubric, _changed, _old_total = enforce_total(annotated, rubric, total_points)
+            if _changed:
+                _points_note = f"Le barème totalisait {_old_total:g} points : il a été ramené à {total_points} points en gardant les proportions."
+
         result = SubjectRepository.create(
             title=title,
             content=annotated,
@@ -493,6 +505,30 @@ class SubjectService:
             detection['warnings'] += [i['message'] for i in coverage_issues(_norm_saved(annotated)[0])]
         except Exception as _cov_err:
             print(f'[SubjectService] contrôle de couverture indisponible: {_cov_err}')
+        for _n, _a, _b in _key_fixes:
+            detection['warnings'].append(f"Question {_n} : la bonne réponse du barème ({_a}) ne correspondait pas à celle écrite dans votre document ({_b}) : "
+                                         "elle a été alignée sur votre document.")
+        # Contrôle complet du sujet enregistré (mêmes règles que l'activation de l'examen) : le défaut est vu dès le dépôt
+        try:
+            from services.subject_check import analyze as _analyze
+            _chk = _analyze(annotated, rubric)
+            for _i in _chk['issues']:
+                if _i['level'] in ('error', 'warn') and _i['message'] not in detection['warnings']:
+                    detection['warnings'].append(_i['message'])
+            detection['subject_check_ok'] = _chk['ok']
+        except Exception as _chk_err:
+            print(f'[SubjectService] contrôle du sujet indisponible: {_chk_err}')
+        # Bonnes réponses écrites par l'IA (ni corrigé officiel, ni réponse dans le document) : seconde lecture indépendante,
+        # divergence = « à relire » (jamais de modification automatique)
+        if rubric_source == 'ia' and (rubric or '').strip():
+            try:
+                from services.answer_verify import verify_keys as _verify_keys
+                for _w in _verify_keys(annotated, rubric):
+                    if _w not in detection['warnings']:
+                        detection['warnings'].append(_w)
+            except Exception as _vk_err:
+                print(f'[SubjectService] vérification des réponses indisponible: {_vk_err}')
+        detection['points_note'] = _points_note
         result['detection'] = detection
         result['normalization'] = [r for r in norm_reports if r.get('structured')]
         result['has_corrige'] = bool(corrige_text)

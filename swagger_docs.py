@@ -2127,7 +2127,7 @@ OPENAPI_SPEC = {
                     "ec_id": {"type": "integer"},
                     "title": {"type": "string"},
                     "rubric_mode": {"type": "string", "enum": ["ai", "manual"], "description": "'ai' = barème généré par l'IA (défaut), 'manual' = squelette vierge à compléter"},
-                    "total_points": {"type": "integer", "description": "Barème total souhaité (1-200, défaut 20)"}
+                    "total_points": {"type": "integer", "description": "Barème total souhaité (1-200, défaut 20). Quand le barème est rédigé par l'IA et que le document ne donne pas lui-même ses points, la somme est ramenée EXACTEMENT à ce total (mêmes proportions, pas de 0,25) ; `detection.points_note` l'indique. Les points écrits dans le document ou dans un corrigé officiel ne sont jamais modifiés. Les bonnes réponses écrites dans le document (« Réponse attendue : B ») font foi sur le barème de l'IA ; les autres sont relues une seconde fois (`detection.warnings` : « à relire »). `detection.warnings` reprend aussi le contrôle complet du sujet (erreurs et avertissements)."}
                 }
             }}}},
             "responses": {
@@ -2486,6 +2486,13 @@ OPENAPI_SPEC = {
                 "file_ids": {"type": "array", "items": {"type": "string"}}, "context": {"type": "string"},
                 "draft": {"type": "object", "nullable": True, "properties": {"title": {"type": "string"}, "content": {"type": "string"}, "rubric": {"type": "string"}}}}}}}},
             "responses": {"200": {"description": "{success, reply, draft}"}, "400": {"description": "Message vide"}, "403": {"description": "Accès non autorisé"}}
+        }},
+        "/api/subjects/rescale_points": {"post": {
+            "tags": ["Sujets"], "summary": "Ramener le barème d'un sujet sur un total de points (sans enregistrer)",
+            "description": "Calcule le sujet et le barème avec une somme de points EXACTEMENT égale à `total_points` (20 par défaut), en gardant les proportions des points actuels (pas de 0,25) : titres de questions, critères, totaux de parties et ligne TOTAL suivent. Rien n'est enregistré : l'enseignant relit puis enregistre comme pour toute modification (bouton « Ramener sur 20 points » de l'éditeur de sujet). Réponse : `{content, rubric, total, previous_total, changed}`.",
+            "requestBody": {"required": True, "content": {"application/json": {"schema": {"type": "object", "required": ["content", "rubric"],
+                "properties": {"content": {"type": "string"}, "rubric": {"type": "string"}, "total_points": {"type": "number", "default": 20}}}}}},
+            "responses": {"200": {"description": "Sujet et barème ajustés"}, "400": {"description": "Sujet ou barème vide, ou aucune question reconnue"}, "403": {"description": "Accès non autorisé"}}
         }},
         "/api/subjects/count-questions": {"post": {
             "tags": ["Sujets"], "summary": "Compter les questions d'un fichier (sans rien enregistrer)",

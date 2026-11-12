@@ -301,3 +301,36 @@ def upload_subject_image(subject_id):
     except Exception as e:
         print(f'ERROR upload_subject_image: {e}')
         return jsonify({'error': str(e)}), 500
+
+
+# ── Ramener le barème sur un total (bouton « Ramener sur 20 » de l'éditeur de sujet) ─────────────────────────────────────
+
+@subjects_bp.route('/api/subjects/rescale_points', methods=['POST'])
+@paseto_required
+def rescale_subject_points():
+    """Calcule (sans rien enregistrer) le sujet et le barème avec une somme de points EXACTEMENT égale à `total_points` (20 par
+    défaut), en gardant les proportions des points actuels. L'enseignant relit puis enregistre comme pour toute modification.
+    Corps : {content, rubric, total_points?}. Réponse : {content, rubric, total, previous_total, changed}."""
+    try:
+        user = _get_user(get_current_user_id())
+        if not user or user.role not in (UserRole.PROFESSOR, UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN):
+            return jsonify({'error': 'Accès non autorisé'}), 403
+        data = request.get_json(silent=True) or {}
+        content, rubric = data.get('content') or '', data.get('rubric') or ''
+        try:
+            target = max(1.0, min(200.0, float(data.get('total_points') or 20)))
+        except (TypeError, ValueError):
+            target = 20.0
+        if not content.strip() or not rubric.strip():
+            return jsonify({'error': "Le sujet et son barème sont nécessaires pour ajuster les points."}), 400
+        from services.points_total import rescale_points, current_total
+        before, _ = current_total(content, rubric)
+        c2, r2, new = rescale_points(content, rubric, target)
+        if not new:
+            return jsonify({'error': "Aucune question reconnue : les points ne peuvent pas être ajustés automatiquement."}), 400
+        after, _ = current_total(c2, r2)
+        return jsonify({'success': True, 'content': c2, 'rubric': r2, 'total': after, 'previous_total': before,
+                        'changed': abs(before - after) > 0.01 or c2 != content or r2 != rubric})
+    except Exception as e:
+        print(f'ERROR rescale_subject_points: {e}')
+        return jsonify({'error': 'Ajustement impossible'}), 500

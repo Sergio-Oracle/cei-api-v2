@@ -16,6 +16,13 @@ _PLACEHOLDER_RE = re.compile(
     r"\[(?:justification courte|Ce qui est attendu|Titre court|Énoncé[^\]]*|Premier choix[^\]]*|Deuxième choix[^\]]*|"
     r"Troisième choix[^\]]*|Quatrième choix[^\]]*|Choix court|Proposition[^\]]*|Notion \d|Affirmation à évaluer|"
     r"Situation[^\]]*|Catégorie \d|Étape[^\]]*|Terme ou élément[^\]]*|Définition[^\]]*)\]", re.I)
+# Notes explicatives du GABARIT de barème (« Réponse : 1-A, 2-C  (numéro du trou, tiret, lettre de la proposition) ») : si elles figurent
+# dans un barème, la ligne est l'EXEMPLE de format recopié tel quel, pas une vraie clé (examen 170 du 12/11/2026 : deux textes à
+# trous notés avec la clé de l'exemple ; un étudiant qui répondait juste aurait été noté faux).
+_TEMPLATE_NOTE_RE = re.compile(
+    r"\(\s*(?:numéro d[ue] (?:l['’]élément|trou)\s*,\s*tiret|lettres des éléments du premier au dernier|"
+    r"valeur attendue et tolérance|COURT\s*:\s*réponses acceptées|formule avec les variables de l['’]énoncé)[^)]*\)"
+    r"|réponse principale\s*\|\s*variante acceptable|Vrai\s*\(ou Faux\)|\[critère attendu\]|\[critère[^\]]*\]", re.I)
 _KEY_X_RE = re.compile(r'(?:Bonnes?\s+réponses?)\s*:\s*X\)', re.I)
 _CRITERE_Z_RE = re.compile(r'Critère\s*:\s*Z\s*pts', re.I)
 
@@ -38,6 +45,9 @@ def placeholder_in(text: str):
         return 'Bonne réponse : X)'
     if _CRITERE_Z_RE.search(text or ''):
         return 'Critère : Z pts'
+    m = _TEMPLATE_NOTE_RE.search(text or '')
+    if m:
+        return "exemple de format recopié"
     return None
 
 
@@ -82,6 +92,14 @@ def defects(type_key: str, content_block: str, rubric_block: str) -> list:
             out.append("aucun trou {1} {2}… dans le texte")
         if type_key in ('association', 'trous') and len(set(letters)) < 2:
             out.append("propositions lettrées absentes")
+        if pairs and type_key in ('association', 'trous') and letters:
+            used = set(x.upper() for x in re.findall(r'\d+\s*-\s*([A-H])', pairs.group(1)))
+            if used - set(letters):
+                out.append("une réponse du barème n'est pas parmi les propositions")
+        if pairs and n_expected:
+            nums = sorted(int(x) for x in re.findall(r'(\d+)\s*-\s*[A-H]', pairs.group(1)))
+            if nums != list(range(1, n_expected + 1)):
+                out.append("les numéros du barème ne correspondent pas aux éléments de la question")
     elif type_key == 'ordre':
         if len(set(letters)) < 3:
             out.append("moins de 3 éléments à remettre en ordre")

@@ -43,6 +43,31 @@ from services.ec_rights import can_manage_exam, can_view_exam, visible_exam_filt
 
 exams_bp = Blueprint('exams', __name__)
 
+
+_SUBJ_DURATION_RES = (
+    re.compile(r'(Durée\s*:\s*)\d{1,4}(\s*minutes?)', re.I),
+    re.compile(r'(Vous disposez de\s*)\d{1,4}(\s*minutes?)', re.I),
+)
+
+
+def _align_subject_duration(content: str, exam) -> str:
+    """La durée écrite dans le sujet (« Durée : 90 minutes », « Vous disposez de 90 minutes ») est celle demandée à la génération ;
+    l'examen peut être réglé autrement (examen 170 : sujet 90 min, examen 80 min). L'étudiant lit toujours la durée RÉELLE de
+    l'examen. Le sujet enregistré n'est pas modifié."""
+    try:
+        minutes = int(getattr(exam, 'duration_minutes', 0) or 0)
+        if not content or minutes <= 0:
+            return content
+        head, sep, tail = content.partition('QUESTIONS')        # seulement l'en-tête et les consignes, jamais un énoncé
+        if not sep:
+            return content
+        for rx in _SUBJ_DURATION_RES:
+            head = rx.sub(lambda m: f"{m.group(1)}{minutes}{m.group(2)}", head)
+        return head + sep + tail
+    except Exception:
+        return content
+
+
 _UPLOAD_FOLDER = os.getenv('UPLOAD_FOLDER', 'static/uploads')
 
 @exams_bp.route('/api/online_exams', methods=['GET'])
@@ -919,7 +944,7 @@ def get_online_exam_details(exam_id):
             content = exam.subject.content or ''
             # Pour les étudiants, retirer la section barème si elle est incluse dans content
             if user.role == UserRole.STUDENT:
-                content = _strip_bareme_from_content(content)
+                content = _align_subject_duration(_strip_bareme_from_content(content), exam)
             subject_content = {
                 'id': exam.subject.id,
                 'title': exam.subject.title,
@@ -1740,7 +1765,7 @@ def get_exam_attempt_subject(attempt_id):
             'id': subject.id,
             'title': subject.title,
             # Retirer la section barème du contenu (elle contient les réponses)
-            'content': _strip_bareme_from_content(subject.content or ''),
+            'content': _align_subject_duration(_strip_bareme_from_content(subject.content or ''), attempt.exam),
             # Barème NON transmis aux étudiants — contient les réponses
             # Infos exam/tentative pour la page proctorée
             'exam_title': attempt.exam.title,
@@ -1767,7 +1792,7 @@ def _build_exam_pages(exam, seed) -> dict:
     retiré, mélange déterministe selon `seed`). Partagé par la tentative
     réelle (seed = id de tentative) et la prévisualisation enseignant."""
     subject = exam.subject if exam else None
-    content = _strip_bareme_from_content(subject.content or '') if subject else ''
+    content = _align_subject_duration(_strip_bareme_from_content(subject.content or ''), exam) if subject else ''
 
     blocks = _parse_subject_blocks_ordered(content) if content else []
 
@@ -6701,6 +6726,7 @@ Réponds UNIQUEMENT avec les {n} questions puis "BARÈME:" puis leurs critères 
             return [i for i, (c_b, r_b) in enumerate(pairs) if _gen_defects(type_key, c_b, r_b)]
 
         all_questions = []  # [{type_key, content_block, rubric_block, points}]
+        _not_generated = []  # [(type, nombre)] questions que l'IA n'a pas su produire correctement
         _media_attached = False
         for _type_idx, _k in enumerate(_selected):
             _n_for_type = count_by_type[_k]
@@ -6729,7 +6755,7 @@ Réponds UNIQUEMENT avec les {n} questions puis "BARÈME:" puis leurs critères 
                 if _pairs and len(_pairs) == len(_this_batch_pts):
                     # Une question encore défectueuse est refaite SEULE (petite réponse : pas de troncature) avant d'être gardée
                     for _i in _defective_positions(_k, _pairs):
-                        for _retry in range(2):
+                        for _retry in range(3):
                             try:
                                 _one = _generate_type_batch(_k, [_this_batch_pts[_i]], '')
                             except Exception as _e:
@@ -6746,12 +6772,55 @@ Réponds UNIQUEMENT avec les {n} questions puis "BARÈME:" puis leurs critères 
                     _media_attached = True
                 for _i, (c_block, r_block) in enumerate(_pairs):
                     _pts = _this_batch_pts[_i] if _i < len(_this_batch_pts) else _this_batch_pts[-1]
-                    all_questions.append({'type_key': _k, 'content_block': c_block, 'rubric_block': r_block, 'points': _pts,
-                                          'defects': _gen_defects(_k, c_block, r_block)})
+                    # Une question encore défectueuse après ses reprises n'entre JAMAIS dans le sujet (examen 170 du 12/11/2026 :
+                    # texte à trous sans propositions gardé tel quel) : elle est écartée, puis remplacée plus bas.
+                    if _gen_defects(_k, c_block, r_block):
+                        print(f"WARNING generate-full-exam : question {_k} défectueuse écartée ({_gen_defects(_k, c_block, r_block)})")
+                        continue
+                    all_questions.append({'type_key': _k, 'content_block': c_block, 'rubric_block': r_block, 'points': _pts, 'defects': []})
                 _offset += len(_this_batch_pts)
+
+            # Questions manquantes de ce type (lot perdu, lot incomplet, question écartée) : refaites UNE PAR UNE, sans défaut et
+            # sans doublon d'une question déjà retenue. Nombre d'essais borné : la génération ne s'éternise jamais.
+            _have = [q for q in all_questions if q['type_key'] == _k]
+            _missing = _n_for_type - len(_have)
+            _tries_left = min(12, 3 * max(0, _missing))
+            while _missing > 0 and _tries_left > 0:
+                _tries_left -= 1
+                _pts_one = _per_q_pts[min(len(_have), len(_per_q_pts) - 1)]
+                try:
+                    _one = _generate_type_batch(_k, [_pts_one], '')
+                except Exception as _e:
+                    print(f"WARNING generate-full-exam : remplacement {_k} impossible : {_e}")
+                    continue
+                if not _one or _gen_defects(_k, _one[0][0], _one[0][1]):
+                    continue
+                if any(_similarity(_one[0][0][:300], q['content_block'][:300]) >= DUPLICATE_THRESHOLD for q in all_questions):
+                    continue
+                _new_q = {'type_key': _k, 'content_block': _one[0][0], 'rubric_block': _one[0][1], 'points': _pts_one, 'defects': []}
+                all_questions.append(_new_q); _have.append(_new_q)
+                _missing -= 1
+            if _missing > 0:
+                _not_generated.append((_k, _missing))
 
         if not all_questions:
             return jsonify({'error': "L'IA n'a réussi à générer aucune question — réessayez, ou réduisez le nombre de questions demandé."}), 500
+
+        # ── Le total des points est TOUJOURS la note demandée. S'il manque des questions, leurs points sont redistribués sur les
+        # questions réellement produites (proportionnellement, 2 décimales, la dernière absorbe l'arrondi) : jamais un sujet
+        # annoncé « sur 20 » qui n'en totalise que 16.
+        try:
+            _want_total = float(total_points)
+            _got_total = round(sum(float(q['points']) for q in all_questions), 2)
+            if _want_total > 0 and _got_total > 0 and abs(_got_total - _want_total) > 0.01:
+                _ratio = _want_total / _got_total
+                for q in all_questions:
+                    q['points'] = round(float(q['points']) * _ratio, 2)
+                _delta = round(_want_total - sum(q['points'] for q in all_questions), 2)
+                all_questions[-1]['points'] = round(all_questions[-1]['points'] + _delta, 2)
+                print(f"INFO generate-full-exam : points redistribués ({_got_total} → {_want_total})")
+        except Exception as _e:
+            print(f"WARNING generate-full-exam : redistribution des points impossible : {_e}")
 
         # ── Assemblage final : renumérotation strictement séquentielle 1..N,
         # regroupée par type quand plusieurs types sont sélectionnés (mêmes
@@ -6904,8 +6973,12 @@ QUESTIONS
         except Exception as _e:
             print(f"WARNING generate-full-exam : contrôle de types impossible : {_e}")
 
+        for _k_ng, _n_ng in _not_generated:
+            type_warnings.append(f"{_n_ng} question(s) « {_TEMPLATES[_k_ng][0]} » n'ont pas pu être générées correctement et ont été retirées : "
+                                 f"le sujet compte {len(all_questions)} questions, toujours notées sur {total_points} points. "
+                                 "Vous pouvez en ajouter avec « Générer d'autres questions ».")
         for _q in all_questions:
-            if _q.get('defects'):
+            if _q.get('defects'):      # (ne se produit plus : une question défectueuse est écartée avant l'assemblage)
                 type_warnings.append(f"Question {_q.get('num')} : {' ; '.join(_q['defects'])}. Corrigez-la dans la prévisualisation avant d'enregistrer.")
         return jsonify({
             'success': True,

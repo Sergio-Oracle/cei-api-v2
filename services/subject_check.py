@@ -118,6 +118,7 @@ def _rubric_issues(content: str, rubric: str, blocks: list) -> list:
     for i in grading_report(content, rubric)['issues']:
         if i['message'] not in seen and not (i['level'] == 'warn' and 'ne correspond pas à la somme' in i['message']):
             issues.append({'level': i['level'], 'message': i['message']})
+    issues += _grid_issues(rubric, blocks, {i['message'] for i in issues})
     points = _question_points_map(content, rubric)
     posed = {str(b.get('num')) for b in blocks if b.get('num')}
     total = round(sum(v for n, v in points.items() if n in posed), 2)
@@ -126,6 +127,44 @@ def _rubric_issues(content: str, rubric: str, blocks: list) -> list:
             f"Les questions posées totalisent {total:g} points, pas 20 : la note affichée sera ramenée sur 20 "
             f"({total:g} points = 20/20). Ajustez les points si ce n'est pas voulu."})
     return issues
+
+
+def _grid_issues(rubric: str, blocks: list, seen: set) -> list:
+    """Questions à grille (texte à trous, association, classement) d'un sujet enregistré : propositions présentes et clé du barème
+    cohérente avec la question. Examen 170 (12/11/2026) : un texte à trous sans aucune proposition et une clé qui ne
+    correspondait pas aux trous étaient passés avec un simple avertissement sur le total des points."""
+    from services import question_types as QT
+    from services.rubric_check import _blocks
+    rblocks = _blocks(rubric or '')
+    out = []
+
+    def err(num, msg):
+        m = f"Question {num} : {msg}"
+        if m not in seen:
+            out.append({'level': 'error', 'message': m})
+
+    for b in blocks:
+        t, num = b.get('type'), str(b.get('num'))
+        if t not in ('trous', 'association', 'tri'):
+            continue
+        items = b.get('items') or []
+        options = b.get('options') or []
+        letters = {str(o.get('letter', '')).upper() for o in options if isinstance(o, dict)}
+        if t in ('trous', 'association') and len(letters) < 2:
+            err(num, "aucune proposition à choisir n'a été reconnue : l'étudiant ne pourrait pas répondre. "
+                     "Ajoutez les propositions « A. … », « B. … » sous l'énoncé.")
+        if not items:
+            err(num, "aucun élément à compléter n'a été reconnu (trou {1}, {2}… ou ligne « - élément »).")
+        rm = rblocks.get(num)
+        pairs = QT.extract_keys_from_block(rm.group(0)).get('pairs') if rm else None
+        if pairs and items:
+            if sorted(pairs) != list(range(1, len(items) + 1)):
+                err(num, f"le barème donne {len(pairs)} réponse(s) mais la question a {len(items)} élément(s) à compléter : "
+                         "la correction automatique serait fausse.")
+            elif t in ('trous', 'association') and letters and set(pairs.values()) - letters:
+                bad = ', '.join(sorted(set(pairs.values()) - letters))
+                err(num, f"la réponse du barème ({bad}) n'existe pas parmi les propositions du sujet.")
+    return out
 
 
 def alert_if_unreadable(exam, pages: dict) -> None:

@@ -169,12 +169,59 @@ try:
     rep = analyze(cont, rub_out)
     check("le sujet généré passe le contrôle de lisibilité, barème compris", rep['ok'], [i['message'] for i in rep['issues'] if i['level'] == 'error'])
 
-    print('\n== Génération : IA qui ne s\'en sort pas → l\'enseignant est averti ==')
+    print('\n== Génération : IA qui ne s\'en sort jamais → aucun sujet défectueux n\'est rendu ==')
     R.call_claude = lambda sp, um, **kw: "Question 1 — Titre ............. (1 pt) [QCM]\nÉnoncé ?\n"          # toujours incomplet
     r = c.post('/api/subjects/generate-full-exam', headers=H(adm), json=body)
     j = r.get_json() or {}
-    check("le sujet est rendu, avec un avertissement par question défectueuse", r.status_code == 200 and len(j.get('type_warnings') or []) >= 1, (r.status_code, j.get('type_warnings')))
-    check("l'avertissement cite le numéro de la question", any(re.search(r'Question \d+ :', w) for w in (j.get('type_warnings') or [])))
+    check("aucun sujet rendu, message clair à l'enseignant", r.status_code == 500 and 'aucune question' in (j.get('error') or ''), (r.status_code, str(j)[:200]))
+
+    print('\n== Génération : une question impossible à produire est RETIRÉE, les points sont redistribués (examen 170, 12/11/2026) ==')
+    def fake2(system_prompt, user_message, **kw):
+        n = int(re.search(r'EXACTEMENT (\d+) questions', user_message).group(1))
+        if n == 1:      # les reprises une par une échouent toujours : question sans propositions
+            return "Question 1 — Titre ............. (1 pt) [QCM]\nÉnoncé ?\n\nBARÈME:\n  • Bonne réponse : B) — car"
+        out = ''.join(f"Question {i} — Titre {i} ............. (1 pt) [QCM]\nÉnoncé {i} ?\n" + ("A) a\nB) b\nC) c\nD) d\n\n" if i < n else "\n") for i in range(1, n + 1))
+        return out.rstrip() + "\n\nBARÈME:\n" + '\n\n'.join(f"  • Bonne réponse : B) — car b{i}" for i in range(1, n + 1))
+    R.call_claude = fake2
+    r = c.post('/api/subjects/generate-full-exam', headers=H(adm), json=body)
+    j = r.get_json() or {}; cont, rub_out = j.get('content', ''), j.get('rubric', '')
+    check("génération réussie malgré la question impossible", r.status_code == 200 and j.get('success'), (r.status_code, str(j)[:200]))
+    check("la question défectueuse n'est PAS dans le sujet (4 questions)", len(re.findall(r'(?m)^Question \d+ —', cont)) == 4, re.findall(r'(?m)^Question \d+ —.*', cont))
+    check("chaque question gardée a ses propositions", len(G._CHOICE_RE.findall(cont)) == 16)
+    check("le total reste la note demandée (5 points sur 4 questions)", 'TOTAL : 5 / 5 points' in rub_out and cont.count('(1.25 pts)') == 4, rub_out[-120:])
+    check("l'enseignant est prévenu du retrait", any('retirées' in w for w in (j.get('type_warnings') or [])), j.get('type_warnings'))
+    rep = analyze(cont, rub_out)
+    check("le sujet rendu passe le contrôle sans erreur ni avertissement de total", rep['ok'] and not any('totalisent' in i['message'] for i in rep['issues']) or '5 points' in str(rep['issues']), rep['issues'])
+
+    print('\n== Clé de barème recopiée du modèle de format (examen 170) ==')
+    tq = "Question 1 — Complétez (1 pts) [TROUS]\nIl faut activer les {1} du {2}.\nA. mises à jour\nB. système\nC. sauvegardes\n"
+    check("« 1-A, 2-C  (numéro du trou, tiret, lettre…) » = exemple recopié, question défectueuse", G.defects('trous', tq, "• Réponse : 1-A, 2-C  (numéro du trou, tiret, lettre de la proposition)"))
+    check("une vraie clé « 1-A, 2-B » est acceptée", not G.defects('trous', tq, "• Réponse : 1-A, 2-B"), G.defects('trous', tq, "• Réponse : 1-A, 2-B"))
+    check("clé hors des propositions refusée", G.defects('trous', tq, "• Réponse : 1-A, 2-F"))
+    check("clé qui ne couvre pas tous les trous refusée", G.defects('trous', tq, "• Réponse : 1-A"))
+    check("texte à trous sans propositions refusé", G.defects('trous', "Question 1 — C (1 pts) [TROUS]\nIl faut {1} l'ordinateur\n", "• Réponse : 1-A"))
+
+    print('\n== Sujet enregistré : texte à trous défectueux bloqué à l\'activation (examen 170) ==')
+    c170 = ("QUESTIONS\n\nQuestion 1 — Mises à jour (1 pts) [TROUS]\nIl faut activer les {1} du {2}.\nA. mises à jour\nB. système\nC. sauvegardes\n\n"
+            "Question 2 — Nettoyage (1 pts) [TROUS]\nAvant d'ouvrir le boîtier, il faut {1} l'ordinateur\n")
+    r170 = ("BARÈME DE NOTATION\n\nQuestion 1 — Mises à jour (1 pts)\n• Réponse : 1-A, 2-C  (numéro du trou, tiret, lettre de la proposition)\n\n"
+            "Question 2 — Nettoyage (1 pts)\n• Réponse : 1-A, 2-C  (numéro du trou, tiret, lettre de la proposition)\n\nTOTAL : 2 / 2 points")
+    rep = analyze(c170, r170); msgs = ' | '.join(i['message'] for i in rep['issues'] if i['level'] == 'error')
+    check("le sujet est refusé", not rep['ok'])
+    check("clé recopiée du modèle signalée aux deux questions", msgs.count('exemple de format recopié') == 2, msgs[:300])
+    check("question sans proposition signalée", "Question 2 : aucune proposition" in msgs, msgs[:400])
+    check("clé qui ne correspond pas aux trous signalée", "Question 2 : le barème donne 2 réponse(s) mais la question a 1" in msgs, msgs[:500])
+    ok_c = c170.replace("il faut {1} l'ordinateur\n", "il faut {1} l'ordinateur et {2} le câble.\nA. éteindre\nB. débrancher\nC. redémarrer\n")
+    ok_r = r170.replace("1-A, 2-C  (numéro du trou, tiret, lettre de la proposition)", "1-A, 2-B")
+    rep = analyze(ok_c, ok_r)
+    check("le même sujet corrigé est accepté", rep['ok'], [i['message'] for i in rep['issues'] if i['level'] == 'error'])
+
+    print('\n== Durée lue par l\'étudiant = durée réelle de l\'examen ==')
+    from types import SimpleNamespace as _NS
+    txt = "Durée : 90 minutes | Note totale : 20 points\nVous disposez de 90 minutes pour composer.\nQUESTIONS\nQuestion 1 — Un trajet dure 90 minutes ? (1 pts) [VF]\n"
+    out = R._align_subject_duration(txt, _NS(duration_minutes=80))
+    check("en-tête et consignes alignés sur 80 minutes", 'Durée : 80 minutes' in out and 'Vous disposez de 80 minutes' in out, out[:120])
+    check("un énoncé de question n'est jamais modifié", 'Un trajet dure 90 minutes' in out)
 
     print('\n== Contrôle d\'un sujet déjà enregistré (cas du 09/11/2026) ==')
     bad_c = ''.join(qcm(i, '1') for i in range(1, 5)) + "Question 5 — Architecture (1 pts) [QCM]\n"

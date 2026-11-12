@@ -11,14 +11,20 @@ from sqlalchemy import func
 from datetime import datetime, timedelta
 
 s = get_session(); sfx = uuid.uuid4().hex[:6]
+import os
+# RATTRAPAGE_UE_ID : exécution sur un serveur réel, dans l'UE de test uniquement (comptes @temp.edu, aucun e-mail envoyé)
+_UE = os.environ.get('RATTRAPAGE_UE_ID')
 # UE la moins peuplée parmi celles qui ont un sujet : le test touche peu de comptes réels
 row = (s.query(Subject, func.count(StudentUEEnrollment.id)).join(EC, EC.id == Subject.ec_id)
        .outerjoin(StudentUEEnrollment, StudentUEEnrollment.ue_id == EC.ue_id).filter(EC.ue_id != None)
        .group_by(Subject.id).order_by(func.count(StudentUEEnrollment.id)).first())
 subj = row[0]; ue_id = subj.ec.ue_id
+if _UE:
+    subj = s.query(Subject).join(EC, EC.id == Subject.ec_id).filter(EC.ue_id == int(_UE)).first(); ue_id = int(_UE)
 now = datetime.utcnow(); c = app.test_client(); made = {'users': [], 'exam': None}
 def mk(tag, role=UserRole.STUDENT):
-    u = User(email=f'zz_ratt_{tag}_{sfx}@test.local', full_name=f'ZZ Ratt {tag}', role=role, is_active=True, password_hash='x')
+    u = User(email=f'zz_ratt_{tag}_{sfx}@' + ('temp.edu' if _UE else 'test.local'), full_name=f'ZZ Ratt {tag}', role=role, is_active=True, password_hash='x',
+             has_email=not _UE)
     s.add(u); s.commit(); made['users'].append(u.id); return u
 def H(u): return {'Authorization': 'Bearer ' + create_access_token(u.id, u.role.value, u.email)}
 RES = []

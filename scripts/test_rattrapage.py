@@ -31,8 +31,8 @@ def chk(n, ok, d=''):
 def iso(dt): return dt.isoformat() + 'Z'
 try:
     adm = mk('adm', UserRole.ADMIN)
-    a = mk('bloque'); b = mk('absent'); cc = mk('copie'); e = mk('autre'); f = mk('horsue')
-    for u in (a, b, cc, e):
+    a = mk('bloque'); b = mk('absent'); cc = mk('copie'); e = mk('autre'); f = mk('horsue'); g = mk('bon')
+    for u in (a, b, cc, e, g):
         s.add(StudentUEEnrollment(student_id=u.id, ue_id=ue_id))
     s.commit()
     ex = OnlineExam(subject_id=subj.id, title='Rattrapage test', duration_minutes=60, start_time=now - timedelta(hours=3), end_time=now - timedelta(hours=1),
@@ -41,17 +41,25 @@ try:
     att_a = ExamAttempt(exam_id=eid, student_id=a.id, status=AttemptStatus.AUTO_SUBMITTED, answers='{}', submitted_at=now - timedelta(hours=1))
     att_c = ExamAttempt(exam_id=eid, student_id=cc.id, status=AttemptStatus.SUBMITTED, answers='{"1":"réponse"}', exam_seen_at=now - timedelta(hours=2),
                         submitted_at=now - timedelta(hours=1), score=3.0)
-    s.add_all([att_a, att_c]); s.commit(); id_a, id_c = att_a.id, att_c.id
+    att_g = ExamAttempt(exam_id=eid, student_id=g.id, status=AttemptStatus.SUBMITTED, answers='{"1":"bien"}', exam_seen_at=now - timedelta(hours=2),
+                        submitted_at=now - timedelta(hours=1), score=14.0)
+    s.add_all([att_a, att_c, att_g]); s.commit(); id_a, id_c = att_a.id, att_c.id
 
     print('== Qui peut être admis ==')
     r = c.get(f'/api/online_exams/{eid}/makeup/candidates?limit=500', headers=H(adm)).get_json()
     ids = {x['id'] for x in r['candidates']}
-    chk('par défaut : l\'étudiant empêché, l\'absent et l\'inscrit sans copie', {a.id, b.id, e.id} <= ids, ids)
-    chk('par défaut : pas celui qui a composé', cc.id not in ids)
+    chk('par défaut : les absents (empêché, jamais connecté, inscrit sans copie)', {a.id, b.id, e.id} <= ids, ids)
+    chk('par défaut : celui qui a moins de 10/20 est proposé d\'emblée', cc.id in ids)
+    chk('par défaut : celui qui a 10/20 ou plus n\'est pas proposé', g.id not in ids)
     chk('jamais un étudiant non inscrit', f.id not in ids)
+    rows = {x['id']: x for x in r['candidates']}
+    chk('absents signalés absents, sous la moyenne signalés sous la moyenne', rows[b.id]['absent'] and not rows[b.id]['below_average'] and rows[cc.id]['below_average'] and not rows[cc.id]['absent'], rows[cc.id])
+    chk('compteurs : absents et sous la moyenne', r['absent_total'] >= 3 and r['below_total'] == 1 and r['priority_total'] == r['absent_total'] + 1, (r['absent_total'], r['below_total'], r['priority_total']))
     r = c.get(f'/api/online_exams/{eid}/makeup/candidates?limit=500&include_composed=1', headers=H(adm)).get_json()
-    row_c = next((x for x in r['candidates'] if x['id'] == cc.id), None)
-    chk('« tous les inscrits » : celui qui a composé apparaît, avec sa note', row_c and row_c['composed'] is True and row_c['score'] == 3.0, row_c)
+    order = [x['id'] for x in r['candidates']]
+    row_g = next((x for x in r['candidates'] if x['id'] == g.id), None)
+    chk('« tous les inscrits » : celui qui a 14/20 apparaît, avec sa note', row_g and row_g['composed'] and row_g['score'] == 14.0 and not row_g['below_average'], row_g)
+    chk('« tous les inscrits » : absents et sous la moyenne remontés avant les autres', order.index(g.id) > max(order.index(x) for x in (a.id, b.id, e.id, cc.id)), order)
     r = c.get(f'/api/online_exams/{eid}/makeup/candidates?search=absent', headers=H(adm)).get_json()
     chk('recherche par nom', [x['id'] for x in r['candidates']] == [b.id], r)
     chk('un étudiant ne peut pas lister les candidats', c.get(f'/api/online_exams/{eid}/makeup/candidates', headers=H(a)).status_code == 403)

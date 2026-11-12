@@ -59,37 +59,55 @@ def _in_makeups(session, base_exam) -> dict:
             .filter(ExamMakeupStudent.exam_id.in_(ids)).all()}
 
 
-def candidates(session, base_exam, search: str = '', include_composed: bool = False, limit: int = 200, offset: int = 0) -> dict:
-    """Étudiants inscrits à l'examen pouvant être admis au rattrapage.
+PASS_MARK = 10.0      # sous la moyenne : note inférieure à 10/20
 
-    Par défaut : ceux qui n'ont PAS composé (absents, sans moyens de connexion, empêchés avant les questions). Avec
-    `include_composed` : tous les inscrits, y compris ceux qui ont une copie (connexion perdue en cours d'épreuve, par exemple) ;
-    leur copie d'origine reste intacte. Chaque ligne : id, name, email, composed, score, makeup (titre du rattrapage où il est déjà)."""
+
+def candidates(session, base_exam, search: str = '', include_composed: bool = False, limit: int = 200, offset: int = 0) -> dict:
+    """Étudiants inscrits à l'examen pouvant être convoqués au rattrapage.
+
+    PRIORITAIRES (liste par défaut, remontés en premier) :
+      - les ABSENTS : n'ont pas pu se connecter pour composer (aucune copie réelle) ;
+      - les étudiants SOUS LA MOYENNE : note inférieure à 10/20.
+    Avec `include_composed` : tous les inscrits (les autres — 10/20 et plus, ou copie pas encore notée — suivent) ; la copie d'origine
+    reste intacte dans tous les cas.
+    Chaque ligne : id, name, email, absent, below_average, composed, score, makeup (titre du rattrapage où il est déjà convoqué)."""
     eligible = W.eligible_student_ids(session, base_exam)
+    empty = {'candidates': [], 'total': 0, 'priority_total': 0, 'absent_total': 0, 'below_total': 0, 'composed_total': 0}
     if not eligible:
-        return {'candidates': [], 'total': 0, 'composed_total': 0}
+        return empty
     attempts = {a.student_id: a for a in session.query(ExamAttempt).filter(
         ExamAttempt.exam_id == base_exam.id, ExamAttempt.student_id.in_(eligible)).all()}
     taken = _in_makeups(session, base_exam)
     users = {r[0]: (r[1], r[2]) for r in session.query(User.id, User.full_name, User.email).filter(User.id.in_(eligible)).all()}
     rows = []
-    composed_total = 0
+    absent_total = below_total = composed_total = 0
     for sid in eligible:
         a = attempts.get(sid)
         comp = _composed(a)
+        score = a.score if (comp and a is not None) else None
+        absent = not comp
+        below = comp and score is not None and float(score) < PASS_MARK
         composed_total += 1 if comp else 0
-        if comp and not include_composed:
+        absent_total += 1 if absent else 0
+        below_total += 1 if below else 0
+        priority = absent or below
+        if not priority and not include_composed:
             continue
         name, email = users.get(sid, ('', ''))
-        rows.append({'id': sid, 'name': name, 'email': email, 'composed': comp,
-                     'score': a.score if (comp and a is not None) else None, 'makeup': taken.get(sid)})
+        rows.append({'id': sid, 'name': name, 'email': email, 'absent': absent, 'below_average': bool(below), 'composed': comp,
+                     'score': score, 'makeup': taken.get(sid), '_priority': priority})
     s = (search or '').strip().lower()
     if s:
         rows = [r for r in rows if s in (r['name'] or '').lower() or s in (r['email'] or '').lower()]
-    rows.sort(key=lambda r: ((r['name'] or '').lower(), r['id']))
+    # absents et sous la moyenne d'abord, puis les autres ; par ordre alphabétique dans chaque groupe
+    rows.sort(key=lambda r: (0 if r['_priority'] else 1, (r['name'] or '').lower(), r['id']))
     total = len(rows)
     off = max(0, offset)
-    return {'candidates': rows[off:off + max(1, min(limit, 500))], 'total': total, 'composed_total': composed_total}
+    page = rows[off:off + max(1, min(limit, 500))]
+    for r in page:
+        r.pop('_priority', None)
+    return {'candidates': page, 'total': total, 'priority_total': absent_total + below_total,
+            'absent_total': absent_total, 'below_total': below_total, 'composed_total': composed_total}
 
 
 def list_makeups(session, base_exam) -> list:

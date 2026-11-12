@@ -4623,13 +4623,13 @@ OPENAPI_SPEC = {
         }},
         "/api/online_exams/{exam_id}/makeup/candidates": {"get": {
             "tags": ["Rattrapage"], "summary": "Étudiants pouvant être admis au rattrapage",
-            "description": "Étudiants inscrits à l'examen. Par défaut ceux qui n'ont PAS composé (absents, sans moyens de connexion, empêchés avant les questions) ; `include_composed=1` renvoie tous les inscrits, y compris ceux qui ont une copie (connexion perdue en cours d'épreuve) : leur copie d'origine reste intacte. Chaque ligne : `id, name, email, composed, score, makeup` (titre du rattrapage où l'étudiant est déjà admis). Si `exam_id` est un rattrapage, la liste vient de l'examen d'origine. Réservé au personnel qui gère l'examen.",
+            "description": "Étudiants inscrits pouvant être convoqués. Par défaut, les PRIORITAIRES remontés en premier : les ABSENTS (aucune copie : n'ont pas pu se connecter pour composer) et les étudiants SOUS LA MOYENNE (note < 10/20). `include_composed=1` renvoie tous les inscrits (les autres suivent) ; la copie d'origine reste intacte. Chaque ligne : `id, name, email, absent, below_average, composed, score, makeup` (titre du rattrapage où l'étudiant est déjà convoqué). Réponse : `{candidates, total, priority_total, absent_total, below_total, composed_total}`. Si `exam_id` est un rattrapage, la liste vient de l'examen d'origine. Réservé au personnel qui gère l'examen.",
             "parameters": [{"name": "exam_id", "in": "path", "required": True, "schema": {"type": "integer"}},
                            {"name": "search", "in": "query", "required": False, "schema": {"type": "string"}},
                            {"name": "include_composed", "in": "query", "required": False, "schema": {"type": "string", "enum": ["0", "1"]}},
                            {"name": "limit", "in": "query", "required": False, "schema": {"type": "integer", "maximum": 500}},
                            {"name": "offset", "in": "query", "required": False, "schema": {"type": "integer"}}],
-            "responses": {"200": {"description": "`{candidates, total, composed_total}`"}, "403": {"description": "Accès non autorisé"}}
+            "responses": {"200": {"description": "`{candidates, total, priority_total, absent_total, below_total, composed_total}`"}, "403": {"description": "Accès non autorisé"}}
         }},
         "/api/online_exams/{exam_id}/makeups": {
             "get": {

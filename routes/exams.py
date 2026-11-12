@@ -44,26 +44,20 @@ from services.ec_rights import can_manage_exam, can_view_exam, visible_exam_filt
 exams_bp = Blueprint('exams', __name__)
 
 
-_SUBJ_DURATION_RES = (
-    re.compile(r'(Durée\s*:\s*)\d{1,4}(\s*minutes?)', re.I),
-    re.compile(r'(Vous disposez de\s*)\d{1,4}(\s*minutes?)', re.I),
-)
+_GENERATED_HEADER_END_RE = re.compile(r'(?m)^[═=]{5,}[ \t]*\n[ \t]*QUESTIONS[ \t]*\n[═=]{5,}[ \t]*\n')
 
 
-def _align_subject_duration(content: str, exam) -> str:
-    """La durée écrite dans le sujet (« Durée : 90 minutes », « Vous disposez de 90 minutes ») est celle demandée à la génération ;
-    l'examen peut être réglé autrement (examen 170 : sujet 90 min, examen 80 min). L'étudiant lit toujours la durée RÉELLE de
-    l'examen. Le sujet enregistré n'est pas modifié."""
+def _align_subject_duration(content: str, exam=None) -> str:
+    """Ce que l'étudiant reçoit du sujet : SANS l'en-tête généré (titre, niveau, « Durée : 90 minutes », « INSTRUCTIONS AUX
+    ÉTUDIANTS… Vous disposez de 90 minutes »). Ces lignes sont écrites à la génération et peuvent contredire l'examen (examen 170 :
+    sujet 90 min, examen 80 min) ; la durée réelle est donnée par le minuteur, et les seules consignes montrées à l'étudiant sont
+    celles que le professeur a saisies pour l'examen (`exam.instructions`). Le sujet enregistré n'est pas modifié ; un sujet
+    sans cet en-tête (document déposé) est rendu tel quel."""
     try:
-        minutes = int(getattr(exam, 'duration_minutes', 0) or 0)
-        if not content or minutes <= 0:
-            return content
-        head, sep, tail = content.partition('QUESTIONS')        # seulement l'en-tête et les consignes, jamais un énoncé
-        if not sep:
-            return content
-        for rx in _SUBJ_DURATION_RES:
-            head = rx.sub(lambda m: f"{m.group(1)}{minutes}{m.group(2)}", head)
-        return head + sep + tail
+        m = _GENERATED_HEADER_END_RE.search(content or '')
+        if m and 'INSTRUCTIONS AUX ÉTUDIANTS' in content[:m.start()]:
+            return content[m.end():].lstrip('\n')
+        return content
     except Exception:
         return content
 
@@ -6973,6 +6967,13 @@ QUESTIONS
         except Exception as _e:
             print(f"WARNING generate-full-exam : contrôle de types impossible : {_e}")
 
+        # Vérification de FOND : seconde lecture indépendante des réponses du barème (jamais bloquante, jamais de modification
+        # automatique) — une divergence est signalée à l'enseignant « à relire » (examen 170 : clé 2-C au lieu de 2-B).
+        try:
+            from services.answer_verify import verify_keys as _verify_keys
+            type_warnings += _verify_keys(content, rubric, ask=lambda _p: call_claude("Tu es un enseignant universitaire rigoureux.", _p))
+        except Exception as _e:
+            print(f"WARNING generate-full-exam : vérification de fond non faite : {_e}")
         for _k_ng, _n_ng in _not_generated:
             type_warnings.append(f"{_n_ng} question(s) « {_TEMPLATES[_k_ng][0]} » n'ont pas pu être générées correctement et ont été retirées : "
                                  f"le sujet compte {len(all_questions)} questions, toujours notées sur {total_points} points. "
@@ -7096,6 +7097,25 @@ def generate_more_questions():
         "............. (1 pt) [{marker}] [Moyen]\")."
     ).format(marker=marker, next_num=next_num)
 
+    # Format de la clé de barème attendue pour chaque type (l'exemple montre le format, jamais la réponse)
+    _MORE_KEYS = {
+        'QCM': ('qcm', "  • Bonne réponse : B) — justification en une phrase"),
+        'QCM_MULTI': ('qcm_multi', "  • Bonnes réponses : A), C) — justification en une phrase"),
+        'VF': ('vf', "  • Réponse : Vrai — justification en une phrase     (ou : • Réponse : Faux — justification)"),
+        'APPARIEMENT': ('appariement', "  • Crédit proportionnel au nombre de paires correctes"),
+        'ASSOCIATION': ('association', "  • Réponse : 1-C, 2-A, 3-D"),
+        'TRI': ('tri', "  • Réponse : 1-A, 2-B, 3-A"),
+        'ORDRE': ('ordre', "  • Ordre : C, A, D, B"),
+        'TROUS': ('trous', "  • Réponse : 1-B, 2-D"),
+        'COURT': ('court', "  • Réponses acceptées : réponse | variante"),
+        'NUMERIQUE': ('numerique', "  • Valeur : 12,5 (± 0,1)"),
+        'CLOZE': ('cloze', "  • Champs : 1=réponse|variante ; 2=14 (± 0,5) ; 3=B"),
+        'CALCULEE': ('calculee', "  • Formule : a*b/100 (± 1)"),
+        'OUVERT': ('open', "  • Critère : ce qui est attendu de l'étudiant (éléments de réponse)"),
+        'CODE': ('code', "  • Critère : ce qui est attendu de l'étudiant (éléments de réponse)"),
+    }
+    _more_type_key, _more_key_format = _MORE_KEYS.get(marker, _MORE_KEYS['QCM'])
+
     prompt = f"""Tu es un expert en création d'examens universitaires francophones.
 
 Voici un sujet d'examen déjà généré (titre : {title}, niveau {student_level}, difficulté {difficulty}) :
@@ -7112,10 +7132,53 @@ RÈGLES ABSOLUES :
 - Chaque titre de question se termine par [{marker}]
 {difficulty_rule}
 - Respecte STRICTEMENT le même format que les questions [{marker}] déjà visibles dans le sujet existant (nombre de choix, structure des paires, etc.)
-- Réponds UNIQUEMENT avec les {count} nouvelles questions, rien d'autre (pas de titre de section, pas de commentaire, pas de barème)"""
+- Réponds avec les {count} nouvelles questions (pas de titre de section, pas de commentaire)
+
+Puis, sur une nouvelle ligne EXACTEMENT "BARÈME:", pour CHAQUE nouvelle question DANS LE MÊME ORDRE, un bloc séparé par une ligne vide
+(SANS répéter le titre ni le numéro), donnant la VRAIE réponse de cette question, au format :
+{_more_key_format}
+(l'exemple ci-dessus montre seulement le FORMAT : écris la réponse réelle de chaque question, jamais l'exemple)"""
 
     try:
-        new_questions_text = call_ai_simple(prompt).strip()
+        # Chaque nouvelle question arrive avec sa VRAIE clé de barème et passe le même contrôle que la génération complète :
+        # une question défectueuse (propositions absentes, clé absente, exemple recopié) est refaite seule, sinon écartée.
+        from services.generation_check import defects as _more_defects
+        _blk_split = re.compile(r'(?m)^(?=[ \t]*Question\s+\d{1,3}\s*[—\-–:.])')
+
+        def _more_batch(_prompt):
+            raw = (call_ai_simple(_prompt) or '').strip()
+            sp = re.search(r'\n\s*BARÈME\s*:?\s*\n', raw, re.I)
+            c_part, r_part = (raw[:sp.start()].strip(), raw[sp.end():].strip()) if sp else (raw, '')
+            cb = [b.strip() for b in _blk_split.split(c_part) if b.strip() and re.match(r'\s*Question\s+\d', b)]
+            rb = [b.strip() for b in re.split(r'\n\s*\n', r_part) if b.strip()]
+            return [(cb[i], rb[i] if i < len(rb) else '') for i in range(len(cb))]
+
+        _pairs = _more_batch(prompt)[:count]
+        _kept, _dropped = [], 0
+        for _c, _r in _pairs:
+            if _more_defects(_more_type_key, _c, _r):
+                _fixed = None
+                for _ in range(2):
+                    try:
+                        _one = _more_batch(prompt.replace(f"EXACTEMENT {count} NOUVELLES questions", "EXACTEMENT 1 NOUVELLE question"))
+                    except Exception:
+                        continue
+                    if _one and not _more_defects(_more_type_key, _one[0][0], _one[0][1]) and not any(
+                            _similarity(_one[0][0][:300], k[0][:300]) >= DUPLICATE_THRESHOLD for k in _kept):
+                        _fixed = _one[0]
+                        break
+                if _fixed is None:
+                    _dropped += 1
+                    continue
+                _c, _r = _fixed
+            _kept.append((_c, _r))
+        if not _kept:
+            return jsonify({'error': "L'IA n'a produit aucune question correcte — réessayez."}), 500
+        # numérotation continue imposée par le serveur
+        _renum = re.compile(r'^(\s*)Question\s+\d{1,3}(\s*[—\-–:.])')
+        _kept = [(_renum.sub(lambda m, n=next_num + i: f"{m.group(1)}Question {n}{m.group(2)}", c, count=1), r) for i, (c, r) in enumerate(_kept)]
+        _more_keys = {next_num + i: r for i, (c, r) in enumerate(_kept)}
+        new_questions_text = '\n\n'.join(c for c, _ in _kept)
 
         # Vérifier les doublons contre les questions déjà présentes dans le sujet
         existing_q_texts = re.findall(r'Question\s+\d{1,3}\s*[—\-–:.].*?(?=\nQuestion\s+\d{1,3}\s*[—\-–:.]|\Z)', existing_content, re.S)
@@ -7174,9 +7237,11 @@ RÈGLES ABSOLUES :
                     pts = points_map.get(num, base_pts)
                     pts_str = str(int(pts)) if float(pts).is_integer() else f'{pts:.1f}'
                     ttl = new_titles.get(str(num), '').strip() or f'Question {num}'
+                    _key_txt = (_more_keys.get(num) or '').strip()
+                    _key_txt = '\n'.join('  ' + l.strip() for l in _key_txt.split('\n') if l.strip()) or f'  • Réponse attendue : {pts_str} pt{"s" if pts != 1 else ""}'
                     new_rubric_entries.append(
                         f'Question {num} — {ttl} ({pts_str} pt{"s" if pts != 1 else ""})\n'
-                        f'  • Réponse attendue : {pts_str} pt{"s" if pts != 1 else ""}\n'
+                        f'{_key_txt}\n'
                     )
                 addendum = '\n'.join(new_rubric_entries)
                 # Insérer avant la ligne de séparation qui précède le TOTAL,
@@ -7188,6 +7253,14 @@ RÈGLES ABSOLUES :
                 else:
                     full_rubric = f'{full_rubric}\n\n{addendum}'
 
+        _more_warnings = []
+        if _dropped:
+            _more_warnings.append(f"{_dropped} question(s) n'ont pas pu être générées correctement et n'ont pas été ajoutées.")
+        try:
+            from services.answer_verify import verify_keys as _verify_keys
+            _more_warnings += _verify_keys(full_content, full_rubric, ask=call_ai_simple, only_nums=new_nums)
+        except Exception as _e:
+            print(f"WARNING generate-more-questions : vérification de fond non faite : {_e}")
         return jsonify({
             'success': True,
             'new_content': new_questions_text,
@@ -7195,6 +7268,8 @@ RÈGLES ABSOLUES :
             'full_rubric': full_rubric,
             'count_generated': len(new_q_texts),
             'duplicates': duplicates,
+            'dropped': _dropped,
+            'warnings': _more_warnings,
         })
     except Exception as e:
         try: session.rollback(); session.close()

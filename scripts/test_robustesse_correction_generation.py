@@ -216,12 +216,52 @@ try:
     rep = analyze(ok_c, ok_r)
     check("le même sujet corrigé est accepté", rep['ok'], [i['message'] for i in rep['issues'] if i['level'] == 'error'])
 
-    print('\n== Durée lue par l\'étudiant = durée réelle de l\'examen ==')
-    from types import SimpleNamespace as _NS
-    txt = "Durée : 90 minutes | Note totale : 20 points\nVous disposez de 90 minutes pour composer.\nQUESTIONS\nQuestion 1 — Un trajet dure 90 minutes ? (1 pts) [VF]\n"
-    out = R._align_subject_duration(txt, _NS(duration_minutes=80))
-    check("en-tête et consignes alignés sur 80 minutes", 'Durée : 80 minutes' in out and 'Vous disposez de 80 minutes' in out, out[:120])
-    check("un énoncé de question n'est jamais modifié", 'Un trajet dure 90 minutes' in out)
+    print('\n== L\'étudiant ne reçoit pas l\'en-tête généré (durée, consignes automatiques) ==')
+    gen = ("══════════\nTITRE\n══════════\nDurée : 90 minutes | Note totale : 20 points\n══════════\n\nINSTRUCTIONS AUX ÉTUDIANTS\n──────\n"
+           "Vous disposez de 90 minutes pour composer.\n\n══════════\nQUESTIONS\n══════════\n\nQuestion 1 — Un trajet dure 90 minutes ? (1 pts) [VF]\nVrai / Faux\n")
+    out = R._align_subject_duration(gen)
+    check("« Durée : 90 minutes » et « Vous disposez de 90 minutes » retirés", 'Durée : 90' not in out and 'Vous disposez' not in out and 'INSTRUCTIONS' not in out, out[:120])
+    check("les questions sont intactes (énoncé compris)", out.startswith('Question 1 — Un trajet dure 90 minutes ?'), out[:80])
+    check("mêmes questions lues avec ou sans l'en-tête", [b_['type'] for b_ in R._parse_subject_blocks_ordered(out)] == [b_['type'] for b_ in R._parse_subject_blocks_ordered(gen)])
+    doc = "DEVOIR DE DROIT\nDurée : 2 heures\n\n1. Question déposée ?\nA. oui\nB. non\n"
+    check("un document déposé (sans en-tête généré) est rendu tel quel", R._align_subject_duration(doc) == doc)
+
+    print('\n== « Générer d\'autres questions » : vraies clés, question défectueuse refaite ou écartée ==')
+    base_c = "QUESTIONS\n\n" + ''.join(f"Question {i} — Titre {i} ............. (1 pts) [QCM]\nÉnoncé {i} ?\nA) a\nB) b\nC) c\nD) d\n\n" for i in (1, 2))
+    base_r = "BARÈME DE NOTATION\n\n" + ''.join(f"Question {i} — Titre {i} (1 pts)\n  • Bonne réponse : B) — b\n\n" for i in (1, 2)) + "──────────\nTOTAL : 2 / 2 points"
+    def more_ai(prompt):
+        if 'enseignant universitaire rigoureux' in prompt:      # vérification de fond : en désaccord sur la question 3
+            return "3: A\n4: C"
+        if 'EXACTEMENT 1 NOUVELLE' in prompt:                    # reprise : toujours sans propositions
+            return "Question 9 — Refaite ............. (1 pt) [QCM]\nÉnoncé ?\n\nBARÈME:\n  • Bonne réponse : A) — a"
+        return ("Question 3 — Nouvelle 3 ............. (1 pt) [QCM]\nÉnoncé 3 ?\nA) un\nB) deux\nC) trois\nD) quatre\n\n"
+                "Question 4 — Nouvelle 4 ............. (1 pt) [QCM]\nÉnoncé 4 ?\nA) un\nB) deux\nC) trois\nD) quatre\n\n"
+                "Question 5 — Tronquée ............. (1 pt) [QCM]\nÉnoncé 5 ?\n\n"
+                "BARÈME:\n  • Bonne réponse : C) — trois\n\n  • Bonne réponse : C) — trois\n\n  • Bonne réponse : B) — deux")
+    real_simple = R.call_ai_simple; R.call_ai_simple = more_ai
+    try:
+        r = c.post('/api/subjects/generate-more-questions', headers=H(adm), json={'existing_content': base_c, 'existing_rubric': base_r, 'count': 3,
+                   'question_type': 'QCM', 'title': 'T', 'total_points': 4})
+    finally:
+        R.call_ai_simple = real_simple
+    j = r.get_json() or {}
+    check("ajout réussi", r.status_code == 200 and j.get('success'), (r.status_code, str(j)[:200]))
+    check("2 questions ajoutées, la tronquée est écartée", j.get('count_generated') == 2 and j.get('dropped') == 1 and 'Tronquée' not in j.get('full_content', ''), (j.get('count_generated'), j.get('dropped')))
+    check("le barème contient la VRAIE clé des nouvelles questions", j.get('full_rubric', '').count('Bonne réponse : C) — trois') == 2 and 'Réponse attendue' not in j.get('full_rubric', ''), j.get('full_rubric', '')[-300:])
+    check("l'enseignant est prévenu du retrait", any("n'ont pas été ajoutées" in w for w in j.get('warnings') or []), j.get('warnings'))
+    check("vérification de fond : désaccord signalé sur la question 3 seulement", sum('Question 3 : à relire' in w for w in j.get('warnings') or []) == 1 and not any('Question 4' in w for w in j.get('warnings') or []), j.get('warnings'))
+    rep = analyze(j.get('full_content', ''), j.get('full_rubric', ''))
+    check("le sujet complété passe le contrôle (4 questions, 4 points)", rep['ok'] and rep['questions'] == 4, [i['message'] for i in rep['issues']])
+
+    print('\n== Vérification de fond des réponses (examen 170 : clé 2-C au lieu de 2-B) ==')
+    from services.answer_verify import verify_keys
+    vq = "Question 1 — MAJ (1 pts) [TROUS]\nActiver les {1} du {2}.\nA. mises à jour\nB. système\nC. sauvegardes\n\nQuestion 2 — V (1 pts) [VF]\nVrai / Faux\n\nQuestion 3 — Q (1 pts) [QCM]\nA) a\nB) b\n"
+    vr = "Question 1 — MAJ (1 pts)\n• Réponse : 1-A, 2-C\n\nQuestion 2 — V (1 pts)\n• Réponse : Faux — x\n\nQuestion 3 — Q (1 pts)\n• Bonne réponse : B) — b\n"
+    w = verify_keys(vq, vr, ask=lambda p: "[TROUS] « 1: 1-A, 2-B »\n2: Faux\n3: ?")
+    check("la clé fausse est signalée « à relire » avec les deux réponses", len(w) == 1 and '1-A, 2-C' in w[0] and '1-A, 2-B' in w[0], w)
+    check("réponse concordante ou incertaine : aucune alerte", not verify_keys(vq, vr, ask=lambda p: "1: 1-A, 2-C\n2: Faux\n3: ?"))
+    def boom(p): raise RuntimeError('IA indisponible')
+    check("IA indisponible : aucune alerte, jamais d'erreur", verify_keys(vq, vr, ask=boom) == [])
 
     print('\n== Contrôle d\'un sujet déjà enregistré (cas du 09/11/2026) ==')
     bad_c = ''.join(qcm(i, '1') for i in range(1, 5)) + "Question 5 — Architecture (1 pts) [QCM]\n"

@@ -62,6 +62,8 @@ def defects(type_key: str, content_block: str, rubric_block: str) -> list:
     if ph:
         out.append(f"le barème n'est pas rempli ({ph})")
     letters = [m.group(1).upper() for m in _CHOICE_RE.finditer(c)]
+    if type_key in ('qcm', 'qcm_multi', 'trous', 'association', 'ordre') and len(letters) != len(set(letters)):
+        out.append("des propositions portent la même lettre (deux listes A., B., C.… ?) : la réponse serait ambiguë")
     if type_key in ('qcm', 'qcm_multi'):
         if len(set(letters)) < 2:
             out.append("moins de 2 propositions : l'énoncé est incomplet")

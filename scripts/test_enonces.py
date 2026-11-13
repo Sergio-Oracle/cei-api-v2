@@ -154,8 +154,8 @@ legacy = [i['message'] for i in analyze(IA)['issues']]
 check("sujet ancien (titre collé, non normalisé) : avertissement « collé au début de la question 6 »", any('collé au début de la question 6' in m for m in legacy), legacy)
 fx = [i for i in analyze(fixed)['issues']]
 check("sujet corrigé : plus d'avertissement « titre collé »", not any('collé au début' in i['message'] for i in fx), fx)
-check("même énoncé sur Q6 à Q20 (15 questions, pas de titre avant Q11) : signalé, jamais bloquant",
-      any(i['level'] == 'warn' and 'de la 6 à la 20' in i['message'] for i in fx) and analyze(fixed)['ok'], fx)
+check("même énoncé sur Q6 à Q20 (15 questions) : PAS d'avertissement (un groupe long est légitime : 7 sujets réels sur 8), le sujet reste accepté",
+      not any("s'affiche sur" in i['message'] for i in fx) and analyze(fixed)['ok'], fx)
 check("Q1 à Q5 (5 questions) : pas d'alerte d'énoncé répété", not any('de la 1 à la 5' in i['message'] for i in fx))
 AVEC_TITRE = fixed.replace("11. Q11.", "Exercice 3 : Autre partie\n\n11. Q11.")
 check("avec un titre « Exercice 3 » avant Q11 : l'énoncé de l'exercice 2 s'arrête à Q10, plus d'alerte de répétition",

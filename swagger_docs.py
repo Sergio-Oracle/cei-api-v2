@@ -2377,7 +2377,10 @@ OPENAPI_SPEC = {
                 "avec un bouton copier. Chaque reprise réussie déclenche une notification (bip + toast) au surveillant/"
                 "superviseur assigné via /api/exam_attempts/{attempt_id}/heartbeat et notify_user, qui peut ensuite "
                 "librement décider d'appeler l'étudiant (voir /api/exam_attempts/{attempt_id}/call_request), sans que "
-                "cela bloque la reprise."
+                "cela bloque la reprise. "
+                "**Une seule tentative par étudiant et par examen**, garantie par un index unique en base "
+                "(`uq_exam_attempts_exam_student`, 13/11/2026). Deux démarrages simultanés (double clic, deux onglets) : le second "
+                "reçoit la tentative IN_PROGRESS que le premier vient de créer (200, sans `continuing`), ou 409 si elle est déjà terminée."
             ),
             "parameters": [{"name": "exam_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
             "requestBody": {"content": {"application/json": {"schema": {
@@ -2397,7 +2400,8 @@ OPENAPI_SPEC = {
                 }}}},
                 "201": {"description": "Nouvelle tentative créée (premier démarrage)"},
                 "400": {"description": "Examen non disponible (hors plage horaire, non activé) ou déjà soumis"},
-                "403": {"description": "code_required=true (code manquant/invalide) — la réponse inclut `code` (le code self-service valide) pour que le frontend l'affiche directement"}
+                "403": {"description": "code_required=true (code manquant/invalide) — la réponse inclut `code` (le code self-service valide) pour que le frontend l'affiche directement"},
+                "409": {"description": "Une tentative existe déjà pour cet examen et elle est terminée (course entre deux démarrages simultanés)"}
             }
         }},
         "/api/online_exams/{exam_id}/attempts": {"get": {

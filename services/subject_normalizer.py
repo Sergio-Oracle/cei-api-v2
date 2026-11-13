@@ -95,9 +95,64 @@ def _question_numbers(lines):
     return res
 
 
+def _stray_number_line(line):
+    """Ligne qui COMMENCE par un nombre sans être une question : le caractère qui suit le séparateur est un chiffre ou une ponctuation
+    (« 001-2023-CM-UEMOA relative… », « 802.11ax Wi-Fi 6 », « 308). Grenoble : … ») ; une vraie question est suivie d'un espace ou d'une lettre
+    (« 3. Quelle… », « 3.Quelle… »). Ces lignes (références, pages, normes) ne sont JAMAIS renumérotées : incident du 13/11/2026, le texte d'un sujet
+    était réécrit (« 001-2023-CM… » devenait « 7-2023-CM… »)."""
+    m = _Q_RE.match(line)
+    if not m:
+        return False
+    rest = m.group(4)
+    if not rest:
+        return False
+    c = rest[0]
+    return not (c.isspace() or c.isalpha() or c in "«\"'’“(\[")
+
+
+_TYPE_MARK_RE = re.compile(r'\[(?:QCM_MULTI|QCM|VF|OUVERT|SUBOPEN|APPARIEMENT|CODE|ASSOCIATION|TRI|ORDRE|TROUS|COURT|NUMERIQUE|CLOZE|CALCULEE|ZONES)\]', re.I)
+
+
+def _real_question_start(lines, idx):
+    """Vraie question : marqueur de type [QCM]… sur la ligne, ou au moins deux propositions « A. » « B. » juste après."""
+    if _TYPE_MARK_RE.search(lines[idx]):
+        return True
+    near = [x.strip() for x in lines[idx + 1: idx + 12] if x.strip()][:8]
+    return sum(1 for x in near if _CHOICE_RE.match(x)) >= 2
+
+
+def _restarts_follow_titles(lines, qs):
+    """Au moins deux reprises à 1 de la numérotation, et au moins la moitié d'entre elles, sont précédées d'un titre de partie (Exercice N, Partie B…).
+    Un sujet par exercices peut garder une dernière grille sans titre (mots croisés) : d'où « la moitié » et non « toutes »."""
+    restarts = [i for i, (_, n) in enumerate(qs) if i > 0 and n == 1]
+    if len(restarts) < 2:
+        return False
+    titled = 0
+    for i in restarts:
+        between = lines[qs[i - 1][0] + 1: qs[i][0]]
+        if any(_SECT_RE.match(l) or _SECT_LETTER_RE.match(l) for l in between):
+            titled += 1
+    return titled >= 2 and titled * 2 >= len(restarts)
+
+
 def _renumber(lines):
-    """Si la numérotation repart de 1 (un exercice = une série 1..N), la rend continue 1..N sur tout le sujet."""
-    qs = _question_numbers(lines)
+    """Si la numérotation repart de 1 (un exercice = une série 1..N), la rend continue 1..N sur tout le sujet.
+    Les lignes numérotées « de texte » (voir _stray_number_line) sont écartées : ni renumérotées, ni comptées."""
+    # Les lignes numérotées « de texte » (numérotation hiérarchique « Question 1.1 », référence « 001-2023-… », norme « 802.11ax », titre « 1). Les origines »)
+    # sont écartées : ni comptées, ni jamais réécrites. Seules les vraies questions sont renumérotées.
+    allq = _question_numbers(lines)
+    qs = [(idx, n) for idx, n in allq if not _stray_number_line(lines[idx])]
+    if not qs:
+        return lines, 0
+    mostly_real = sum(1 for idx, _ in qs if _real_question_start(lines, idx)) >= 0.6 * len(qs)      # marqueur [QCM]… ou propositions A. B. qui suivent
+    if len(qs) != len(allq):
+        # Des lignes douteuses sont présentes : il faut une PREUVE positive que c'est un sujet d'examen (majorité de vraies questions).
+        # Sinon (document de cours, bibliographie, numérotation hiérarchique) on ne touche à rien.
+        if not mostly_real:
+            return lines, 0
+    elif not (mostly_real or _restarts_follow_titles(lines, qs)):
+        # Aucune ligne douteuse : un sujet par exercices (chaque reprise de la numérotation suit un titre « Exercice N ») ou une majorité de vraies questions.
+        return lines, 0
     nums = [n for _, n in qs]
     # Seulement une numérotation qui repart de 1 plusieurs fois (un exercice = une série) : jamais un simple doublon isolé.
     restarts = sum(1 for i, n in enumerate(nums) if i > 0 and n == 1)

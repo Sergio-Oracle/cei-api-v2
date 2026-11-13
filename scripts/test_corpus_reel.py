@@ -71,12 +71,24 @@ for s in subjects:
     elif len(b) > len(a): gained.append((s['id'], len(a), len(b)))
 check("normalisation idempotente sur tous les sujets", not nonidem, nonidem[:10])
 check("la normalisation ne FAIT JAMAIS DISPARAÎTRE une question", not lost, lost[:10])
+from services.subject_normalizer import _renumber
+rewritten = []
+for s in subjects:
+    L = s['content'].split('\n'); out, k = _renumber(L)
+    if k and any(re.match(r'^\s*\d{1,3}\s*[.:)–—-]+\s*[\d.,)]', a) for a, b in zip(L, out) if a != b):
+        rewritten.append(s['id'])
+check("la renumérotation ne réécrit jamais une ligne de référence/norme/page (« 001-2023-… », « 802.11ax », « 308). »)", not rewritten, rewritten[:10])
+check("la renumérotation ne touche aucun document de cours (listes numérotées sans questions)", all(_renumber(s['content'].split('\n'))[1] == 0 for s in subjects if s['id'] in (30, 32, 33, 40)))
 if gained:
     print(f"  (information : à l'enregistrement la normalisation ferait lire PLUS de questions sur {len(gained)} ancien(s) sujet(s) {[g[0] for g in gained]} — "
           "constaté le 13/11/2026 : lignes de bibliographie ou de références numérotées promues en questions par la renumérotation ; aucun de ces sujets n'a d'examen)")
 
 # 3. structure identique à la référence
-cur = {str(s['id']): {'sig': signature(srv[s['id']]), 'groups': [(g['title'], g['statement_chars'], g['questions'][0], g['questions'][-1]) for g in groups(questions(srv[s['id']]))]} for s in subjects}
+def _norm_sig(content):
+    n, _ = normalize(content)
+    return signature(parse_py(n)), hashlib.sha1(n.encode()).hexdigest()[:10]       # structure ET empreinte du texte normalisé (tout texte réécrit se voit)
+cur = {str(s['id']): {'sig': signature(srv[s['id']]), 'groups': [(g['title'], g['statement_chars'], g['questions'][0], g['questions'][-1]) for g in groups(questions(srv[s['id']]))],
+                      'norm': _norm_sig(s['content'])} for s in subjects}
 if update or not os.path.exists(GOLDEN):
     json.dump(cur, open(GOLDEN, 'w'), ensure_ascii=False); os.chmod(GOLDEN, 0o600)
     print(f"  (référence {'mise à jour' if update else 'créée'} : {len(cur)} sujets — à relire avant de la garder)")

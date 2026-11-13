@@ -200,5 +200,20 @@ if jas:
     check("association + ligne vide + définitions (navigateur) : mêmes 3 questions, aucun faux énoncé", [x['num'] for x in qj] == ['1', '2', '3'] and not qj[1].get('context') and not qj[2].get('context'), [x.get('context') for x in qj])
     check("association : même résultat serveur et navigateur (éléments et définitions)", (qj[0].get('items') or []) == (qa[0].get('items') or []) and [o['letter'] for o in (qj[0].get('options') or [])] == [o['letter'] for o in (qa[0].get('options') or [])], (qj[0].get('items'), qj[0].get('options')))
 
+# 9. Renumérotation : jamais de réécriture du texte ordinaire (13/11/2026 : « 001-2023-CM-UEMOA… » devenait « 7-2023-CM-UEMOA… », « 308). Grenoble » devenait « 41). Grenoble »)
+from services.subject_normalizer import _renumber, _stray_number_line
+REPART = ("Exercice 1\n1. Q1. a ? [QCM]\nA. x\nB. y\n\n2. Q2. b ? [QCM]\nA. x\nB. y\n\nExercice 2\n"
+          "1. Q1 bis. c ? [QCM]\nA. x\nB. y\n\nLa directive n°\n001-2023-CM-UEMOA relative à la LBC/FT\n802.11ax est une norme Wi-Fi.\n308). Grenoble : CSL-Lidilem\n\n"
+          "2. Q2 bis. d ? [QCM]\nA. x\nB. y\n\nExercice 3\n1. Q1 ter. e ? [QCM]\nA. x\nB. y\n")
+rl, rk = _renumber(REPART.split('\n'))
+check("numérotation qui repart après chaque titre : rendue continue sur les vraies questions (1 à 5)", rk == 5 and [l for l in rl if l.startswith(('1.', '2.', '3.', '4.', '5.'))][:5] == ['1. Q1. a ? [QCM]', '2. Q2. b ? [QCM]', '3. Q1 bis. c ? [QCM]', '4. Q2 bis. d ? [QCM]', '5. Q1 ter. e ? [QCM]'], [l for l in rl if l[:2].strip('.').isdigit()])
+check("lignes de référence / norme / page : texte IDENTIQUE (jamais renuméroté)", all(x in rl for x in ('001-2023-CM-UEMOA relative à la LBC/FT', '802.11ax est une norme Wi-Fi.', '308). Grenoble : CSL-Lidilem')), rl)
+HIER = "Question 1.1 : a ?\nA. x\nB. y\n\nQuestion 1.2 : b ?\nA. x\nB. y\n\nQuestion 1.1 : c ?\nA. x\nB. y\n\nQuestion 1.2 : d ?\nA. x\nB. y\n\nQuestion 1.1 : e ?\nA. x\nB. y\n"
+check("numérotation hiérarchique « Question 1.1 » : jamais transformée en « Question 2.1 »", normalize(HIER)[0] == HIER)
+check("détection des lignes « de texte » : 001-2023, 802.11ax, 308). → écartées ; 3. Quelle…, 3.Quelle… → questions",
+      all(_stray_number_line(x) for x in ('001-2023-CM-UEMOA', '802.11ax Wi-Fi 6', '308). Grenoble')) and not any(_stray_number_line(x) for x in ('3. Quelle est la réponse ?', '3.Quelle est la réponse ?', '12) Expliquez…')))
+COURS = "\n".join(f"{n} — Couche {n}\n1. étape A\n2. étape B" for n in (4, 3, 2, 1))
+check("document de cours (listes numérotées, aucune question) : renumérotation sans effet", _renumber(COURS.split('\n'))[1] == 0 and normalize(COURS)[0] == COURS)
+
 ok = sum(RES); print(f"\n{ok}/{len(RES)} vérifications réussies")
 sys.exit(0 if ok == len(RES) else 1)

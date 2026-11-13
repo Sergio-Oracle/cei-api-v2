@@ -44,5 +44,7 @@ if nginx -t 2>&1; then
 else
   echo "ERREUR : nginx -t a échoué, RESTAURATION de la configuration d'origine."; cp -p "$BAK" "$CONF"; nginx -t; exit 1
 fi
-echo "--- contrôle : taille reçue du moteur WASM (attendu ≈ 3,4 Mo au lieu de 11,5 Mo)"
-curl -s -o /dev/null -H 'Accept-Encoding: gzip' -w 'reçu : %{size_download} octets (HTTP %{http_code})\n' --resolve "${CHECK_HOST:-localhost}:443:127.0.0.1" -k "https://${CHECK_HOST:-localhost}/mediapipe/wasm/vision_wasm_internal.wasm" || true
+HOST="${CHECK_HOST:-$(awk '/^[[:space:]]*server_name/ {gsub(";", "", $2); print $2; exit}' "$CONF")}"
+echo "--- contrôle sur https://$HOST : taille reçue du moteur WASM (attendu ≈ 3,4 Mo au lieu de 11,5 Mo)"
+curl -s -o /dev/null -H 'Accept-Encoding: gzip' -w 'reçu : %{size_download} octets (HTTP %{http_code})\n' --resolve "$HOST:443:127.0.0.1" -k "https://$HOST/mediapipe/wasm/vision_wasm_internal.wasm" || true
+curl -sI -H 'Accept-Encoding: gzip' --resolve "$HOST:443:127.0.0.1" -k "https://$HOST/mediapipe/wasm/vision_wasm_internal.wasm" | grep -i '^content-encoding' || echo "(pas de content-encoding : vérifier depuis un poste externe)"

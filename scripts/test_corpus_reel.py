@@ -78,6 +78,10 @@ for s in subjects:
     if k and any(re.match(r'^\s*\d{1,3}\s*[.:)–—-]+\s*[\d.,)]', a) for a, b in zip(L, out) if a != b):
         rewritten.append(s['id'])
 check("la renumérotation ne réécrit jamais une ligne de référence/norme/page (« 001-2023-… », « 802.11ax », « 308). »)", not rewritten, rewritten[:10])
+from helpers import strip_bareme_from_content as _strip_student
+_LEAK = re.compile(r"R[ée]ponses?\s+(?:correctes?|attendues?|exactes?)\s*:|Bonnes?\s+r[ée]ponses?\s*:\s*\(?[A-F]\b|^\s*Corrig[ée]s?\s*(?:exercice|:|de\\b|type)|^\s*R[ée]ponse\s*:\s*\S.{25,}", re.I | re.M)
+leaky = [s['id'] for s in subjects if _LEAK.search(_strip_student(s['content']))]
+check("AUCUN sujet réel ne laisse voir une marque de corrigé à l'étudiant (texte servi après filtrage)", not leaky, leaky[:10])
 check("la renumérotation ne touche aucun document de cours (listes numérotées sans questions)", all(_renumber(s['content'].split('\n'))[1] == 0 for s in subjects if s['id'] in (30, 32, 33, 40)))
 if gained:
     print(f"  (information : à l'enregistrement la normalisation ferait lire PLUS de questions sur {len(gained)} ancien(s) sujet(s) {[g[0] for g in gained]} — "

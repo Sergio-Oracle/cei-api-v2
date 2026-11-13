@@ -215,5 +215,24 @@ check("détection des lignes « de texte » : 001-2023, 802.11ax, 308). → éca
 COURS = "\n".join(f"{n} — Couche {n}\n1. étape A\n2. étape B" for n in (4, 3, 2, 1))
 check("document de cours (listes numérotées, aucune question) : renumérotation sans effet", _renumber(COURS.split('\n'))[1] == 0 and normalize(COURS)[0] == COURS)
 
+# 10. Corrigé laissé dans le sujet : jamais montré à l'étudiant (balayage des 68 sujets réels du 13/11/2026 : 27 en laissaient voir)
+from helpers import strip_bareme_from_content as _strip
+CORR = ("Partie A\n1. Q1. Quelle loi ? [QCM]\nA. Loi Zay (1936)\nB. Loi Haby (1975)\n- Réponse correcte : A. Loi Zay (1936)\n\n"
+        "2. Q2. Autre ? [QCM]\nA. oui\nB. non\nBonne réponse : B. non\n\n"
+        "Question 1.1 : Expliquez [OUVERT]\nRéponse : La méthode scientifique est un processus en plusieurs phases logiques\n"
+        "Réponse Question 1.2 : Faux\n\nCorrigé exercice 1.1 : Un outil est un instrument\nCorrigé exercice 1.2. La méthode est un ensemble de procédés\n"
+        "1. un point du corrigé\n2. un autre point du corrigé\n\nExercice 2\n3. Q3. Dernière ? [QCM]\nA. x\nB. y\n")
+vu = _strip(CORR)
+check("« - Réponse correcte : A. … » retiré (la proposition garde son texte)", 'Réponse correcte' not in vu and 'B. Loi Haby (1975)' in vu, vu)
+check("« Bonne réponse : B. non » (avec du texte) retiré", 'Bonne réponse' not in vu and 'B. non' in vu)
+check("« Réponse : <texte modèle> » et « Réponse Question 1.2 : Faux » retirés, la question reste", 'processus en plusieurs phases' not in vu and 'Réponse Question' not in vu and 'Question 1.1 : Expliquez' in vu)
+check("bloc « Corrigé exercice … » retiré jusqu'au titre suivant (y compris ses points numérotés)", 'Corrigé' not in vu and 'un point du corrigé' not in vu and 'un autre point' not in vu)
+check("le contenu APRÈS le corrigé (Exercice 2, Q3) est conservé", 'Exercice 2' in vu and '3. Q3. Dernière ?' in vu)
+qa = [x for x in parse_py(vu) if x['type'] not in ('section', 'description', 'text')]
+check("après filtrage : les questions réelles restent lues (Q1, Q2, Q1.1, Q3) et aucune proposition ne contient de corrigé", len(qa) >= 3 and not any('Réponse' in (c.get('text') or '') for x in qa for c in (x.get('choices') or [])), [x['num'] for x in qa])
+SAIN = "1. Q1. Question ? [QCM]\nA. a\nB. b\n\nRéponse : ______\nChoisissez une seule bonne réponse.\nVoici le corrigé-type attendu par l'enseignant sera remis plus tard.\n"
+check("texte légitime INTACT : « Réponse : ____ », consigne « une seule bonne réponse », « corrigé » au milieu d'une phrase", _strip(SAIN) == SAIN, _strip(SAIN))
+check("filtrage idempotent", _strip(vu) == vu)
+
 ok = sum(RES); print(f"\n{ok}/{len(RES)} vérifications réussies")
 sys.exit(0 if ok == len(RES) else 1)

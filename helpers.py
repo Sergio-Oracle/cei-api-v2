@@ -36,12 +36,42 @@ def require_admin_like(session):
     return user
 
 
+# ── Corrigé laissé DANS le sujet : jamais montré à l'étudiant (13/11/2026, balayage des 68 sujets réels : 27 sujets en laissaient voir) ─────────────
+_ANS_INLINE_RE = re.compile(r'^[ \t]*[-–•*]?[ \t]*(?:Bonnes?\s+)?R[ée]ponses?\s+(?:correctes?|attendues?|exactes?)\s*:.*$\n?', re.M | re.I)   # « - Réponse correcte : C. Loi Zay »
+_ANS_BONNE_RE = re.compile(r'^[ \t]*[-–•*]?[ \t]*Bonnes?\s+r[ée]ponses?\s*:\s*\(?[A-Fa-f]\b.*$\n?', re.M | re.I)                       # « Bonne réponse : C. texte »
+_ANS_QN_RE = re.compile(r'^[ \t\xa0]*R[ée]ponses?\s+(?:à\s+la\s+)?[Qq]uestion\s+[\d.]+\s*[\xa0 ]*:.*$\n?', re.M)                          # « Réponse Question 1.2 : Faux »
+_ANS_LONG_RE = re.compile(r'^[ \t\xa0]*R[ée]ponse[\xa0 ]*:[\xa0 ]*(?=\S.{14,}$)(?![_.\s…\xa0]+$).*$\n?', re.M)                                # « Réponse : <réponse modèle> » (pas « Réponse : ____ »)
+_CORRIGE_START_RE = re.compile(r'^[ \t\xa0]*Corrig[ée]s?\b(?:[\xa0 ]*(?:exercices?|questions?|type|de\b|du\b|des\b|d\'|:)|[\xa0 ]*\d)', re.I)
+_CORRIGE_STOP_RE = re.compile(r'^[ \t\xa0]*(?:Exercice|Partie|Section|Part|Question|S[ée]quence|Activit[ée])\b', re.I)
+
+
+def _strip_answer_keys(content: str) -> str:
+    """Retire d'un sujet destiné aux étudiants les marques de corrigé : « - Réponse correcte : C. … », « Bonne réponse : C. … »,
+    « Réponse Question 1.2 : Faux », « Réponse : <texte modèle> » et les blocs « Corrigé exercice 1.1 : … » (jusqu'au titre suivant :
+    Exercice / Partie / Section / Question, ou la fin). Ne sert qu'à l'AFFICHAGE : la notation lit le sujet et le barème d'origine."""
+    content = _ANS_INLINE_RE.sub('', content)
+    content = _ANS_BONNE_RE.sub('', content)
+    content = _ANS_QN_RE.sub('', content)
+    content = _ANS_LONG_RE.sub('', content)
+    out, skipping = [], False
+    for line in content.split('\n'):
+        if _CORRIGE_START_RE.match(line):
+            skipping = True
+            continue
+        if skipping and _CORRIGE_STOP_RE.match(line):
+            skipping = False
+        if not skipping:
+            out.append(line)
+    return '\n'.join(out)
+
+
 def strip_bareme_from_content(content: str) -> str:
     """Retirer la section barème du contenu du sujet (pour les étudiants)."""
     if not content:
         return content
     # Ligne de corrigé oubliée dans l'énoncé (« Bonne réponse : d ») : jamais montrée à l'étudiant
     content = re.sub(r'^[ \t]*(?:Bonne\s+)?[Rr][ée]ponse(?:\s+(?:correcte|attendue|exacte))?\s*:?\s*\(?[A-Fa-f]\)?\s*[.)]?[ \t]*$\n?', '', content, flags=re.M)
+    content = _strip_answer_keys(content)
     m = re.search(r'\n[═=─]{5,}[^\n]*\n[^\n]*[Bb]ar[eè]me', content)
     if m:
         return content[:m.start()].rstrip()

@@ -3763,6 +3763,4 @@ def agent_status():
         return jsonify(result)
 
     except Exception as e:
-        try: session.rollback(); session.close()
-        except Exception: pass
         return jsonify({'error': str(e), 'alive': False}), 500

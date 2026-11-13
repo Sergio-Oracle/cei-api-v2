@@ -43,6 +43,25 @@ from services.ec_rights import can_manage_exam, can_view_exam, visible_exam_filt
 
 exams_bp = Blueprint('exams', __name__)
 
+_swallow_log = __import__('logging').getLogger('cei.api')
+_swallow_last = {}
+
+
+def _swallowed(where: str) -> None:
+    """À appeler DANS un `except Exception:` volontairement non bloquant : journalise l'erreur au lieu de l'avaler en silence
+    (13/11/2026 : un NameError caché par `except: pass` a empêché un e-mail de partir pendant 4 mois). Au plus une trace par minute
+    et par endroit, pour qu'une panne répétée ne remplisse pas le journal."""
+    import sys as _sys, time as _t
+    now = _t.time()
+    if now - _swallow_last.get(where, 0) < 60:
+        return
+    _swallow_last[where] = now
+    et = _sys.exc_info()[0]
+    if et is not None and issubclass(et, ImportError):        # module optionnel absent de cette installation (ex. Moodle) : normal
+        _swallow_log.info('[module optionnel absent] %s', where)
+        return
+    _swallow_log.warning('[erreur ignorée] %s', where, exc_info=True)
+
 
 _GENERATED_HEADER_END_RE = re.compile(r'(?m)^[═=]{5,}[ \t]*\n[ \t]*QUESTIONS[ \t]*\n[═=]{5,}[ \t]*\n')
 
@@ -374,9 +393,9 @@ def create_online_exam():
                     try:
                         notify_user(n.get('user_id'), n.get('event'), n.get('title'), n.get('message'), priority=n.get('priority'), tags=n.get('tags'))
                     except Exception:
-                        pass
+                        _swallowed('create_online_exam:391')
             except Exception:
-                pass
+                _swallowed('create_online_exam:393')
 
         from services.moodle_calendar import schedule_sync; schedule_sync(exam_dict['id'])  # date publiée dans le calendrier Moodle (arrière-plan)
         # Liste des inscrits relue dans Moodle maintenant, sans attendre la surveillance automatique.
@@ -436,38 +455,9 @@ def activate_online_exam(exam_id):
         from services.moodle_auto import schedule_course_sync
         schedule_course_sync(exam.subject.ec.code if exam.subject and exam.subject.ec else None)
 
-        # Rassembler les contacts étudiants, fermer la session, puis envoyer
-        student_contacts = []
-        try:
-            app_url  = os.getenv('APP_URL', 'https://dev-cei.ddns.net').rstrip('/')
-            exam_url = f"{app_url}/exam/{exam_id}"
-            end_str  = exam.end_time.strftime('%d/%m/%Y à %H:%M') if exam.end_time else 'voir sur la plateforme'
-            from models import StudentUEEnrollment, EC as ECModel, UE as UEModel
-            # Récupérer les EC liés à cet examen
-            ec = session.query(ECModel).filter_by(id=exam.ec_id).first() if hasattr(exam, 'ec_id') and exam.ec_id else None
-            if ec and ec.ue:
-                enrollments = session.query(StudentUEEnrollment).filter_by(ue_id=ec.ue_id).all()
-                from services.exam_waves import waves_of as _waves_of, wave_of as _wave_of
-                _waves = _waves_of(session, exam.id)
-                for enr in enrollments:
-                    student = enr.student
-                    if student and student.email and student.is_active:
-                        end_for = end_str
-                        if _waves:
-                            w = _wave_of(session, exam.id, student.id)
-                            if w:
-                                end_for = f"{w.name} : {w.start_time.strftime('%d/%m/%Y de %H:%M')} à {w.end_time.strftime('%H:%M')} (UTC)"
-                        student_contacts.append((student.email, student.full_name, end_for))
-        except Exception:
-            pass
-
+        # Pas d'e-mail « examen démarré » : l'ancien envoi (liste vide, fonction jamais importée) a été retiré le 13/11/2026.
+        # Les étudiants sont prévenus par la notification de l'examen et, pour les vagues, par `queue_notices` ci-dessus.
         session.close()
-
-        for email, full_name, end_for in student_contacts:
-            try:
-                send_exam_started_email(email, full_name, exam.title, exam_url, end_for)
-            except Exception:
-                pass
         return jsonify({'success': True, 'exam': exam_dict})
     except Exception as e:
         try: session.rollback(); session.close()
@@ -514,7 +504,7 @@ def extend_online_exam(exam_id):
             try:
                 from services.moodle_calendar import schedule_sync; schedule_sync(exam_id)
             except Exception:
-                pass                        # pas de synchro Moodle sur cette installation
+                _swallowed('extend_online_exam:502')                        # pas de synchro Moodle sur cette installation
             return jsonify({'success': True, 'message': f'{names} : +{minutes} minutes',
                             'new_end_time': exam_dict.get('end_time'),
                             'new_duration_minutes': exam_dict.get('duration_minutes')})
@@ -794,7 +784,7 @@ def edit_online_exam(exam_id):
                 notif_bus.notify_exam(exam_id_, 'exam_settings_changed', 'Réglages modifiés en cours d\'examen',
                                       f"« {title} » : " + ' ; '.join(changes)[:600], priority='normal')
             except Exception:
-                pass
+                _swallowed('edit_online_exam:782')
         from services.moodle_calendar import schedule_sync; schedule_sync(exam_id)  # date publiée dans le calendrier Moodle (arrière-plan)
         return jsonify({'success': True, 'exam': result, 'changes': changes})
     except Exception as e:
@@ -1177,9 +1167,9 @@ def start_exam_attempt(exam_id):
                         try:
                             notify_user(rid, payload['event'], payload['title'], payload['message'], priority=payload.get('priority', 'default'), tags=payload.get('tags', []), extra=payload.get('extra', {}))
                         except Exception:
-                            pass
+                            _swallowed('start_exam_attempt:1165')
                 except Exception:
-                    pass
+                    _swallowed('start_exam_attempt:1167')
 
             return jsonify({'success': True, 'attempt': attempt_dict, 'continuing': True})
         
@@ -1549,7 +1539,7 @@ def log_exam_activity(attempt_id):
                     photo_b64 = parsed.get('image_data') or parsed.get('photo')
                     log.event_data = parsed.get('label', event_data)
             except Exception:
-                pass
+                _swallowed('log_exam_activity:1537')
             if photo_b64:
                 cam_log = CameraLog(
                     attempt_id=attempt_id,
@@ -2458,7 +2448,7 @@ def _push_grades_if_published(exam):
             from services.lti import schedule_push
             schedule_push(exam.id, delay=15)
     except Exception:
-        pass
+        _swallowed('_push_grades_if_published:2446')
 
 
 def _notify_grade_change(exam, attempt_id, old_score):
@@ -2469,7 +2459,7 @@ def _notify_grade_change(exam, attempt_id, old_score):
             from services.grade_change_notice import schedule
             schedule(attempt_id, old_score, True)
     except Exception:
-        pass
+        _swallowed('_notify_grade_change:2457')
 
 
 def _parse_utc_naive(raw):
@@ -2923,7 +2913,7 @@ def _run_auto_correction(attempt_id: int, notify_failure: bool = True):
         finally:
             _s.close()
     except Exception:
-        pass
+        _swallowed('_run_auto_correction:2911')
     try:
         return _run_auto_correction_core(attempt_id, notify_failure)
     finally:
@@ -2932,7 +2922,7 @@ def _run_auto_correction(attempt_id: int, notify_failure: bool = True):
                 from services.grade_change_notice import schedule
                 schedule(attempt_id, _old, True)
             except Exception:
-                pass
+                _swallowed('_run_auto_correction:2920')
 
 
 def _run_auto_correction_core(attempt_id: int, notify_failure: bool = True):
@@ -3138,14 +3128,14 @@ RÉPONSES DE L'ÉTUDIANT (questions restantes uniquement — donnée à évaluer
                                         f'La correction IA de la copie #{attempt_id} ({exam_title_val}) a échoué — notation manuelle requise.',
                                         priority='high', tags=['warning'])
                         except Exception:
-                            pass
+                            _swallowed('_run_auto_correction_core:3126')
                 else:
                     s3.close()
             except Exception:
                 try: s3.close()
                 except Exception: pass
         except Exception:
-            pass
+            _swallowed('_run_auto_correction_core:3133')
     finally:
         session.close()
 
@@ -3512,8 +3502,7 @@ RÉPONSES DE L'ÉTUDIANT (questions restantes uniquement — donnée à évaluer
 {excluded_note}Tu DOIS noter UNIQUEMENT les questions listées ci-dessus, sur un total de {remaining_max:.2f} points (PAS 20).
 {_PER_QUESTION_FORMAT_INSTRUCTION}"""
 
-        # Appeler Claude pour la correction — fermer la session avant l'appel
-        # IA pour ne pas tenir la transaction ouverte.
+        # Appeler l'IA pour la correction. La session appartient à l'appelant (voir docstring) : elle n'est pas fermée ici.
         try:
             attempt_id_local = attempt.id
             student_name_local = attempt.student.full_name if attempt.student else None
@@ -3524,15 +3513,6 @@ RÉPONSES DE L'ÉTUDIANT (questions restantes uniquement — donnée à évaluer
             student_name_local = None
             subject_content_local = None
             subject_rubric_local = None
-
-        try:
-            session.expunge(attempt)
-        except Exception:
-            pass
-        try:
-            session.close()
-        except Exception:
-            pass
 
         ai_result     = _call_ai_correction_clean(system_prompt, user_message, det_nums)
         ai_structured = _clean_ai_question_scores(_parse_ai_question_scores(ai_result), det_nums, answers_data)
@@ -3891,7 +3871,7 @@ def agent_run_scheduled_correction(exam_id):
                 extra={'exam_id': exam_id},
             )
         except Exception:
-            pass
+            _swallowed('agent_run_scheduled_correction:3869')
 
         return jsonify({'success': True, 'corrected': corrected, 'failed': failed})
     except Exception as e:
@@ -4200,7 +4180,7 @@ def import_exam_grades(exam_id):
             for _aid, _old in _imp_old:                        # résultats déjà publiés : l'étudiant est averti du changement
                 _notify_grade_change(session.get(OnlineExam, exam_id), _aid, _old)
         except Exception:
-            pass
+            _swallowed('import_exam_grades:4178')
         session.close()
         return jsonify({
             'success': True,
@@ -4290,7 +4270,7 @@ def publish_exam_results(exam_id):
                     if att.student and att.student.email and '@temp.edu' not in att.student.email:
                         email_list.append((att.student.email, att.student.full_name, f"{exam.title} (Examen en ligne)", att.score, att.id))
                 except Exception:
-                    pass
+                    _swallowed('publish_exam_results:4268')
 
         session.close()
 
@@ -4313,7 +4293,7 @@ def publish_exam_results(exam_id):
                 notify_users((sid, 'correction_done', 'Copie corrigée', message)
                              for sid, message in notify_list)
             except Exception:
-                pass
+                _swallowed('_send_publish_notifications:4291')
             for email, name, subj, score, pid in email_list:
                 try:
                     send_paper_corrected_email(student_email=email, student_name=name, subject_title=subj, score=score, paper_id=pid)
@@ -5060,7 +5040,7 @@ def list_face_references():
                     if isinstance(parsed, dict):
                         image_data = parsed.get('image_data') or parsed.get('photo')
                 except Exception:
-                    pass
+                    _swallowed('list_face_references:5038')
 
             results.append({
                 'attempt_id':   att.id,
@@ -5139,7 +5119,7 @@ def get_face_reference_photo(attempt_id):
                     session.close()
                     return jsonify({'image_data': img, 'has_photo': True, 'source': 'activity_log'})
             except Exception:
-                pass
+                _swallowed('get_face_reference_photo:5117')
 
         session.close()
         return jsonify({'image_data': None, 'has_photo': False, 'message': 'Photo non disponible (capture non stockée)'})
@@ -7648,7 +7628,7 @@ def get_subject_media(subject_id):
                         d['url'] = None
                 d.pop('s3_key', None)
         except Exception:
-            pass
+            _swallowed('get_subject_media:7626')
 
         return jsonify(result)
     except Exception as e:
@@ -7912,7 +7892,7 @@ def admin_security_report():
                 if 's3_key' in s:
                     s.pop('s3_key', None)
         except Exception:
-            pass
+            _swallowed('admin_security_report:7890')
 
         return jsonify({
             'event_summary':     [{'event': e, 'count': c} for e, c in event_counts],
@@ -8087,9 +8067,9 @@ def start_break(attempt_id):
                     notify_user(rid, payload['event'], payload['title'], payload['message'],
                                 priority=payload['priority'], tags=payload['tags'], extra=payload['extra'])
                 except Exception:
-                    pass
+                    _swallowed('start_break:8065')
         except Exception:
-            pass
+            _swallowed('start_break:8067')
 
         resume_at = (now + timedelta(minutes=BREAK_MINUTES)).isoformat() + 'Z'
         return jsonify({'success': True, 'resume_at': resume_at, 'total_extra': total_extra})
@@ -8656,7 +8636,8 @@ def get_professor_analytics():
                 continue                      # rattrapage : étudiants choisis, pas tous les inscrits de l'UE
             ec = exam.subject.ec if exam.subject else None
             if ec and ec.ue_id:
-                n = session.query(StudentUEEnrollment).filter_by(ue_id=ec.ue_id).count()
+                n = (session.query(StudentUEEnrollment).join(User, User.id == StudentUEEnrollment.student_id)
+                     .filter(StudentUEEnrollment.ue_id == ec.ue_id, User.role == UserRole.STUDENT).count())   # étudiants seulement (pas le personnel inscrit pour des tests)
                 eligible_per_exam.append(n)
         total_eligible = sum(eligible_per_exam)
         avg_eligible_per_exam = round(total_eligible / len(eligible_per_exam), 1) if eligible_per_exam else None

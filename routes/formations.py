@@ -448,7 +448,9 @@ def get_formation_tree(formation_id):
                      .filter_by(formation_id=formation_id, is_active=True).order_by(Semester.number).all())
         ue_ids = [u.id for se in semesters for u in se.ues]
         counts = dict(session.query(StudentUEEnrollment.ue_id, func.count())
-                      .filter(StudentUEEnrollment.ue_id.in_(ue_ids)).group_by(StudentUEEnrollment.ue_id).all()) if ue_ids else {}
+                      .join(User, User.id == StudentUEEnrollment.student_id)
+                      .filter(StudentUEEnrollment.ue_id.in_(ue_ids), User.role == UserRole.STUDENT)   # étudiants seulement
+                      .group_by(StudentUEEnrollment.ue_id).all()) if ue_ids else {}
         out = []
         for se in semesters:
             ues = []

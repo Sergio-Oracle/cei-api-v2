@@ -26,8 +26,11 @@ class SubjectRepository:
                 joinedload(Subject.ec).joinedload(EC.ue),
                 joinedload(Subject.creator),
             )
+            # Un sujet archivé (is_active = faux : reste de test défectueux, jamais lié à un examen) n'apparaît plus dans
+            # aucune liste, pour personne. Il reste en base et reste lisible par son identifiant.
+            query = query.filter(Subject.is_active.isnot(False))
             if role == UserRole.STUDENT:
-                subjects = query.filter_by(is_active=True).order_by(desc(Subject.created_at)).all()
+                subjects = query.order_by(desc(Subject.created_at)).all()
             elif role == UserRole.PROFESSOR:
                 # ses sujets ET ceux des EC où il est affecté (créés à sa place par le responsable d'examen)
                 from sqlalchemy import or_, select

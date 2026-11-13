@@ -1984,6 +1984,21 @@ def _parse_subject_questions_for_grading(content: str) -> dict:
 # 4.4.2, quiz_slots.page + quiz_repaginate_questions() + mod_quiz_get_attempt_data)
 # ============================================================================
 
+# En-tête de DOCUMENT (université, master, session, durée, enseignant…) placé avant la question 1 : à montrer UNE fois (sur la première
+# question), pas en haut de chaque page comme un énoncé de partie (examen 181 : « Sujet… Master SRIV / UFC… Session Normale » sur 20 questions).
+# Deux indices distincts au moins, et aucun mot d'énoncé (« On note », « Rappel », « Soit »…). Les mêmes motifs sont dans le lecteur du navigateur.
+_DOC_HEADER_CUES = [re.compile(p, re.I) for p in (
+    r'universit|facult[ée]|institut|[ée]cole', r'\b(?:master|licence|doctorat|l[1-3]|m[1-2])\b', r'\bsession\b', r'dur[ée]e',
+    r'\b(?:enseignant|professeur|pr|dr)\b\.?\s', r'[ée]preuve|\bexamen\b|\bdevoir\b|contr[ôo]le|[ée]valuation|\bsujet\b',
+    r'semestre|ann[ée]e universitaire', r'questions?\s+[àa]\s+choix', r'\b(?:nom|pr[ée]nom|matricule)\s*:')]
+_STATEMENT_CUES = re.compile(r'(?:^|[^a-zà-ÿ])(?:on note|rappel|soit|soient|consid[ée]r|hypoth[èe]se|pr[ée]dicats?|d[ée]finitions?|[ée]nonc[ée])', re.I)
+
+
+def _looks_like_doc_header(lines) -> bool:
+    t = '\n'.join(lines)
+    return not _STATEMENT_CUES.search(t) and sum(1 for c in _DOC_HEADER_CUES if c.search(t)) >= 2
+
+
 def _parse_subject_blocks_ordered(raw: str) -> list:
     """Port Python fidèle du parser JS `parseExamBlocks` (app/exam/[id]/page.tsx) —
     reconstruit la séquence ORDONNÉE de blocs (sections + questions typées) du
@@ -2055,6 +2070,7 @@ def _parse_subject_blocks_ordered(raw: str) -> list:
     # en a besoin pour répondre. Il est rattaché à chaque question de la partie (champ `context`), car la partie « QCM » est une liste
     # de questions seule (et mélangée) : un bloc d'énoncé indépendant n'y serait jamais affiché.
     ctx_title, ctx_text, pending = '', [], []
+    header_once = False                       # le paragraphe avant la question 1 est un en-tête de document : une seule question le reçoit
     if last_sect is not None:
         blocks.append({'type': 'section', 'title': strip(lines[last_sect])})   # titre du PREMIER exercice (juste avant la question 1)
         ctx_title = strip(lines[last_sect])
@@ -2069,6 +2085,7 @@ def _parse_subject_blocks_ordered(raw: str) -> list:
         para = [l for l in (para or last_para) if not is_noise(l)]
         if len(' '.join(para)) >= 40:
             pending = para
+            header_once = _looks_like_doc_header(para)
 
     while i < n:
         dm = QT.DESC_RE.match(lines[i])
@@ -2083,6 +2100,7 @@ def _parse_subject_blocks_ordered(raw: str) -> list:
         if is_sect(lines[i]):
             blocks.append({'type': 'section', 'title': strip(lines[i])})
             ctx_title, ctx_text, pending = strip(lines[i]), [], []
+            header_once = False
             i += 1
             continue
         if is_sep(lines[i]) and not is_q(lines[i]):
@@ -2091,6 +2109,7 @@ def _parse_subject_blocks_ordered(raw: str) -> list:
         if not is_q(lines[i]):
             if not is_noise(lines[i]):
                 pending.append(lines[i].rstrip())       # texte hors question : énoncé de la partie
+                header_once = False                      # du texte s'ajoute : ce n'est plus un simple en-tête
             i += 1
             continue
         q = get_q(lines[i])
@@ -2242,10 +2261,14 @@ def _parse_subject_blocks_ordered(raw: str) -> list:
             'type': btype, 'num': q['num'], 'text': q['text'], 'extraLines': clean_extra,
             'choices': choices, 'pairs': pairs or None, 'media': media or None,
         }
+        once = False
         if pending:
             ctx_text, pending = pending, []
+            once, header_once = header_once, False
         if ctx_title or ctx_text:
             blk['context'] = {'title': ctx_title, 'text': '\n'.join(ctx_text).strip()}
+        if once:
+            ctx_text = []                                   # en-tête de document : montré sur cette question seulement
         if is_grid:
             items, options = QT.grid_from_lines(q['markerType'], clean_extra, choices, g_items, g_cats, q['text'])
             blk['items'], blk['options'] = items, options

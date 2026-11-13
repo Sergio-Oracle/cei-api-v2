@@ -101,8 +101,42 @@ def analyze(content: str, rubric: str = None) -> dict:
     except Exception as e:                       # le contrôle de couverture ne doit jamais empêcher l'examen
         _log.warning('contrôle de couverture indisponible: %s', e)
 
+    issues += _statement_issues(content, blocks)
+
     ok = not any(i['level'] == 'error' for i in issues)
     return {'ok': ok, 'questions': len(blocks), 'by_type': by_type, 'issues': issues}
+
+
+def _statement_issues(content: str, blocks: list) -> list:
+    """Énoncés de partie : ce que l'étudiant voit au-dessus de chaque question (incident du 13/11/2026, Devoir-IA-Master IL :
+    l'énoncé de l'exercice 1 s'affichait sur les 20 questions). Deux avertissements, jamais bloquants :
+      - un titre de partie collé au début d'une question (« 6. Exercice 2 : … Q6. … ») : il n'est pas reconnu comme titre ;
+      - un même énoncé affiché sur une longue suite de questions : souvent un titre de partie manquant."""
+    from services.subject_normalizer import _GLUED_SECT_RE
+    out = []
+    for line in (content or '').split('\n'):
+        m = _GLUED_SECT_RE.match(line)
+        if m:
+            label = re.match(r'^\S+\s+\S+', m.group(2))
+            out.append({'level': 'warn', 'message':
+                f"Le titre « {(label.group(0) if label else m.group(2))[:40]} » est collé au début de la question {m.group(1)} : il n'est pas reconnu comme "
+                "titre de partie, et l'énoncé de la partie précédente continuerait de s'afficher. Enregistrez le sujet à nouveau (remise en forme automatique) "
+                "ou mettez ce titre sur sa propre ligne."})
+    run, key = [], None
+    def flush():
+        if key and len(run) >= 8 and len((key[1] or '').strip()) >= 60:
+            out.append({'level': 'warn', 'message':
+                f"Le même énoncé (« {(key[0] or 'énoncé de la partie')[:50]} ») s'affiche sur {len(run)} questions de suite (de la {run[0]} à la {run[-1]}). "
+                "Si certaines de ces questions forment une autre partie, ajoutez un titre (ex. « Exercice 3 ») juste avant la première d'entre elles."})
+    for b in blocks:
+        ctx = b.get('context') or {}
+        k = (ctx.get('title'), ctx.get('text')) if ctx.get('text') else None
+        if k != key:
+            flush(); run, key = [], k
+        if k:
+            run.append(b.get('num'))
+    flush()
+    return out
 
 
 def _rubric_issues(content: str, rubric: str, blocks: list) -> list:

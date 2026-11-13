@@ -19,6 +19,50 @@ _Q_RE = re.compile(r'^(\s*(?:(?:Question|Q)\.?\s+)?)(\d{1,3})(\s*[.:)–—-]\s*
 _CHOICE_RE = re.compile(r'^\s*\(?[A-Fa-f]\)?\s*[.):\s-]\s+')
 _SECT_RE = re.compile(r'^\s*(?:Partie|Section|Exercice|Part)\s+(?:[IVX]+\b|\d+\b|[-–—:])', re.I)
 _SECT_LETTER_RE = re.compile(r"^\s*(?:Partie|Section|Exercice|Part)\s+[A-Z]\b(?![’'a-zà-ÿ])")   # « Partie A », jamais « Partie de … »
+# « 6. Exercice 2 : Logique du premier ordre Prédicats : … Q6. Pourquoi … [QCM] » : le TITRE de la partie suivante est collé au début de la question
+# (numéro identique devant « Qn. », forme produite par l'import Word/PDF). Le lecteur ne reconnaît un titre que s'il commence sa ligne : ici il
+# restait invisible et l'énoncé de l'exercice PRÉCÉDENT s'affichait sur toutes les questions suivantes (Devoir-IA-Master IL, 13/11/2026).
+_GLUED_SECT_RE = re.compile(
+    r"^(\d{1,3})\.\s+((?i:Partie|Section|Exercice|Part)\s+(?:[IVX]+\b|\d+\b|[A-Z]\b(?![’'a-zà-ÿ])).*?)\s+(?:Q|Question)\s*\1\s*[.:)]\s+(.*)$")
+_SECT_LABEL_RE = re.compile(r"^((?i:Partie|Section|Exercice|Part)\s+\S+?)\s*(?:[:\-–—.]\s*|\s+)(.*)$")
+_STATEMENT_LABEL_RE = re.compile(r"(?:^|\s)(\S+)\s*:\s")
+
+
+def _split_section_head(head):
+    """« Exercice 2 : Logique du premier ordre Prédicats : étudiant(x)… » -> (« Exercice 2 : Logique du premier ordre », « Prédicats : étudiant(x)… »).
+    Le sous-titre s'arrête avant le mot qui précède le deuxième « : » (« Prédicats : », « Données : », « Rappel : »). Sans deuxième « : » : un
+    texte court sans ponctuation finale est un TITRE (« Exercice 3 : Graphes conceptuels »), un texte long est un énoncé sous « Exercice N ».
+    Rien n'est jamais perdu ni inventé : titre + énoncé = texte d'origine, séparateurs d'origine conservés."""
+    head = head.strip()
+    m = _SECT_LABEL_RE.match(head)
+    if not m:
+        return head, ''
+    start = m.start(2)
+    rest = head[start:]
+    if not rest.strip():
+        return head.rstrip(' :-–—.'), ''
+    lab = _STATEMENT_LABEL_RE.search(rest)
+    if lab and lab.start(1) > 0:
+        return head[:start + lab.start(1)].strip(), rest[lab.start(1):].strip()
+    if len(rest) <= 70 and not re.search(r'[.!?»)]\s*$|\.\s', rest):
+        return head, ''
+    return head[:start].strip(' :-–—.'), rest.strip()
+
+
+def _unglue_heading(lines):
+    """Titre de partie collé à une question → titre, énoncé et question sur leurs propres lignes (voir _GLUED_SECT_RE)."""
+    out, changed = [], 0
+    for l in lines:
+        m = _GLUED_SECT_RE.match(l)
+        if m:
+            title, stmt = _split_section_head(m.group(2))
+            out += [title] + ([stmt] if stmt else []) + ['', f"{m.group(1)}. Q{m.group(1)}. {m.group(3)}"]
+            changed += 1
+        else:
+            out.append(l)
+    return out, changed
+
+
 _GLUED_Q_RE = re.compile(r'^(.*\S)\s+((\d{1,3})\.\s+(?:Q|Question)\s*(\d{1,3})\s*[.:)]\s.*)$')
 
 
@@ -168,6 +212,9 @@ def normalize(content):
     lines, n = _vf_tables(lines)
     if n:
         notes.append(f"{n} ligne(s) de tableau Vrai/Faux converties en questions [VF]")
+    lines, n = _unglue_heading(lines)
+    if n:
+        notes.append(f"{n} titre(s) de partie collé(s) à une question remis sur leur propre ligne")
     lines, n = _unglue(lines)
     if n:
         notes.append(f"{n} question(s) recollée(s) à la fin d'un énoncé remises sur leur propre ligne")

@@ -43,7 +43,7 @@ def questions(blocks):
 # ── Parseur navigateur exécuté via node (TypeScript transpilé à la volée) ─────────────────────────────────────────
 def js_blocks(contents):
     src = open(FRONT, encoding='utf-8').read()
-    m = re.search(r'^function parseExamBlocks\(raw: string\): ParsedBlock\[\] \{.*?^\}\n', src, re.S | re.M)
+    m = re.search(r'^const DOC_HEADER_CUES.*?^function parseExamBlocks\(raw: string\): ParsedBlock\[\] \{.*?^\}\n', src, re.S | re.M)
     if not m:
         return None
     with tempfile.TemporaryDirectory() as d:

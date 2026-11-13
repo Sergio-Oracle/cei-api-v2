@@ -54,7 +54,7 @@ check("« Partie de … » n'est pas une partie : c'est du texte d'énoncé", no
 # 3. lecteur du navigateur = lecteur du serveur
 def js_blocks(contents):
     src = open(FRONT, encoding='utf-8').read()
-    m = re.search(r'^function parseExamBlocks\(raw: string\): ParsedBlock\[\] \{.*?^\}\n', src, re.S | re.M)
+    m = re.search(r'^const DOC_HEADER_CUES.*?^function parseExamBlocks\(raw: string\): ParsedBlock\[\] \{.*?^\}\n', src, re.S | re.M)
     if not m: return None
     with tempfile.TemporaryDirectory() as d:
         open(os.path.join(d, 'p.ts'), 'w', encoding='utf-8').write(m.group(0))
@@ -112,6 +112,78 @@ SUITE = ("1. Q1. Qui ment ? [QCM]\nA. Paul\nB. Marie\nC. Luc\nD. Anne\n\n"
 g = parse_grading(SUITE)
 check("correction : les propositions de Q1 sont les siennes (pas les déclarations de la partie B)", g['1']['choices'] == {'A': 'Paul', 'B': 'Marie', 'C': 'Luc', 'D': 'Anne'}, g['1']['choices'])
 check("correction : Q2 garde ses propositions", g['2']['choices'] == {'A': 'oui', 'B': 'non'}, g['2']['choices'])
+
+# 6. Titre de partie COLLÉ à une question (incident du 13/11/2026, Devoir-IA-Master IL) : l'énoncé de l'exercice 1 s'affichait sur les 20 questions
+#    car « 6. Exercice 2 : … Q6. … » n'était pas reconnu comme titre. Sujet fabriqué (même structure, aucun contenu réel).
+def _qcm(n, txt): return f"{n}. Q{n}. {txt} [QCM]\n{PROPS}"
+EX1 = ("Exercice 1- Les trois voisins\nOn note A = « A est chez lui ». Rappel des déclarations :\nA : « Je suis chez moi »\nB : « Si A est chez lui, C aussi »\n\n"
+       + "\n".join(_qcm(i, f"Question {i} de l'exercice 1 ?") for i in range(1, 6)))
+GLUE6 = ("6. Exercice 2 : Logique des prédicats Prédicats : livre(x), lu(x, y). La constante C désigne le cours de Chimie. "
+         f"Q6. Pourquoi cette formule est-elle fausse ? [QCM]\n{PROPS}")
+SUITE = "\n".join(_qcm(i, f"Question {i} ?") for i in range(7, 11)) + "\n\n\n" + "\n".join(_qcm(i, f"Question {i} d'une autre partie ?") for i in range(11, 21))
+IA = EX1 + "\n" + GLUE6 + "\n" + SUITE
+ctx_of = lambda blocks: {q['num']: (q.get('context') or {}) for q in blocks if q['type'] not in ('section', 'description', 'text')}
+
+old = ctx_of(parse_py(IA))
+check("AVANT correction (cause de l'incident) : l'énoncé de l'exercice 1 est collé aux 20 questions", all('Exercice 1' in (c.get('title') or '') for c in old.values()) and len(old) == 20, {k: old[k].get('title') for k in ('6', '11')})
+fixed, notes = normalize(IA)
+check("titre collé : détecté et remis sur sa propre ligne (note lisible)", any('titre(s) de partie collé' in x for x in notes), notes)
+check("normalisation idempotente (titre collé)", normalize(fixed)[0] == fixed)
+check("la question 6 garde son texte et ses 4 propositions", 'Pourquoi cette formule est-elle fausse' in fixed and '6. Q6. Pourquoi' in fixed)
+new = ctx_of(parse_py(fixed))
+check("20 questions toujours lues, aucune perdue", sorted(new, key=int) == [str(i) for i in range(1, 21)], sorted(new, key=int))
+check("Q1 à Q5 : énoncé de l'exercice 1", all(new[str(i)].get('title', '').startswith('Exercice 1') and 'Rappel des déclarations' in new[str(i)].get('text', '') for i in range(1, 6)), new['1'])
+check("Q6 à Q10 : titre « Exercice 2 : Logique des prédicats » et SON énoncé (plus celui de l'exercice 1)",
+      all(new[str(i)].get('title') == 'Exercice 2 : Logique des prédicats' and new[str(i)].get('text', '').startswith('Prédicats : livre(x)') for i in range(6, 11)), new['6'])
+check("l'énoncé de l'exercice 1 ne s'affiche plus au-delà de Q5", not any('Rappel des déclarations' in new[str(i)].get('text', '') for i in range(6, 21)))
+check("lignes ordinaires jamais coupées : « Partie de … », « Exercice de style », numéros différents",
+      normalize("6. Partie de cartes Q6. Une question ? [QCM]\nA. a\nB. b\n")[0] == "6. Partie de cartes Q6. Une question ? [QCM]\nA. a\nB. b\n"
+      and normalize("6. Exercice de style Q6. Une question ? [QCM]\nA. a\nB. b\n")[0] == "6. Exercice de style Q6. Une question ? [QCM]\nA. a\nB. b\n"
+      and normalize("3. Exercice 2 : x Q4. Une question ? [QCM]\nA. a\nB. b\n")[0] == "3. Exercice 2 : x Q4. Une question ? [QCM]\nA. a\nB. b\n")
+from services.subject_normalizer import _split_section_head
+check("titre seul (« Exercice 3 : Graphes conceptuels ») : reste un titre complet", _split_section_head('Exercice 3 : Graphes conceptuels') == ('Exercice 3 : Graphes conceptuels', ''))
+check("séparateur d'origine conservé (« Partie B — Les témoins »)", _split_section_head('Partie B — Les témoins Rappel : A dit non') == ('Partie B — Les témoins', 'Rappel : A dit non'))
+check("énoncé long sans sous-titre : titre = « Exercice 4 », énoncé intact", _split_section_head('Exercice 4 On considère un réseau de 5 machines. Chaque machine est reliée à deux autres.') == ('Exercice 4', 'On considère un réseau de 5 machines. Chaque machine est reliée à deux autres.'))
+jsia = js_blocks([fixed])
+if jsia:
+    jn = ctx_of(jsia[0])
+    check("navigateur : mêmes énoncés que le serveur sur le sujet corrigé", jn == new, {k: (jn[k].get('title'), new[k].get('title')) for k in jn if jn[k] != new.get(k)})
+
+from services.subject_check import analyze
+legacy = [i['message'] for i in analyze(IA)['issues']]
+check("sujet ancien (titre collé, non normalisé) : avertissement « collé au début de la question 6 »", any('collé au début de la question 6' in m for m in legacy), legacy)
+fx = [i for i in analyze(fixed)['issues']]
+check("sujet corrigé : plus d'avertissement « titre collé »", not any('collé au début' in i['message'] for i in fx), fx)
+check("même énoncé sur Q6 à Q20 (15 questions, pas de titre avant Q11) : signalé, jamais bloquant",
+      any(i['level'] == 'warn' and 'de la 6 à la 20' in i['message'] for i in fx) and analyze(fixed)['ok'], fx)
+check("Q1 à Q5 (5 questions) : pas d'alerte d'énoncé répété", not any('de la 1 à la 5' in i['message'] for i in fx))
+AVEC_TITRE = fixed.replace("11. Q11.", "Exercice 3 : Autre partie\n\n11. Q11.")
+check("avec un titre « Exercice 3 » avant Q11 : l'énoncé de l'exercice 2 s'arrête à Q10, plus d'alerte de répétition",
+      all(ctx_of(parse_py(AVEC_TITRE))[str(i)].get('title') == 'Exercice 3 : Autre partie' for i in range(11, 21)) and not any('s\'affiche sur' in i['message'] for i in analyze(AVEC_TITRE)['issues']))
+
+# 7. En-tête de DOCUMENT avant la question 1 (examen 181 : « Sujet… Master SRIV / UFC… Session Normale » répété sur 20 questions) :
+#    montré une seule fois (sur Q1) ; un vrai énoncé ou une consigne reste, lui, affiché sur toutes les questions du groupe.
+HUIT = "\n".join(_qcm(i, f"Question {i} ?") for i in range(1, 9))
+ENTETE = "Sujet de Réseaux\nMaster ABC / Université X\nDr Jean Dupont\nSession Normale\n10 questions à choix multiples, une seule réponse exacte par question\n\n" + HUIT
+ce = ctx_of(parse_py(ENTETE))
+check("en-tête de document : affiché sur Q1", 'Sujet de Réseaux' in (ce['1'].get('text') or ''), ce['1'])
+check("en-tête de document : plus répété sur Q2 à Q8", not any(ce[str(i)] for i in range(2, 9)), {k: v for k, v in ce.items() if v and k != '1'})
+CONSIGNE = "Consigne : Pour chaque situation, choisissez une seule réponse parmi les quatre propositions.\n\n" + "\n".join(_qcm(i, f"Question {i} ?") for i in range(1, 4))
+cc = ctx_of(parse_py(CONSIGNE))
+check("simple consigne (aucun indice d'en-tête) : reste sur toutes les questions", all('Consigne' in (cc[str(i)].get('text') or '') for i in (1, 2, 3)), cc)
+NOTE = "On note r = « le feu est rouge » et v = « le feu est vert ». Rappel : r et v s'excluent.\n\n" + "\n".join(_qcm(i, f"Question {i} ?") for i in range(1, 4))
+cn = ctx_of(parse_py(NOTE))
+check("énoncé sans titre de partie (« On note… Rappel ») : reste sur toutes les questions (cas du 02/11)", all('On note r' in (cn[str(i)].get('text') or '') for i in (1, 2, 3)), cn)
+MIXTE = "Examen — Durée : 1 heure\nSoit une suite de nombres entiers.\n\n" + "\n".join(_qcm(i, f"Question {i} ?") for i in range(1, 4))
+cm = ctx_of(parse_py(MIXTE))
+check("en-tête MÊLÉ à un énoncé (« Soit… ») : traité comme un énoncé, affiché partout", all(cm[str(i)].get('text') for i in (1, 2, 3)), cm)
+jh = js_blocks([ENTETE, CONSIGNE, NOTE, MIXTE])
+if jh:
+    check("navigateur = serveur : en-tête (une fois), consigne, énoncé, mélange",
+          [ctx_of(x) for x in jh] == [ce, cc, cn, cm], [k for k, (a, b) in enumerate(zip([ctx_of(x) for x in jh], [ce, cc, cn, cm])) if a != b])
+else:
+    check("lecteur navigateur exécutable (cas d'en-tête)", False)
+check("en-tête affiché une fois : plus d'alerte « même énoncé sur N questions »", not any("s'affiche sur" in i['message'] for i in analyze(ENTETE)['issues']))
 
 ok = sum(RES); print(f"\n{ok}/{len(RES)} vérifications réussies")
 sys.exit(0 if ok == len(RES) else 1)

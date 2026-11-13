@@ -71,7 +71,7 @@ import subprocess, tempfile
 FRONT = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), 'cei-next', 'app', 'exam', '[id]', 'page.tsx')
 def js_blocks(contents):
     src = open(FRONT, encoding='utf-8').read()
-    m = re.search(r'^function parseExamBlocks\(raw: string\): ParsedBlock\[\] \{.*?^\}\n', src, re.S | re.M)
+    m = re.search(r'^const DOC_HEADER_CUES.*?^function parseExamBlocks\(raw: string\): ParsedBlock\[\] \{.*?^\}\n', src, re.S | re.M)
     if not m: return None
     with tempfile.TemporaryDirectory() as d:
         open(os.path.join(d, 'p.ts'), 'w', encoding='utf-8').write(m.group(0)); open(os.path.join(d, 'in.json'), 'w', encoding='utf-8').write(json.dumps(contents))

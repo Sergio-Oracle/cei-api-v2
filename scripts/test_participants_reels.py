@@ -83,7 +83,10 @@ try:
     check('la migration de classement est présente dans models.py', bool(m))
     old_ids = {}
     def mk_old(label, **kw):
-        a = ExamAttempt(exam_id=ex.id, student_id=studs[7].id, status=AttemptStatus.SUBMITTED, answers=kw.pop('answers', '{}'), **kw)
+        # Un étudiant distinct par ancienne tentative : l'index unique (examen, étudiant) interdit deux tentatives du même étudiant.
+        u = User(email=f'part.{tag}.old.{label}@test.invalid', full_name=f'Part Old {label}', role=UserRole.STUDENT, is_active=True, email_verified=True, has_email=True, password_hash='x')
+        s.add(u); s.commit(); made['users'].append(u.id)
+        a = ExamAttempt(exam_id=ex.id, student_id=u.id, status=AttemptStatus.SUBMITTED, answers=kw.pop('answers', '{}'), **kw)
         s.add(a); s.commit(); old_ids[label] = a.id
     mk_old('hb', started_at=datetime(2026, 11, 1), last_seen_at=datetime(2026, 11, 1, 10))
     mk_old('rep', started_at=datetime(2026, 11, 1), answers='{"pq_1":"B"}')

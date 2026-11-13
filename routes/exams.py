@@ -6800,6 +6800,52 @@ Réponds UNIQUEMENT avec les {n} questions puis "BARÈME:" puis leurs critères 
         if not all_questions:
             return jsonify({'error': "L'IA n'a réussi à générer aucune question — réessayez, ou réduisez le nombre de questions demandé."}), 500
 
+        # ── Clé CONTESTÉE par une seconde lecture indépendante (question ambiguë ou clé fausse) → la question est REFAITE, au lieu
+        # d'être livrée « à relire » : 3 générations sur 4 de la mesure du 13/11/2026 portaient 1 à 3 avertissements de ce genre.
+        # Bornes : 2 tours de vérification, 6 remplacements au plus ; ce qui reste contesté est signalé comme avant (jamais bloquant).
+        try:
+            from services.answer_verify import disagreements as _disagree
+
+            def _tmp_texts(_qs):
+                _cs, _rs = [], []
+                for _i, _q in enumerate(_qs, 1):
+                    _body = _Q_PREFIX_STRIP_RE.sub('', _q['content_block'], count=1).strip()
+                    _first, _, _rest = _body.partition('\n')
+                    _first = re.sub(r'\s{2,}', ' ', _ANY_TYPE_MARKER_RE.sub('', _first)).rstrip() + f" [{_TEMPLATES[_q['type_key']][1]}]"
+                    _cs.append(f"Question {_i} — {_first}" + ('\n' + _rest if _rest else ''))
+                    _rs.append(f"Question {_i} — Titre (1 pts)\n" + _Q_PREFIX_STRIP_RE.sub('', _q['rubric_block'], count=1).strip())
+                return '\n\n'.join(_cs), '\n\n'.join(_rs)
+
+            _ask_2 = lambda _p: call_claude("Tu es un enseignant universitaire rigoureux.", _p)
+            _swaps = 0
+            for _round in range(2):
+                _tc, _tr = _tmp_texts(all_questions)
+                _bad = [int(_n) - 1 for _n, *_x in _disagree(_tc, _tr, ask=_ask_2)]
+                if not _bad or _swaps >= 6:
+                    break
+                for _i in _bad:
+                    if _swaps >= 6 or not (0 <= _i < len(all_questions)):
+                        continue
+                    _q = all_questions[_i]
+                    for _try in range(3):
+                        try:
+                            _one = _generate_type_batch(_q['type_key'], [_q['points']], '')
+                        except Exception as _e:
+                            print(f"WARNING generate-full-exam : remplacement d'une question contestée impossible : {_e}")
+                            continue
+                        if not _one or _gen_defects(_q['type_key'], _one[0][0], _one[0][1]):
+                            continue
+                        if any(_similarity(_one[0][0][:300], _o['content_block'][:300]) >= DUPLICATE_THRESHOLD for _o in all_questions):
+                            continue
+                        all_questions[_i] = {'type_key': _q['type_key'], 'content_block': _one[0][0], 'rubric_block': _one[0][1],
+                                             'points': _q['points'], 'defects': []}
+                        _swaps += 1
+                        break
+            if _swaps:
+                print(f"INFO generate-full-exam : {_swaps} question(s) à clé contestée remplacée(s)")
+        except Exception as _e:
+            print(f"WARNING generate-full-exam : remplacement des questions contestées non fait : {_e}")
+
         # ── Le total des points est TOUJOURS la note demandée. S'il manque des questions, leurs points sont redistribués sur les
         # questions réellement produites (proportionnellement, 2 décimales, la dernière absorbe l'arrondi) : jamais un sujet
         # annoncé « sur 20 » qui n'en totalise que 16.

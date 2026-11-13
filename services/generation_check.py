@@ -51,6 +51,35 @@ def placeholder_in(text: str):
     return None
 
 
+_OPT_LINE_RE = re.compile(r'(?m)^\s*([A-H])\s*[\).]\s+(.+?)\s*$')
+
+
+def _squash(t: str) -> str:
+    return re.sub(r'\s+', ' ', re.sub(r'[^\w\s]', ' ', (t or '').lower())).strip()
+
+
+def _trous_quality(c: str, n_holes: int) -> list:
+    """Défauts de FOND d'un texte à trous, détectables sans IA (12/11/2026, questions générées pour l'examen 170) :
+       - une proposition déjà écrite telle quelle dans la phrase (« un bon PRA doit inclure {1} la sauvegarde hors site… »
+         avec « la sauvegarde hors site » en proposition) : le trou n'a plus de sens ;
+       - aucune proposition en trop : sans piège, les réponses se devinent par élimination."""
+    out = []
+    lines = (c or '').split('\n')
+    opts = [(m.group(1).upper(), m.group(2)) for m in (_OPT_LINE_RE.match(l) for l in lines) if m]
+    if not opts:
+        return out
+    stem_lines = [l for l in lines[1:] if not _OPT_LINE_RE.match(l)]          # sans la ligne de titre « Question N — … »
+    stem = _squash(' '.join(stem_lines))
+    for letter, text in opts:
+        t = _squash(text)
+        if len(t.split()) >= 2 and len(t) >= 10 and re.search(r'(?<!\w)' + re.escape(t) + r'(?!\w)', stem):
+            out.append(f"la proposition {letter} (« {text.strip()} ») est déjà écrite dans la phrase : le trou n'a plus de sens")
+            break
+    if n_holes and len(opts) <= n_holes:
+        out.append("aucune proposition en trop : les réponses se devinent par élimination")
+    return out
+
+
 def defects(type_key: str, content_block: str, rubric_block: str) -> list:
     """Défauts certains d'une question générée (liste de phrases pour l'enseignant, vide si la question est complète)."""
     out = []
@@ -102,6 +131,8 @@ def defects(type_key: str, content_block: str, rubric_block: str) -> list:
             nums = sorted(int(x) for x in re.findall(r'(\d+)\s*-\s*[A-H]', pairs.group(1)))
             if nums != list(range(1, n_expected + 1)):
                 out.append("les numéros du barème ne correspondent pas aux éléments de la question")
+        if type_key == 'trous':
+            out.extend(_trous_quality(c, n_expected))
     elif type_key == 'ordre':
         if len(set(letters)) < 3:
             out.append("moins de 3 éléments à remettre en ordre")

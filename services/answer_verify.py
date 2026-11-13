@@ -61,8 +61,9 @@ def _show(marker: str, v) -> str:
     return ', '.join(f"{a}-{b}" for a, b in v)
 
 
-def verify_keys(content: str, rubric: str, ask=None, only_nums=None) -> list:
-    """Phrases d'alerte pour l'enseignant (liste vide si tout concorde ou si la vérification n'a pas pu se faire)."""
+def disagreements(content: str, rubric: str, ask=None, only_nums=None) -> list:
+    """[(numéro, marqueur, clé du barème, réponse de la seconde lecture)] pour chaque question dont la seconde lecture diverge.
+    Liste vide si tout concorde ou si la vérification n'a pas pu se faire (jamais d'exception)."""
     try:
         from routes.exams import _extract_correct_answers
         questions = _closed_questions(content)
@@ -95,9 +96,15 @@ def verify_keys(content: str, rubric: str, ask=None, only_nums=None) -> list:
             k = _norm_key(mk, keys.get(n))
             if a is None or k is None or a == k:
                 continue
-            out.append(f"Question {n} : à relire — le barème indique « {_show(mk, k)} », une seconde vérification trouve « {_show(mk, a)} ». "
-                       "Vérifiez la bonne réponse avant d'enregistrer.")
+            out.append((n, mk, k, a))
         return out
     except Exception as e:
         print(f"[answer_verify] vérification non faite : {e}")
         return []
+
+
+def verify_keys(content: str, rubric: str, ask=None, only_nums=None) -> list:
+    """Phrases d'alerte pour l'enseignant (liste vide si tout concorde ou si la vérification n'a pas pu se faire)."""
+    return [f"Question {n} : à relire — le barème indique « {_show(mk, k)} », une seconde vérification trouve « {_show(mk, a)} ». "
+            "Vérifiez la bonne réponse avant d'enregistrer."
+            for n, mk, k, a in disagreements(content, rubric, ask=ask, only_nums=only_nums)]

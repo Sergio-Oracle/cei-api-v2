@@ -8952,6 +8952,16 @@ def preview_online_exam(exam_id):
             }
         data['preview'] = {'seed': seed, 'pages': _build_exam_pages(exam, seed)}
         data['subject_edit'] = _subject_edit_info(session, user, exam)
+        # Structure du sujet telle que les étudiants la verront (groupes titre + énoncé + questions) et ses alertes : l'enseignant la relit avant de valider.
+        try:
+            from services.subject_check import analyze as _analyze
+            from services.subject_structure import label as _glabel
+            _rep = _analyze(exam.subject.content or '') if exam.subject else {'groups': [], 'issues': []}
+            data['structure'] = {'groups': [dict(g, label=_glabel(g)) for g in _rep.get('groups', [])],
+                                 'issues': [i for i in _rep.get('issues', []) if i.get('level') in ('warn', 'error')]}
+        except Exception:
+            _swallowed('preview_online_exam:structure')
+            data['structure'] = None
         return jsonify(data)
     finally:
         session.close()

@@ -104,7 +104,8 @@ def analyze(content: str, rubric: str = None) -> dict:
     issues += _statement_issues(content, blocks)
 
     ok = not any(i['level'] == 'error' for i in issues)
-    return {'ok': ok, 'questions': len(blocks), 'by_type': by_type, 'issues': issues}
+    from services.subject_structure import groups as _groups
+    return {'ok': ok, 'questions': len(blocks), 'by_type': by_type, 'issues': issues, 'groups': _groups(blocks)}
 
 
 def _statement_issues(content: str, blocks: list) -> list:

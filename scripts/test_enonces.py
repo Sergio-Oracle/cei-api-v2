@@ -185,5 +185,20 @@ else:
     check("lecteur navigateur exécutable (cas d'en-tête)", False)
 check("en-tête affiché une fois : plus d'alerte « même énoncé sur N questions »", not any("s'affiche sur" in i['message'] for i in analyze(ENTETE)['issues']))
 
+# 8. Association dont les éléments sont suivis d'une LIGNE VIDE puis des définitions « A. … » (sujet 142, trouvé par le corpus réel le 13/11/2026) :
+#    le lecteur du navigateur arrêtait la question à la ligne vide et faisait des définitions un faux « énoncé » au-dessus des questions suivantes.
+ASSOC = ("1. Associez le terme à sa définition : [ASSOCIATION]\n- Entonnoir\n- Chapeau\n- Plan\n\n"
+         "A. Lignes en tête d'une partie\nB. Opération qui rend visible le texte\nC. Système du général au particulier\n\n"
+         "2. Complétez la phrase : le latin *intro ducere* signifie conduire {1}. [CLOZE]\n- 1 COURT\n\n"
+         "3. Expliquez en quelques lignes. [OUVERT]\n")
+pa = parse_py(ASSOC); qa = [x for x in pa if x['type'] not in ('section', 'description', 'text')]
+check("association + ligne vide + définitions (serveur) : 3 questions, aucun faux énoncé sur Q2 et Q3", [x['num'] for x in qa] == ['1', '2', '3'] and not qa[1].get('context') and not qa[2].get('context'), [x.get('context') for x in qa])
+check("association (serveur) : les 3 éléments et les 3 définitions sont bien ceux de la question 1", qa[0].get('items') is not None and len(qa[0].get('items') or []) == 3 and len(qa[0].get('options') or []) == 3, (qa[0].get('items'), qa[0].get('options')))
+jas = js_blocks([ASSOC])
+if jas:
+    qj = [x for x in jas[0] if x['type'] not in ('section', 'description', 'text')]
+    check("association + ligne vide + définitions (navigateur) : mêmes 3 questions, aucun faux énoncé", [x['num'] for x in qj] == ['1', '2', '3'] and not qj[1].get('context') and not qj[2].get('context'), [x.get('context') for x in qj])
+    check("association : même résultat serveur et navigateur (éléments et définitions)", (qj[0].get('items') or []) == (qa[0].get('items') or []) and [o['letter'] for o in (qj[0].get('options') or [])] == [o['letter'] for o in (qa[0].get('options') or [])], (qj[0].get('items'), qj[0].get('options')))
+
 ok = sum(RES); print(f"\n{ok}/{len(RES)} vérifications réussies")
 sys.exit(0 if ok == len(RES) else 1)

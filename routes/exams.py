@@ -1191,7 +1191,21 @@ def start_exam_attempt(exam_id):
             answers='{}',
         )
         session.add(attempt)
-        session.flush()  # obtenir attempt.id avant commit
+        try:
+            session.flush()  # obtenir attempt.id avant commit
+        except Exception as _ie:
+            # Deux requêtes simultanées (double clic, deux onglets) : l'index unique (examen, étudiant) refuse la seconde.
+            # La première vient de créer la tentative : on la renvoie telle quelle au lieu d'une erreur 500.
+            if 'uq_exam_attempts_exam_student' not in str(_ie):
+                raise
+            session.rollback()
+            _first = session.query(ExamAttempt).filter_by(exam_id=exam_id, student_id=user_id).first()
+            if _first is None or _first.status != AttemptStatus.IN_PROGRESS:
+                session.close()
+                return jsonify({'error': 'Une tentative existe déjà pour cet examen.'}), 409
+            _d = _first.to_dict()
+            session.close()
+            return jsonify({'success': True, 'attempt': _d}), 200
 
         # Affecter au surveillant le moins chargé si pas déjà pré-affecté —
         # remplace l'ancienne auto-affectation faite à chaque GET de

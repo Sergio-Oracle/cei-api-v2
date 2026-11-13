@@ -892,6 +892,9 @@ def utc_iso(dt):
 class ExamAttempt(Base):
     """Tentative de composition d'un étudiant"""
     __tablename__ = 'exam_attempts'
+    # Un étudiant n'a JAMAIS deux tentatives sur le même examen : garanti par la base (index unique créé le 13/11/2026),
+    # pas seulement par le contrôle « tentative existante » du code, qu'un double clic simultané pouvait contourner.
+    __table_args__ = (UniqueConstraint('exam_id', 'student_id', name='uq_exam_attempts_exam_student'),)
 
     id = Column(Integer, primary_key=True)
     exam_id    = Column(Integer, ForeignKey('online_exams.id'), nullable=False, index=True)

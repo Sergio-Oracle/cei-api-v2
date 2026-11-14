@@ -70,7 +70,9 @@ def strip_bareme_from_content(content: str) -> str:
     if not content:
         return content
     # Ligne de corrigé oubliée dans l'énoncé (« Bonne réponse : d ») : jamais montrée à l'étudiant
-    content = re.sub(r'^[ \t]*(?:Bonne\s+)?[Rr][ée]ponse(?:\s+(?:correcte|attendue|exacte))?\s*:?\s*\(?[A-Fa-f]\)?\s*[.)]?[ \t]*$\n?', '', content, flags=re.M)
+    # Même ligne uniquement ([ \t], jamais \s) : avec \s la suppression avalait aussi la ligne VIDE qui suit, et « ÉNONCÉ : … » se retrouvait
+    # collé à la dernière proposition de la question précédente (examen 181, 14/11/2026).
+    content = re.sub(r'^[ \t]*(?:Bonne[ \t]+)?[Rr][ée]ponse(?:[ \t]+(?:correcte|attendue|exacte))?[ \t]*:?[ \t]*\(?[A-Fa-f]\)?[ \t]*[.)]?[ \t]*$\n?', '', content, flags=re.M)
     content = _strip_answer_keys(content)
     m = re.search(r'\n[═=─]{5,}[^\n]*\n[^\n]*[Bb]ar[eè]me', content)
     if m:

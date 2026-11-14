@@ -142,6 +142,17 @@ finally:
     except Exception as e:
         s.rollback(); print('nettoyage incomplet :', e)
     s.close()
+# Barème rédigé par l'IA avec du Markdown (« **Question 2 (1 pt) :** ») : toutes les questions doivent être lues (examen 181, 14/11/2026 :
+# seule la question 1 l'était, les 19 autres n'étaient plus notées automatiquement).
+print('\n== barème avec marques Markdown : toutes les questions lues ==')
+_md = "**=== BARÈME DE NOTATION ===**\n\n" + "\n\n".join(f"**Question {i} (1 pt) :**  \n  Bonne réponse : {'ABCD'[i % 4]}) — explication {i}." for i in range(1, 21)) + "\n\n**Total : 20 points**"
+_keys = R._extract_correct_answers(_md)
+check("20 questions lues dans un barème en gras (et pas seulement la première)", len(_keys) == 20, len(_keys))
+check("chaque bonne réponse est la bonne lettre", all(_keys[str(i)]['letters'] == {'ABCD'[i % 4]} for i in range(1, 21)))
+_h = "## Question 1 (2 pts)\nBonne réponse : B\n\n## Question 2 (2 pts)\nBonne réponse : D\n"
+check("titres « ## Question N » lus aussi", {k: sorted(v['letters']) for k, v in R._extract_correct_answers(_h).items()} == {'1': ['B'], '2': ['D']})
+_plain = "Question 1 (1 pt) :\n  Bonne réponse : A)\nQuestion 2 (1 pt) :\n  Bonne réponse : C)\n"
+check("barème sans Markdown : inchangé", {k: sorted(v['letters']) for k, v in R._extract_correct_answers(_plain).items()} == {'1': ['A'], '2': ['C']})
 bad = [n for n, ok in RESULTS if not ok]
 print(f"\n{len(RESULTS) - len(bad)}/{len(RESULTS)} vérifications OK" + (f" — ÉCHECS : {bad}" if bad else ''))
 sys.exit(1 if bad else 0)

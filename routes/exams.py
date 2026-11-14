@@ -2443,8 +2443,11 @@ def _build_readable_student_answers(subject_content: str, answers_data, exclude_
 
 # Séparateur après le numéro : « — », « - », « : », « . » OU une parenthèse de points
 # (« Question 1 (1.5 pts) : », format des sujets importés depuis un document Word).
+# Une ligne « Question N » peut être précédée de marques Markdown (« **Question 2 (1 pt) :** », « ## Question 2 ») quand le barème a été rédigé
+# par l'IA : sans les tolérer, le premier bloc avalait tout le barème, seule la question 1 était lue et les 19 autres n'étaient plus
+# notées automatiquement (examen 181, 14/11/2026).
 _RUBRIC_Q_BLOCK_RE = re.compile(
-    r'Question\s+(\d{1,3})\s*(?:[—\-–:.]|\().*?(?=\nQuestion\s+\d{1,3}\s*(?:[—\-–:.]|\()|\n─+\nTOTAL|\Z)', re.S)
+    r'Question\s+(\d{1,3})\s*(?:[—\-–:.]|\().*?(?=\n[ \t*#_]*Question\s+\d{1,3}\s*(?:[—\-–:.]|\()|\n─+\nTOTAL|\Z)', re.S)
 # Lettres A à L (un QCM peut avoir plus de six propositions) ; une lettre doit être seule : « Bonne réponse : Cette phrase… » n'est pas la réponse C.
 _RUBRIC_QCM_ANSWER_RE = re.compile(r'[Bb]onnes?\s+r[ée]ponses?\s*:\s*(\(?[A-La-l]\)?(?![A-Za-zÀ-ÿ])(?:\s*[,;]\s*\(?[A-La-l]\)?(?![A-Za-zÀ-ÿ]))*)')
 _RUBRIC_VF_ANSWER_RE  = re.compile(r'R[ée]ponse\s*:\s*(Vrai|Faux)', re.I)

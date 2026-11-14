@@ -306,12 +306,38 @@ def _unglue(lines):
     return out, changed
 
 
+# ── Bruit de PDF et énoncé collé à la dernière proposition (examen 181, 14/11/2026) ──────────────────────────────────────────────────
+# Dans un PDF, « ÉNONCÉ : … » suit directement la dernière proposition (D.) de la question précédente, sans ligne vide : le lecteur le prenait
+# pour la SUITE de cette proposition. Les questions 5 à 7 n'avaient alors aucun énoncé (schéma des relations introuvable) et la proposition D
+# de la question 4 contenait un paragraphe entier. Les pieds de page (« … | Page 3 / 5 ») et les points isolés laissés par le PDF
+# se retrouvaient aussi collés aux propositions.
+_STATEMENT_MARK_RE = re.compile(r"^\s*(?:ÉNONCÉ|ENONCÉ|ÉNONCE|ENONCE|Énoncé)\s*(?:\([^)]*\)\s*)?:", re.U)
+_PAGE_FOOTER_RE = re.compile(r"^\s*[^\n]{0,90}\|\s*Page\s+\d+\s*/\s*\d+\s*$", re.I)
+
+
+def _pdf_noise(lines):
+    """Retire les pieds de page et les points isolés ; met une ligne vide avant « ÉNONCÉ : … »."""
+    out, changed = [], 0
+    for l in lines:
+        if _PAGE_FOOTER_RE.match(l) or re.fullmatch(r"\s*\.\s*", l or ''):
+            changed += 1
+            continue
+        if _STATEMENT_MARK_RE.match(l) and out and out[-1].strip():
+            out.append('')
+            changed += 1
+        out.append(l)
+    return out, changed
+
+
 def normalize(content):
     """Retourne (contenu_normalisé, liste de modifications lisibles). Aucune écriture ailleurs."""
     if not content or not isinstance(content, str):
         return content, []
     lines = content.split('\n')
     notes = []
+    lines, n = _pdf_noise(lines)
+    if n:
+        notes.append(f"{n} pied(s) de page, point(s) isolé(s) retirés ou énoncé(s) séparé(s) de la proposition précédente")
     lines, n = _vf_tables(lines)
     if n:
         notes.append(f"{n} ligne(s) de tableau Vrai/Faux converties en questions [VF]")

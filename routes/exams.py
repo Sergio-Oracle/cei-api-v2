@@ -1403,6 +1403,12 @@ def exam_copy_seen(attempt_id):
         if not attempt:
             return jsonify({'error': 'Tentative introuvable'}), 404
         if attempt.exam_seen_at is None:
+            # Caméra secondaire exigée mais certainement absente (et non dispensée) : la copie ne compte pas comme « sous les yeux »,
+            # l'horloge ne démarre pas, la page affiche l'écran de couplage (services/phonecam.py ; fail-open si LiveKit est injoignable).
+            from services import phonecam
+            if phonecam.access_blocked(session, attempt):
+                return jsonify({'error': 'La caméra secondaire est exigée pour cet examen : connectez-la pour afficher la copie.',
+                                'secondary_camera_required': True}), 409
             attempt.exam_seen_at = datetime.utcnow()
             session.commit()
         # L'horloge de l'examen démarre ici : le serveur donne le temps écoulé de référence (≈ 0 à la première copie affichée)
@@ -1437,7 +1443,16 @@ def exam_heartbeat(attempt_id):
         if attempt.exam_seen_at is None:       # le heartbeat ne part que de la page d'examen affichée : secours si l'appel /seen a échoué
             attempt.exam_seen_at = attempt.last_seen_at
         session.commit()
-        return jsonify({'success': True})
+        out = {'success': True}
+        try:                                    # code de sortie d'urgence émis pour CET étudiant : affiché sur son écran (jamais ailleurs)
+            from routes.exam_client import code_for_student
+            if attempt.status == AttemptStatus.IN_PROGRESS:
+                shown = code_for_student(attempt.exam_id, attempt.student_id)
+                if shown:
+                    out['exit_code'] = shown
+        except Exception:
+            _swallowed('exam_heartbeat:exit_code')
+        return jsonify(out)
     except Exception as e:
         try: session.rollback()
         except Exception: pass

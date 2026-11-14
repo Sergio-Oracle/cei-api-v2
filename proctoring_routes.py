@@ -222,49 +222,57 @@ def phone_camera_status(attempt_id):
     finally:
         session.close()
 
-    # Filtre rapide : si le couplage initial n'a même jamais réussi, inutile
-    # d'interroger LiveKit.
-    linked_data = cache_get(_phonecam_linked_key(attempt_id))
-    if not linked_data:
-        return jsonify({'linked': False})
-    set_at = linked_data.get('set_at', 0) if isinstance(linked_data, dict) else 0
+    # État réel, vérifié en direct (voir services/phonecam.py : True / False / None = inconnu quand LiveKit est injoignable)
+    from services import phonecam
+    state = phonecam.live_state(attempt_id, exam_id, user_id)
+    waived = False
+    if state is not True:
+        s2 = get_session()
+        try:
+            waived = phonecam.is_waived(s2, attempt_id)
+        finally:
+            s2.close()
+    return jsonify({'linked': state is True, 'unknown': state is None, 'waived': waived})
 
-    config = get_livekit_config()
-    if not all([config['url'], config['api_key'], config['api_secret']]):
-        return jsonify({'linked': False})
 
-    room_name = f'exam-{exam_id}'
-    phone_identity = f'student-{user_id}-phone'
-    now = int(time.time())
-    admin_token = pyjwt.encode(
-        {'exp': now + 60, 'iss': config['api_key'], 'nbf': now,
-         'sub': 'admin', 'video': {'roomAdmin': True, 'room': room_name}},
-        config['api_secret'], algorithm='HS256',
-    )
-    really_linked = False
+_WAIVE_ROLES = ('professor', 'admin', 'responsable_examen', 'surveillant')
+
+
+@proctoring_bp.route('/api/exam_attempts/<int:attempt_id>/phone_camera/waive', methods=['POST'])
+@paseto_required
+@limiter.limit('30 per minute')
+def phone_camera_waive(attempt_id):
+    """Le personnel DISPENSE un étudiant de la caméra secondaire (téléphone en panne, batterie vide…). Même périmètre que l'envoi d'un
+    avertissement : le surveillant seulement pour ses étudiants, l'enseignant pour ses examens. Tracé dans le journal de la tentative."""
+    from services import phonecam
+    user_id, role = get_current_user_id(), get_current_user_role()
+    if role not in _WAIVE_ROLES:
+        return jsonify({'error': 'Accès réservé aux enseignants et surveillants'}), 403
+    reason = ((request.get_json(silent=True) or {}).get('reason') or '').strip()
+    session = get_session()
     try:
-        req = urlreq.Request(
-            f"{config['api_url']}/twirp/livekit.RoomService/ListParticipants",
-            data=json.dumps({'room': room_name}).encode(),
-            headers={'Authorization': f'Bearer {admin_token}', 'Content-Type': 'application/json'},
-        )
-        with urlreq.urlopen(req, timeout=5) as resp:
-            data = json.loads(resp.read())
-            identities = [p.get('identity') for p in data.get('participants', [])]
-            really_linked = phone_identity in identities
+        att = session.query(ExamAttempt).filter_by(id=attempt_id).first()
+        if not att:
+            return jsonify({'error': 'Tentative introuvable'}), 404
+        if role == 'professor' and not can_view_exam(session, att.exam, user_id):
+            return jsonify({'error': 'Vous ne pouvez agir que sur vos propres examens'}), 403
+        if role == 'surveillant':
+            assigned = session.query(ProctorAssignment).filter_by(proctor_id=user_id, exam_id=att.exam_id).filter(
+                (ProctorAssignment.attempt_id == attempt_id) | (ProctorAssignment.student_id == att.student_id)).first()
+            if not assigned:
+                return jsonify({'error': 'Cet étudiant ne vous est pas affecté'}), 403
+        if att.status != AttemptStatus.IN_PROGRESS:
+            return jsonify({'error': "Cet étudiant n'est pas en cours d'examen."}), 409
+        if not att.exam or not att.exam.allow_secondary_camera:
+            return jsonify({'error': "La caméra secondaire n'est pas exigée pour cet examen."}), 409
+        who = session.query(User).filter_by(id=user_id).first()
+        phonecam.waive(session, att, user_id, who.full_name if who else '', reason)
+        return jsonify({'success': True, 'waived': True})
     except Exception:
-        # LiveKit injoignable — on préfère un faux "non connecté" transitoire
-        # (l'étudiant peut réessayer) à un faux "connecté" qui induirait le
-        # surveillant en erreur sur une preuve de surveillance absente.
-        really_linked = False
-
-    if not really_linked:
-        # Ne supprime le flag que passé le délai de grâce — sinon on
-        # préempte une connexion en cours (voir commentaire au-dessus).
-        if time.time() - set_at > _PHONECAM_LINK_GRACE_SECONDS:
-            cache_delete(_phonecam_linked_key(attempt_id))
-
-    return jsonify({'linked': really_linked})
+        session.rollback()
+        raise
+    finally:
+        session.close()
 
 
 @proctoring_bp.route('/api/phone_camera/token', methods=['POST'])
@@ -1118,6 +1126,7 @@ def get_active_proctoring(exam_id):
             'success': True,
             'exam_title': exam.title,
             'exam_status': exam.status.value,
+            'allow_secondary_camera': bool(exam.allow_secondary_camera),
             'attempts': result,
             'total': len(result),
             'proctors': proctors_info,

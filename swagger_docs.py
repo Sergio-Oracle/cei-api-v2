@@ -2850,9 +2850,21 @@ OPENAPI_SPEC = {
         }},
         "/api/exam_attempts/{attempt_id}/phone_camera/status": {"get": {
             "tags": ["Proctoring"], "summary": "Le téléphone s'est-il couplé avec succès ?",
-            "description": "Pollé par la page d'examen pendant l'affichage du QR code, pour afficher une confirmation dès que le téléphone a rejoint la salle.",
+            "description": "Pollé par la page d'examen (QR code, puis toutes les 5 à 20 s). `linked` : téléphone RÉELLEMENT dans la salle LiveKit. `unknown` : LiveKit injoignable côté serveur — la page ne change rien (on ne bloque jamais un étudiant pour un incident serveur). `waived` : le personnel a dispensé l'étudiant (voir POST .../phone_camera/waive).",
             "parameters": [{"name": "attempt_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
-            "responses": {"200": {"description": "Statut", "content": {"application/json": {"schema": {"type": "object", "properties": {"linked": {"type": "boolean"}}}}}}}
+            "responses": {"200": {"description": "Statut", "content": {"application/json": {"schema": {"type": "object", "properties": {"linked": {"type": "boolean"}, "unknown": {"type": "boolean"}, "waived": {"type": "boolean"}}}}}}}
+        }},
+        "/api/exam_attempts/{attempt_id}/phone_camera/waive": {"post": {
+            "tags": ["Proctoring"], "summary": "Dispenser un étudiant de la caméra secondaire (personnel)",
+            "description": "Téléphone en panne, batterie vide… Même périmètre que l'avertissement : surveillant affecté, enseignant de l'examen, administrateur, responsable d'examen. Corps optionnel `{reason}`. Tracé (`phonecam_waived`, qui et pourquoi) ; survit à une perte de Redis. 409 si la copie n'est plus en cours ou si l'examen n'exige pas la caméra secondaire. Sans dispense, la copie d'un examen à caméra secondaire ne s'ouvre pas : `POST /api/exam_attempts/{id}/seen` répond 409 `secondary_camera_required` quand le téléphone est certainement absent.",
+            "parameters": [{"name": "attempt_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+            "responses": {"200": {"description": "{success, waived}"}, "403": {"description": "Rôle ou étudiant non autorisé"}, "409": {"description": "Copie non en cours / caméra secondaire non exigée"}}
+        }},
+        "/api/exam_attempts/{attempt_id}/client_exit_code/mine": {"get": {
+            "tags": ["Application CEI Examen"], "summary": "Lire son propre code de sortie (étudiant)",
+            "description": "Le code émis par un surveillant est AFFICHÉ à l'étudiant lui-même : par la réponse du heartbeat (`exit_code`) pendant l'examen, par cette route avant l'entrée dans l'examen. Seule SA tentative est lisible (404 sinon). Conservé chiffré (masque jetable dérivé du secret du serveur), jamais en clair dans Redis ; disparaît à l'usage, à l'expiration ou au remplacement.",
+            "parameters": [{"name": "attempt_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+            "responses": {"200": {"description": "{code: '1234-5678' | null}"}, "404": {"description": "Tentative d'un autre étudiant"}}
         }},
         "/api/phone_camera/token": {"post": {
             "tags": ["Proctoring"], "summary": "Échange un code de couplage contre un token LiveKit (téléphone, PUBLIC)",

@@ -123,6 +123,34 @@ def _exit_digest(exam_id, student_id, code):
     return hmac.new(_secret().encode(), f'exitcode|{int(exam_id)}|{int(student_id)}|{code}'.encode(), hashlib.sha256).hexdigest()
 
 
+def _show_key(exam_id, student_id):
+    return f'cei:exitcode:show:{int(exam_id)}:{int(student_id)}'
+
+
+def _show_pad(exam_id, student_id, nonce):
+    return int(hmac.new(_secret().encode(), f'exitshow|{int(exam_id)}|{int(student_id)}|{nonce}'.encode(), hashlib.sha256).hexdigest()[:12], 16) % 10 ** 8
+
+
+def stash_code_for_student(exam_id, student_id, code):
+    """Garde le code pour l'AFFICHER à l'étudiant lui-même (14/11/2026 : le surveillant n'a pas toujours de moyen de le lui transmettre).
+    Jamais en clair dans Redis : masque jetable dérivé du secret du serveur ; même durée de vie que le code."""
+    nonce = secrets.token_hex(8)
+    cache_set(_show_key(exam_id, student_id), {'n': nonce, 'v': (int(code) + _show_pad(exam_id, student_id, nonce)) % 10 ** 8,
+                                               'at': utcnow().isoformat()}, EXIT_CODE_TTL)
+
+
+def code_for_student(exam_id, student_id):
+    """Code à afficher à CET étudiant (« 4296-8798 »), ou None. Ne sort que par les routes de l'étudiant lui-même."""
+    d = cache_get(_show_key(exam_id, student_id))
+    if not d or not _secret():
+        return None
+    try:
+        plain = f"{(int(d['v']) - _show_pad(exam_id, student_id, d['n'])) % 10 ** 8:08d}"
+    except (KeyError, TypeError, ValueError):
+        return None
+    return f'{plain[:4]}-{plain[4:]}'
+
+
 def _bump_exit_fail(exam_id, student_id):
     """Compte atomique des essais ratés (fenêtre d'une durée de vie de code)."""
     c = _get_client()
@@ -166,18 +194,38 @@ def exam_client_issue_exit_code(attempt_id):
             return jsonify({'error': "Cet étudiant n'est pas en cours d'examen : aucun code de sortie n'est nécessaire."}), 409
         code = f'{secrets.randbelow(10 ** 8):08d}'
         key = _exit_key(att.exam_id, att.student_id)
-        cache_delete(key); cache_delete(f'cei:exitfail:{att.exam_id}:{att.student_id}')      # un seul code actif par étudiant : le nouveau remplace l'ancien
+        cache_delete(key); cache_delete(f'cei:exitfail:{att.exam_id}:{att.student_id}'); cache_delete(_show_key(att.exam_id, att.student_id))      # un seul code actif par étudiant : le nouveau remplace l'ancien
         ok = cache_set_nx_value(key, {'h': _exit_digest(att.exam_id, att.student_id, code), 'by': user_id, 'at': utcnow().isoformat()}, EXIT_CODE_TTL)
         if ok is not True:
             return jsonify({'error': 'Service momentanément indisponible, réessayez dans un instant.'}), 503
+        stash_code_for_student(att.exam_id, att.student_id, code)       # la page de l'étudiant l'affichera d'elle-même (heartbeat)
         issuer = session.query(User).filter_by(id=user_id).first()
         session.add(ExamActivityLog(attempt_id=att.id, event_type='client_exit_code_issued',
                                     event_data=json.dumps({'by': user_id, 'by_name': issuer.full_name if issuer else '', 'expires_s': EXIT_CODE_TTL}, ensure_ascii=False)))
         session.commit()
-        return jsonify({'code': f'{code[:4]}-{code[4:]}', 'expires_in': EXIT_CODE_TTL, 'student_name': att.student.full_name if att.student else ''})
+        return jsonify({'code': f'{code[:4]}-{code[4:]}', 'expires_in': EXIT_CODE_TTL, 'student_name': att.student.full_name if att.student else '',
+                        'shown_to_student': True})
     except Exception:
         session.rollback()
         raise
+    finally:
+        session.close()
+
+
+@exam_client_bp.route('/api/exam_attempts/<int:attempt_id>/client_exit_code/mine', methods=['GET'])
+@paseto_required
+@limiter.limit('20 per minute')
+def exam_client_my_exit_code(attempt_id):
+    """L'étudiant lit, pour SA tentative seulement, le code de sortie qu'un surveillant vient d'émettre pour lui (avant l'entrée dans l'examen,
+    quand le heartbeat de la page d'examen ne tourne pas encore : caméra bloquée, scan qui n'aboutit pas…). Jamais le code d'un autre."""
+    user_id = get_current_user_id()
+    session = get_session()
+    try:
+        att = session.query(ExamAttempt).filter_by(id=attempt_id, student_id=user_id).first()
+        if not att:
+            return jsonify({'error': 'Tentative introuvable'}), 404
+        code = code_for_student(att.exam_id, att.student_id) if att.status == AttemptStatus.IN_PROGRESS else None
+        return jsonify({'code': code})
     finally:
         session.close()
 
@@ -204,7 +252,7 @@ def exam_client_exit():
     key = _exit_key(exam_id, student_id)
     fails = _get_client().get(f'cei:exitfail:{exam_id}:{student_id}') if _get_client() else None
     if fails is not None and int(fails) >= EXIT_MAX_TRIES:
-        cache_delete(key)
+        cache_delete(key); cache_delete(_show_key(exam_id, student_id))
         return jsonify({'error': "Trop d'essais : ce code est annulé. Demandez-en un nouveau au surveillant.", 'locked': True}), 429
     stored = cache_get(key)
     session = get_session()
@@ -224,7 +272,7 @@ def exam_client_exit():
             return jsonify({'error': msg, 'tries_left': max(0, EXIT_MAX_TRIES - n)}), 403
         if cache_pop(key) is None:                                            # déjà consommé par une requête concurrente
             return jsonify({'error': 'Ce code a déjà été utilisé.'}), 403
-        cache_delete(f'cei:exitfail:{exam_id}:{student_id}')
+        cache_delete(f'cei:exitfail:{exam_id}:{student_id}'); cache_delete(_show_key(exam_id, student_id))
         _log('client_quit_code_used', {'by_code_issued_by': stored.get('by'), 'via': 'server'})
         try:
             import notif_bus

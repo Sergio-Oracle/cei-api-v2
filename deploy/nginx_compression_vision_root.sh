@@ -44,7 +44,7 @@ if nginx -t 2>&1; then
 else
   echo "ERREUR : nginx -t a échoué, RESTAURATION de la configuration d'origine."; cp -p "$BAK" "$CONF"; nginx -t; exit 1
 fi
-HOST="${CHECK_HOST:-$(awk '/^[[:space:]]*server_name/ {gsub(";", "", $2); print $2; exit}' "$CONF")}"
-echo "--- contrôle sur https://$HOST : taille reçue du moteur WASM (attendu ≈ 3,4 Mo au lieu de 11,5 Mo)"
-curl -s -o /dev/null -H 'Accept-Encoding: gzip' -w 'reçu : %{size_download} octets (HTTP %{http_code})\n' --resolve "$HOST:443:127.0.0.1" -k "https://$HOST/mediapipe/wasm/vision_wasm_internal.wasm" || true
-curl -sI -H 'Accept-Encoding: gzip' --resolve "$HOST:443:127.0.0.1" -k "https://$HOST/mediapipe/wasm/vision_wasm_internal.wasm" | grep -i '^content-encoding' || echo "(pas de content-encoding : vérifier depuis un poste externe)"
+HOST="$(awk '/^[[:space:]]*server_name/ {gsub(";", "", $2); print $2; exit}' "$CONF")"
+echo "--- À VÉRIFIER depuis un poste EXTÉRIEUR au serveur (un contrôle lancé depuis le serveur lui-même donne un faux négatif) :"
+echo "    curl -s -D - -o /dev/null -H 'Accept-Encoding: gzip' https://$HOST/mediapipe/wasm/vision_wasm_internal.wasm | grep -i -E 'content-encoding|content-length'"
+echo "    attendu : content-encoding: gzip, et ≈ 3,4 Mo reçus au lieu de 11,5 Mo (curl -w '%{size_download}')"

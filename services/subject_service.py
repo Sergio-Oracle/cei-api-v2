@@ -563,7 +563,22 @@ class SubjectService:
                 "tentatives — il ne peut plus être modifié pour ne pas désynchroniser "
                 "le contenu vu par les étudiants."
             )
-        return SubjectRepository.update_content(subject_id, title=title, content=content, rubric=rubric)
+        # Le barème suit le sujet (14/11/2026, examen 181 : 5 questions supprimées, barème resté à 20) : quand le TEXTE change et que le barème
+        # n'est pas retouché dans le même geste, il est ajusté automatiquement (voir services/rubric_sync.py).
+        sync_report = None
+        if content is not None and content != (subj.content or '') and (rubric is None or rubric == (subj.rubric or '')):
+            try:
+                from services.rubric_sync import sync
+                from services.subject_normalizer import normalize
+                new_rubric, sync_report = sync(subj.content or '', subj.rubric or '', normalize(content)[0])
+                if sync_report.get('changed'):
+                    rubric = new_rubric
+            except Exception as e:                      # jamais bloquant
+                print(f"[SubjectService] barème non ajusté : {e}")
+        result = SubjectRepository.update_content(subject_id, title=title, content=content, rubric=rubric)
+        if sync_report and sync_report.get('changed'):
+            result['rubric_sync'] = sync_report
+        return result
 
     @staticmethod
     def delete(subject_id: int, user_id: int, role: UserRole) -> None:

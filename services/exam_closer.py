@@ -210,6 +210,11 @@ def tick() -> None:
         print(f"[exam_closer] {stats['submitted']} copie(s) soumise(s), {stats['closed']} examen(s) clos, "
               f"{stats['rooms']} salle(s) fermée(s)")
     rebalance_active_exams()
+    try:                                                      # contrôle sujet ↔ barème 30 puis 10 min avant chaque examen (silencieux si tout va bien)
+        from services import exam_preflight
+        exam_preflight.run_once()
+    except Exception as e:
+        print(f"[exam_closer] contrôle avant examen : {e}")
     if cache_set_nx('cei:certwatch:daily', 24 * 3600):
         try:
             from services import cert_watch

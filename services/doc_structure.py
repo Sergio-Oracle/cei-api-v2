@@ -204,14 +204,34 @@ def _render_list_item(blocks, marker: str, depth: int) -> list[str]:
     return inner
 
 
+_CHOICE_TEXT_RE = re.compile(r"^\(?[A-Fa-f][.)]\s+\S")
+
+
+def _choice_like(block) -> bool:
+    """Paragraphe « A. … » / « B) … » ou liste lettrée : une proposition de QCM."""
+    t, c = block.get('t'), block.get('c')
+    if t in ('Para', 'Plain'):
+        return bool(_CHOICE_TEXT_RE.match(_inlines(c).strip()))
+    if t == 'OrderedList':
+        style = c[0][1]
+        return (style.get('t') if isinstance(style, dict) else style) in ('UpperAlpha', 'LowerAlpha')
+    return False
+
+
 def _render_blocks(blocks, depth: int = 0, in_cell: bool = False) -> list[str]:
     out: list[str] = []
-    for b in blocks or []:
+    blocks = list(blocks or [])
+    for i, b in enumerate(blocks):
         t, c = b.get('t'), b.get('c')
         if t in ('Para', 'Plain'):
             text = '\n'.join(_clean(x) for x in _inlines(c).split('\n'))
             if not text.strip():
                 continue
+            # Le paragraphe qui précède directement des propositions EST la question ; tout paragraphe antérieur (titre, consigne,
+            # énoncé partagé) en est séparé par une ligne vide : la frontière de paragraphe de Word n'est plus perdue.
+            if (not in_cell and out and out[-1] != '' and i + 1 < len(blocks)
+                    and _choice_like(blocks[i + 1]) and not _choice_like(b)):
+                out.append('')
             out += text.split('\n')
             if not in_cell and _is_section_title(b, text.strip()):
                 out.append('')

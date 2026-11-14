@@ -82,6 +82,34 @@ p2 = make_docx(SOUS, 'sous')
 n2 = read(p2, 'pandoc')
 check("liste lettrée régénérée a) b) c)", all(f'{c}) ' in n2 for c in 'abc'), n2)
 
+# 2b. sujet SANS numéros (cas de Dr Mballo) : la frontière de paragraphe de Word sépare énoncé et question, même sans ponctuation
+SANS = """**Exercice 1. Cas des employés** (4 points)
+
+Consigne : une seule réponse est exacte.
+
+Les faits suivants sont établis
+
+Qui a pris la clé
+
+A. Awa
+
+B. Moussa
+
+Combien d'employés ont menti
+
+A. 1
+
+B. 2
+"""
+d3 = tempfile.mkdtemp(); open(d3 + '/s.md', 'w').write(SANS)
+subprocess.run([D.pandoc_path(), '-f', 'markdown-fancy_lists', '-t', 'docx', d3 + '/s.md', '-o', d3 + '/s.docx'], check=True)
+from services.subject_normalizer import loose_mcq
+t3 = read(d3 + '/s.docx', 'pandoc'); o3, k3, n3 = loose_mcq(t3)
+b3 = [(b['type'], b.get('title') or b.get('text')) for b in parse(normalize(o3)[0])]
+check("sans numéros : titre + consigne + énoncé à part, questions « Qui a pris la clé » et « Combien… » seules",
+      n3 == 2 and b3[0][0] == 'section' and b3[1][1] == 'Qui a pris la clé' and b3[2][1].startswith("Combien d"), str(b3))
+check("sans numéros : l'énoncé « Les faits suivants sont établis » n'est pas collé à la question", 'Les faits suivants sont établis Qui' not in o3 and 'Les faits suivants sont établis' in o3)
+
 # 3. non-régression sur les vrais fichiers Word : mêmes questions, mêmes types, aucune perte de mots
 for nom in ('epreuve_methodologie_exercices', 'corrige_methodologie_exercices'):
     f = os.path.join(FIX, nom + '.docx')

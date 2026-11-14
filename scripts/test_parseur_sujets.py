@@ -197,6 +197,22 @@ check("jamais montrée à l'étudiant même si elle reste dans un sujet", 'Bonne
 _ex = "Exercice 1\nEnoncé du problème.\na) Définir X\nb) Calculer Y\n"
 check("sous-questions a) b) d'un exercice ouvert non prises pour un QCM", loose_mcq(_ex)[0] == _ex)
 
+print('\n== sujet sans numéros : la question n\'est que la FIN du texte en attente (cause racine du titre collé, 14/11/2026) ==')
+from services.subject_normalizer import normalize as _norm
+def _lq(t):
+    o, k, n = loose_mcq(t)
+    return o, k, n, [(b['type'], (b.get('title') or b.get('text') or '')) for b in _parse_subject_blocks_ordered(_norm(o)[0])]
+_o, _k, _n, _bl = _lq("Exercice 1. Cas des employés (4 points)\nConsigne : répondez à chaque question. Une seule réponse est exacte.\nQuatre employés déclarent : Awa dit qu'elle n'a pas pris la clé. Moussa dit que Awa ment.\nQui a pris la clé ?\nA. Awa\nB. Moussa\nBonne réponse : B\nCombien d'employés ont menti ?\nA. 1\nB. 2\nBonne réponse : A\n")
+check("titre, consigne et énoncé restent sur leurs lignes, la question est seule", _bl[0] == ('section', 'Exercice 1. Cas des employés (4 points)') and _bl[1][1] == 'Qui a pris la clé ?' and 'Consigne' in _o and 'Quatre employés' in _o, _bl)
+check("clés de réponse et nombre de questions conservés", _k == {1: 'B', 2: 'A'} and _n == 2)
+_o, _k, _n, _bl = _lq("Exercice 2 : Logique du premier ordre Prédicats : étudiant(x), cours(y)\nQ6. Pourquoi la formule est-elle fausse ?\nA. a\nB. b\nBonne réponse : A\n")
+check("« Titre + énoncé » collés sur une ligne : séparés, la question commence à « Qn. »", _bl[0] == ('section', 'Exercice 2 : Logique du premier ordre') and 'Prédicats : étudiant(x), cours(y)' in _o.split('\n')[1] and _bl[1][1].startswith('Q6. Pourquoi'), _bl)
+_o, _k, _n, _bl = _lq("Parmi les propositions suivantes,\nlaquelle décrit correctement\nle rôle du contrat ?\nA. a\nB. b\nBonne réponse : A\n")
+check("question coupée par des retours à la ligne (PDF) : reste UNE question", _n == 1 and _bl == [('qcm', 'Parmi les propositions suivantes, laquelle décrit correctement le rôle du contrat ?')], _bl)
+_o, _k, _n, _bl = _lq("Exercice 1\nQui a signé ?\nA. x\nB. y\nBonne réponse : A\n")
+check("titre sans ponctuation directement suivi de la question : séparés", _bl[0] == ('section', 'Exercice 1') and _bl[1][1] == 'Qui a signé ?', _bl)
+check("rien n'est perdu : tous les mots du texte d'origine sont dans le résultat", all(w in _o for w in ('Exercice', 'Qui', 'signé')))
+
 print('\n== détection automatique des types, sans cocher aucune case (30/10/2026) ==')
 from services.type_detector import detect_and_annotate
 _dt, _dr = detect_and_annotate(_fx('epreuve_exercices_tableau_vf.txt'))

@@ -108,5 +108,31 @@ else:
             print(f"      sujet {k} : groupes {len(a)} -> {len(b)} | questions {len(ref[k]['sig'])} -> {len(cur[k]['sig'])}")
     if new: print(f"  (nouveaux sujets absents de la référence : {len(new)} — lancer --update après relecture)")
 
+
+# 9. Cause racine du « titre collé » (14/11/2026) : un sujet SANS numéros (Word/PDF « énoncé / A. B. C. / Bonne réponse ») doit être relu
+#    question par question — le texte de chaque question redevient exactement celui du sujet réel, titres de partie à part.
+import re as _re
+from services.subject_normalizer import loose_mcq as _loose
+_ws = lambda t: _re.sub(r'\s+', ' ', t or '').strip()
+_loose_ko, _loose_n = [], 0
+for _c in json.load(open(CORPUS)):
+    _L, _exp = [], []
+    for _b in parse_py(_c['content']):
+        if _b['type'] == 'section':
+            _L.append(_b['title']); continue
+        _ch = _b.get('choices') or []
+        if _b['type'] != 'qcm' or len(_ch) < 2 or not _ws(_b.get('text')) or [x['letter'] for x in _ch] != [chr(65 + k) for k in range(len(_ch))]:
+            continue
+        _L += [_b['text']] + [f"{x['letter']}. {x['text']}" for x in _ch] + ['Bonne réponse : A', '']
+        _exp.append(_ws(_b['text']))
+    if not _exp:
+        continue
+    _loose_n += 1
+    _o, _k, _n = _loose('\n'.join(_L))
+    _got = [_ws(b['text']) for b in parse_py(normalize(_o)[0]) if b['type'] == 'qcm']
+    if _n != len(_exp) or _got != _exp:
+        _loose_ko.append(_c['id'])
+check(f"sujet sans numéros relu question par question : texte de chaque QCM identique à l'original ({_loose_n} sujets réels)", not _loose_ko and _loose_n >= 40, _loose_ko[:10])
+
 ok = sum(RES); print(f"\n{ok}/{len(RES)} vérifications réussies")
 sys.exit(0 if ok == len(RES) else 1)

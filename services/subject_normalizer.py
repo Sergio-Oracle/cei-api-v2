@@ -170,6 +170,51 @@ _ANSWER_RE = re.compile(r'^\s*(?:Bonne\s+)?R[ée]ponse(?:\s+(?:correcte|attendue
 _FILE_HEAD_RE = re.compile(r'^\s*---\s*(?:Fichier|Corrigé)\s*:.*---\s*$')
 
 
+# ── Séparer la QUESTION de ce qui la précède (cause racine du « titre collé », 14/11/2026) ──────────────────────────────────────────
+# Sans numéros de question, le lecteur accumulait TOUTES les lignes précédant « A. B. C. » et les fusionnait en une seule question :
+# « 1. Exercice 1. Titre Consigne : … Énoncé du problème… Qui a pris la clé ? [QCM] ». Titre, consigne et énoncé partagé disparaissaient
+# comme éléments distincts (énoncé répété ou manquant sur les autres questions). La question n'est que la fin du texte en attente.
+_STRUCT_LABEL_RE = re.compile(
+    r"^\s*(?:consignes?|instructions?|comp[ée]tences?(?:\s+vis[ée]es?)?|dur[ée]e|bar[èe]me|notation|remarques?|rappels?|donn[ée]es|"
+    r"[ée]nonc[ée]|contexte|documents?|annexes?|mati[èe]re|nom|pr[ée]nom|date|note)\s*(?::|\.)", re.I)
+_QMARK_RE = re.compile(r"^\s*(?:Q|Question)\s*\d{1,3}\s*[.:)]\s*\S", re.I)
+_SENT_END_RE = re.compile(r"[.?!…»”\"]\s*$")
+
+
+def _is_structure_line(line):
+    return bool(_SECT_RE.match(line) or _SECT_LETTER_RE.match(line) or _STRUCT_LABEL_RE.match(line) or _FILE_HEAD_RE.match(line))
+
+
+def _split_stem(stem):
+    """Lignes en attente avant des propositions → (lignes de contexte, texte de la question).
+    1. Une marque « Qn. » / « Question n : » commence la question (tout ce qui précède est du contexte).
+    2. Sinon la question est la fin du texte : on remonte tant que la ligne précédente n'est ni un titre / une consigne, ni une phrase
+       terminée (« . ? ! » …) — une phrase coupée par un retour à la ligne (PDF) reste donc UNE question.
+    Rien n'est perdu : contexte + question = lignes d'origine, dans l'ordre."""
+    lines = [x for x in stem if x.strip()]
+    for k in range(len(lines) - 1, -1, -1):
+        if _QMARK_RE.match(lines[k]):
+            return lines[:k], ' '.join(x.strip() for x in lines[k:])
+    k = len(lines) - 1
+    while k > 0 and not _is_structure_line(lines[k]) and not _SENT_END_RE.search(lines[k - 1]) and not _is_structure_line(lines[k - 1]):
+        k -= 1
+    return lines[:k], ' '.join(x.strip() for x in lines[k:])
+
+
+def _context_lines(pre):
+    """Titre + énoncé collés sur une même ligne (« Exercice 2 : Titre Prédicats : … ») → deux lignes ; le reste tel quel."""
+    out = []
+    for l in pre:
+        m = _SECT_LABEL_RE.match(l) if _SECT_RE.match(l) else None
+        lab = _STATEMENT_LABEL_RE.search(l[m.start(2):]) if m else None
+        if lab and lab.start(1) > 0:          # un deuxième « Étiquette : » dans la ligne = début de l'énoncé (« Prédicats : », « Données : »)
+            cut = m.start(2) + lab.start(1)
+            out += [l[:cut].strip(), l[cut:].strip()]
+        else:                                 # « Exercice 1. Cas des employés (4 points) » : un titre entier, jamais coupé
+            out.append(l)
+    return out
+
+
 def loose_mcq(content, start=1):
     """Sujet de Word/PDF sans numéros de question : « Énoncé / A. … B. … / Bonne réponse : d » répété.
     Incident du 30/10/2026 : tout apparaissait comme une zone de réponse libre, et la ligne « Bonne réponse : d »
@@ -198,7 +243,10 @@ def loose_mcq(content, start=1):
             # a) b) en minuscules sans réponse donnée = sous-questions d'un exercice, pas des propositions
             if len(run) >= 2 and stem and in_order and (letters[0].isupper() or has_answer):
                 n += 1
-                out.append(f"{n}. {' '.join(x.strip() for x in stem)} [QCM]")
+                pre, question = _split_stem(stem)
+                if pre:
+                    out += _context_lines(pre) + ['']          # titre / consigne / énoncé : leurs propres lignes, jamais fondus dans la question
+                out.append(f"{n}. {question} [QCM]")
                 out += [f"{r.group(1).upper()}. {r.group(2)}" for r in run]
                 stem = []
                 k = j

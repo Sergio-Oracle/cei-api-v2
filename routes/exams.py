@@ -2014,6 +2014,20 @@ def _looks_like_doc_header(lines) -> bool:
     return not _STATEMENT_CUES.search(t) and sum(1 for c in _DOC_HEADER_CUES if c.search(t)) >= 2
 
 
+# Énoncé limité à ses questions : « ÉNONCÉ : Un cabinet vétérinaire (questions 5 à 7) » ne concerne que les questions 5 à 7 ; sans cette borne il
+# restait affiché sur toutes les suivantes (examen 181, 14/11/2026 : l'énoncé des questions 5 à 7 apparaissait aussi sur 8 à 10).
+_CTX_RANGE_RE = re.compile(r'\(\s*(?:[Qq]uestions?|Q)\s*\.?\s*(\d{1,3})\s*(?:à|a|au|jusqu\'à|-|–|—|et)\s*(?:[Qq]uestions?|Q)?\s*\.?\s*(\d{1,3})\s*\)')
+
+
+def _ctx_until(ctx_lines):
+    """Dernier numéro de question concerné par un énoncé qui l'annonce dans sa première ligne, sinon None (énoncé valable jusqu'au suivant)."""
+    m = _CTX_RANGE_RE.search((ctx_lines[0] if ctx_lines else '') or '')
+    if not m:
+        return None
+    a, b = int(m.group(1)), int(m.group(2))
+    return b if b >= a else None
+
+
 def _parse_subject_blocks_ordered(raw: str) -> list:
     """Port Python fidèle du parser JS `parseExamBlocks` (app/exam/[id]/page.tsx) —
     reconstruit la séquence ORDONNÉE de blocs (sections + questions typées) du
@@ -2085,6 +2099,7 @@ def _parse_subject_blocks_ordered(raw: str) -> list:
     # en a besoin pour répondre. Il est rattaché à chaque question de la partie (champ `context`), car la partie « QCM » est une liste
     # de questions seule (et mélangée) : un bloc d'énoncé indépendant n'y serait jamais affiché.
     ctx_title, ctx_text, pending = '', [], []
+    ctx_until = None                          # dernier numéro de question auquel l'énoncé courant s'applique (« (questions 5 à 7) »)
     header_once = False                       # le paragraphe avant la question 1 est un en-tête de document : une seule question le reçoit
     if last_sect is not None:
         blocks.append({'type': 'section', 'title': strip(lines[last_sect])})   # titre du PREMIER exercice (juste avant la question 1)
@@ -2280,6 +2295,9 @@ def _parse_subject_blocks_ordered(raw: str) -> list:
         if pending:
             ctx_text, pending = pending, []
             once, header_once = header_once, False
+            ctx_until = _ctx_until(ctx_text)
+        elif ctx_until is not None and re.fullmatch(r'\d{1,3}', str(q['num'])) and int(q['num']) > ctx_until:
+            ctx_text, ctx_until = [], None                  # la dernière question concernée est passée : l'énoncé n'est plus affiché
         if ctx_title or ctx_text:
             blk['context'] = {'title': ctx_title, 'text': '\n'.join(ctx_text).strip()}
         if once:

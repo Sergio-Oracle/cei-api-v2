@@ -66,6 +66,24 @@ def js_blocks(contents):
         r = subprocess.run(['node', '-e', runner, os.path.join(os.path.dirname(ROOT), 'cei-next'), d], capture_output=True, text=True, timeout=120)
         return json.loads(r.stdout) if r.returncode == 0 else None
 js = js_blocks([n, BON, "Examen de logique propositionnelle (durée 1 h)\n\n1. Une question ? [QCM]\nA. a\nB. b\n"])
+# 3b. énoncé limité à ses questions « (questions 2 à 3) » (examen 181, 14/11/2026)
+RANGE = ("Question 1. Premiere ? [QCM]\nA. a\nB. b\n\n"
+         "ÉNONCÉ : Un cabinet (questions 2 à 3)\nLe cabinet utilise deux relations : Personne et Animal, reliées par une clé.\n"
+         "Question 2. Deuxieme ? [QCM]\nA. a\nB. b\nQuestion 3. Troisieme ? [QCM]\nA. a\nB. b\n"
+         "Question 4. Quatrieme ? [QCM]\nA. a\nB. b\nQuestion 5. Cinquieme ? [QCM]\nA. a\nB. b\n\n"
+         "ÉNONCÉ : Autre énoncé sans borne\nTexte libre valable jusqu'au prochain.\n"
+         "Question 6. Sixieme ? [QCM]\nA. a\nB. b\nQuestion 7. Septieme ? [QCM]\nA. a\nB. b\n")
+rq = {b['num']: (b.get('context') or {}).get('text', '') for b in parse_py(RANGE) if b['type'] == 'qcm'}
+check("énoncé « (questions 2 à 3) » : affiché sur Q2 et Q3", 'Le cabinet utilise' in rq['2'] and 'Le cabinet utilise' in rq['3'], rq)
+check("… et plus sur Q4 ni Q5 (serveur)", not rq['4'] and not rq['5'], rq)
+check("énoncé sans borne : continue de s'appliquer jusqu'au prochain (Q6 et Q7)", 'Texte libre' in rq['6'] and 'Texte libre' in rq['7'], rq)
+check("jamais de perte : la question 1 n'a pas l'énoncé du cabinet", 'cabinet' not in rq['1'])
+jr = js_blocks([RANGE])
+if jr:
+    rj = {b['num']: (b.get('context') or {}).get('text', '') for b in jr[0] if b['type'] == 'qcm'}
+    check("navigateur = serveur pour les énoncés bornés", rj == rq, rj)
+else:
+    check("lecteur navigateur exécutable (énoncés bornés)", False)
 check("lecteur navigateur exécutable", js is not None)
 if js:
     jq = [x for x in js[0] if x['type'] not in ('section', 'description', 'text')]

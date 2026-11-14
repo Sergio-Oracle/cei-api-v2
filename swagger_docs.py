@@ -3053,7 +3053,7 @@ OPENAPI_SPEC = {
         "/api/superviseur/proctor_call/{proctor_id}/token": {"get": {
             "tags": ["Superviseur"],
             "summary": "Token LiveKit pour l'appel privé superviseur ↔ surveillant",
-            "description": "Autorisé pour le superviseur qui supervise réellement ce surveillant, et pour le surveillant lui-même (pour répondre).",
+            "description": "Autorisé pour : le surveillant lui-même (pour répondre) ; son superviseur ; le responsable d'examen et l'administrateur (tout surveillant actif) ; un enseignant pour un surveillant affecté à l'un de SES examens. Salle `supcall-<surveillant>`, identités distinctes.",
             "parameters": [{"name": "proctor_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
             "responses": {
                 "200": {"description": "Token LiveKit", "content": {"application/json": {"schema": {
@@ -3062,16 +3062,16 @@ OPENAPI_SPEC = {
                         "room": {"type": "string"}, "identity": {"type": "string"}
                     }
                 }}}},
-                "403": {"description": "Ne supervise pas ce surveillant"},
+                "403": {"description": "Appel de ce surveillant non autorisé pour ce rôle"},
                 "503": {"description": "LiveKit non configuré"}
             }
         }},
         "/api/superviseur/proctor_call/{proctor_id}/request": {"post": {
             "tags": ["Superviseur"],
-            "summary": "Demander un appel à un surveillant supervisé",
-            "description": "Notifie le surveillant en temps réel où qu'il se trouve dans l'application, même mécanisme que la demande d'appel étudiant → surveillant.",
+            "summary": "Demander un appel à un surveillant (superviseur, responsable d'examen, administrateur, enseignant)",
+            "description": "Notifie le surveillant en temps réel où qu'il se trouve dans l'application (`supervisor_call_request`, avec `caller_label` : « Le responsable d'examen »…). Mêmes règles d'autorisation que le jeton. Depuis le 14/11/2026 la page de surveillance affiche un bouton « Appeler » sur chaque surveillant connecté.",
             "parameters": [{"name": "proctor_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
-            "responses": {"200": {"description": "Demande envoyée"}, "403": {"description": "Ne supervise pas ce surveillant"}}
+            "responses": {"200": {"description": "Demande envoyée"}, "403": {"description": "Rôle non autorisé ou surveillant hors périmètre"}}
         }},
         "/api/exam_attempts/{attempt_id}/recording": {"post": {
             "tags": ["Proctoring"],

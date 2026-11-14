@@ -3120,6 +3120,28 @@ def _supervises_proctor(supervisor_id, proctor_id, session):
     ).first() is not None
 
 
+_CALLER_LABEL = {'superviseur': 'Votre superviseur', 'responsable_examen': "Le responsable d'examen", 'professor': "L'enseignant", 'admin': "L'administrateur"}
+
+
+def _may_call_proctor(role, user_id, proctor_id, session):
+    """Qui peut appeler ce surveillant (14/11/2026, demande du responsable d'examen : « comme on le fait avec les étudiants ») :
+    son superviseur ; le responsable d'examen et l'administrateur (tous les examens) ; un enseignant seulement pour un surveillant
+    affecté à l'un des examens qu'il peut surveiller. La cible doit être un surveillant actif."""
+    target = session.query(User).filter_by(id=proctor_id).first()
+    if not target or target.role != UserRole.SURVEILLANT or not target.is_active:
+        return False
+    if role == 'superviseur':
+        return _supervises_proctor(user_id, proctor_id, session)
+    if role in ('admin', 'responsable_examen'):
+        return True
+    if role == 'professor':
+        for ep in session.query(ExamProctor).filter_by(proctor_id=proctor_id).all():
+            exam = session.query(OnlineExam).filter_by(id=ep.exam_id).first()
+            if exam and can_view_exam(session, exam, user_id):
+                return True
+    return False
+
+
 @proctoring_bp.route('/api/superviseur/proctor_call/<int:proctor_id>/token', methods=['GET'])
 @paseto_required
 def get_supervisor_call_token(proctor_id):
@@ -3128,7 +3150,7 @@ def get_supervisor_call_token(proctor_id):
     pour le surveillant lui-même (pour répondre)."""
     user_id = get_current_user_id()
     role = get_current_user_role()
-    if role not in ('superviseur', 'surveillant', 'admin', 'responsable_examen'):
+    if role not in ('superviseur', 'surveillant', 'admin', 'responsable_examen', 'professor'):
         return jsonify({'error': 'Accès refusé'}), 403
 
     config = get_livekit_config()
@@ -3137,10 +3159,11 @@ def get_supervisor_call_token(proctor_id):
 
     session = get_session()
     try:
-        if role == 'superviseur' and not _supervises_proctor(user_id, proctor_id, session):
-            return jsonify({'error': "Vous ne supervisez pas ce surveillant"}), 403
-        if role == 'surveillant' and user_id != proctor_id:
-            return jsonify({'error': 'Accès refusé'}), 403
+        if role == 'surveillant':
+            if user_id != proctor_id:
+                return jsonify({'error': 'Accès refusé'}), 403
+        elif not _may_call_proctor(role, user_id, proctor_id, session):
+            return jsonify({'error': "Vous ne pouvez pas appeler ce surveillant"}), 403
 
         room_name = f'supcall-{proctor_id}'
         identity  = f'{role}-{user_id}'
@@ -3164,15 +3187,16 @@ def request_supervisor_call(proctor_id):
     d'appel étudiant → surveillant."""
     user_id = get_current_user_id()
     role = get_current_user_role()
-    if role != 'superviseur':
-        return jsonify({'error': 'Accès réservé aux superviseurs'}), 403
+    if role not in ('superviseur', 'responsable_examen', 'admin', 'professor'):
+        return jsonify({'error': 'Accès réservé aux superviseurs, enseignants et responsables'}), 403
 
     session = get_session()
     try:
-        if not _supervises_proctor(user_id, proctor_id, session):
-            return jsonify({'error': "Vous ne supervisez pas ce surveillant"}), 403
+        if not _may_call_proctor(role, user_id, proctor_id, session):
+            return jsonify({'error': "Vous ne pouvez pas appeler ce surveillant"}), 403
         supervisor = session.query(User).filter_by(id=user_id).first()
-        supervisor_name = supervisor.full_name if supervisor else 'Votre superviseur'
+        supervisor_name = supervisor.full_name if supervisor else _CALLER_LABEL.get(role, 'Votre superviseur')
+        caller_label = _CALLER_LABEL.get(role, 'Votre superviseur')
         session.close()
 
         try:
@@ -3180,10 +3204,10 @@ def request_supervisor_call(proctor_id):
             try:
                 notify_user(
                     proctor_id, 'supervisor_call_request',
-                    'Appel entrant — votre superviseur',
+                    f'Appel entrant — {caller_label[0].lower() + caller_label[1:]}',
                     f'{supervisor_name} souhaite vous parler',
                     priority='urgent', tags=['phone'],
-                    extra={'supervisor_id': user_id, 'supervisor_name': supervisor_name},
+                    extra={'supervisor_id': user_id, 'supervisor_name': supervisor_name, 'caller_label': caller_label},
                 )
             except Exception:
                 pass

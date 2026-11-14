@@ -388,10 +388,21 @@ def extract_text_from_docx(filepath):
     try:
         doc = docx.Document(filepath)
         text = "\n".join(_docx_lines(doc))
-        return text.strip()
+        text = text.strip()
     except Exception as e:
         print(f"Erreur DOCX: {e}")
-        return None
+        text = None
+    # Lecteur universel (phase C, 14/11/2026) : CEI_DOCX_ENGINE=pandoc => structure réelle du fichier Word (numérotation
+    # automatique, listes, titres). Tout échec ou toute perte de contenu => l'ancien lecteur ci-dessus reste la réponse.
+    try:
+        from services import doc_structure
+        if doc_structure.engine() == 'pandoc':
+            better = doc_structure.extract(filepath, text)
+            if better:
+                return better
+    except Exception as e:
+        print(f"Lecteur universel indisponible, ancien lecteur conservé: {e}")
+    return text
 
 def extract_student_name_from_content_improved(content):
     """Extraction améliorée du nom étudiant

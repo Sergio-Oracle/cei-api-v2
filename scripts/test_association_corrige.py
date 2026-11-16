@@ -45,6 +45,8 @@ for i in (1, 2): t.rows[i].cells[0].text = str(i); t.rows[i].cells[1].text = f'A
 d.add_paragraph('Exercice 3. Appariement : les étapes (4 points)')
 d.add_paragraph('Consigne : Associez chaque élément de la colonne de gauche à la définition qui lui correspond. Deux définitions ne correspondent à aucun élément. 0,5 point par association.')
 ex_table(d, NOTIONS_A, DA, ('Éléments', 'Définitions'))
+g = d.add_table(rows=2, cols=8)
+for k in range(8): g.rows[0].cells[k].text = str(k + 1)                     # grille de réponse papier « 1 2 3 4 5 6 7 8 »
 d.add_paragraph('Exercice 4. Texte à trous (2 points)')
 d.add_paragraph('Consigne : Complétez chaque phrase. 1 point par réponse.')
 d.add_paragraph('1. Le mot « introduction » vient du latin intro ducere, qui signifie conduire ……….')
@@ -90,6 +92,10 @@ chk("corrigé : réponses des QCM lues (« Réponse : C. »)", key['qcm'] == ['C
 chk("corrigé : vrai/faux lus quelle que soit la casse (« FAUX », « VRAI »)", key['vf'] == ['Faux', 'Vrai'], key['vf'])
 ae = [x for x in key['assoc_ex'] if x]
 chk("corrigé : UNE série de clés par exercice d'association (2), lettres jusqu'à j", len(ae) == 2 and ae[0].get(4) == 'J' and ae[1].get(7) == 'I', ae)
+chk("la grille de réponse papier « 1 2 3 4 5 6 7 8 » n'est pas une ligne du sujet", not any(l.strip() == '1 2 3 4 5 6 7 8' for l in annotated.splitlines()))
+from services.subject_check import analyze
+a = analyze(annotated, '')
+chk("contrôle de l'éditeur : aucune ligne « non affichée », réponses comptées (2+2+8+8+2 = 22)", a.get('answers') == 22 and not [i for i in a['issues'] if 'affichées' in i['message']], (a.get('answers'), [i['message'][:60] for i in a['issues']]))
 rub, warns = rubric_from_exercise_key(annotated, key)
 chk("barème écrit depuis le corrigé, sans aucune alerte", bool(rub) and not warns, warns)
 exp3 = ', '.join(f"{i + 1}-{LET[KEY_A[i]].upper()}" for i in range(8)); exp5 = ', '.join(f"{i + 1}-{LET[KEY_B[i]].upper()}" for i in range(8))

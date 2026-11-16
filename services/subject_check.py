@@ -105,7 +105,12 @@ def analyze(content: str, rubric: str = None) -> dict:
 
     ok = not any(i['level'] == 'error' for i in issues)
     from services.subject_structure import groups as _groups
-    return {'ok': ok, 'questions': len(blocks), 'by_type': by_type, 'issues': issues, 'groups': _groups(blocks)}
+    try:
+        from services.subject_count import count_units
+        answers = count_units(all_blocks)[0]          # réponses attendues : une paire d'association / un champ à compléter = une réponse
+    except Exception:
+        answers = len(blocks)
+    return {'ok': ok, 'questions': len(blocks), 'answers': answers, 'by_type': by_type, 'issues': issues, 'groups': _groups(blocks)}
 
 
 def _statement_issues(content: str, blocks: list) -> list:

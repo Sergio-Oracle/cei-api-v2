@@ -23,6 +23,15 @@ _MARK = r'QCM_MULTI|QCM|VF|OUVERT|SUBOPEN|APPARIEMENT|CODE|ASSOCIATION|TRI|ORDRE
 _MARK_RE = re.compile(r'\[(%s)\]' % _MARK, re.I)
 _GAP_RE = re.compile(r'(?<!\w)[….]{3,}|[….]{5,}|_{3,}')           # « ………. » ; jamais « etc... » collé à un mot
 _NOISE_RE = re.compile(r'^\s*[\d\s]{1,14}$')                                  # « 1 2 3 4 5 » : grille de réponse sans texte
+_COUNT_ROW_RE = re.compile(r'^\s*\d{1,2}(?:\s+\d{1,2}){2,29}\s*$')                 # « 1 2 3 4 5 6 7 8 » : grille de réponse papier, plus longue que 14 caractères
+
+
+def _is_counting_row(line):
+    """Suite 1, 2, 3… N (au moins 3 nombres consécutifs) : case à remplir du Word papier, jamais du sujet."""
+    if not _COUNT_ROW_RE.match(line):
+        return False
+    nums = [int(x) for x in line.split()]
+    return all(b - a == 1 for a, b in zip(nums, nums[1:]))
 _FOOTER_RE = re.compile(r'^.{4,140}\s·\s.{2,140}\bpage\s+\d+\s*$', re.I)       # « Matière · Épreuve · page 2 »
 _RECAP_RE = re.compile(r'^\s*R[ée]capitulatif\s+de\s+la\s+note', re.I)
 _DIRECTION_RE = re.compile(r'^\s*(?:Horizontalement|Verticalement)\s*:?\s*$', re.I)
@@ -118,7 +127,7 @@ def _clean_noise(lines):
             break           # récapitulatif de notation et pages d'indices : jamais destinés à l'étudiant
         if _DIRECTION_RE.match(l):
             continue
-        if _FOOTER_RE.match(l) or (l.strip() and _NOISE_RE.match(l)):
+        if _FOOTER_RE.match(l) or (l.strip() and (_NOISE_RE.match(l) or _is_counting_row(l))):
             continue
         out.append(_HINT_RE.sub('', l))
     return out

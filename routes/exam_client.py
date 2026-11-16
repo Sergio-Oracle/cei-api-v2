@@ -22,7 +22,7 @@ from urllib.parse import quote
 from flask import Blueprint, jsonify, request, send_from_directory
 
 from auth_paseto import paseto_required, get_current_user_id, get_current_user_role
-from extensions import limiter
+from extensions import limiter, ENTRY_LIMIT
 from cache import cache_get, cache_set, cache_delete, cache_pop, cache_set_nx_value, _get_client
 from models import get_session, User, OnlineExam, ExamAttempt, ExamActivityLog, AttemptStatus, ProctorAssignment
 from helpers import utcnow
@@ -168,7 +168,7 @@ def _bump_exit_fail(exam_id, student_id):
 
 @exam_client_bp.route('/api/exam_attempts/<int:attempt_id>/client_exit_code', methods=['POST'])
 @paseto_required
-@limiter.limit('30 per minute')
+@limiter.limit(ENTRY_LIMIT)
 def exam_client_issue_exit_code(attempt_id):
     """Génère un code de sortie d'urgence pour UN étudiant en cours d'examen. Même périmètre que l'envoi d'un avertissement :
     le surveillant ne peut le faire que pour les étudiants qui lui sont affectés, l'enseignant pour ses examens."""
@@ -214,7 +214,7 @@ def exam_client_issue_exit_code(attempt_id):
 
 @exam_client_bp.route('/api/exam_attempts/<int:attempt_id>/client_exit_code/mine', methods=['GET'])
 @paseto_required
-@limiter.limit('20 per minute')
+@limiter.limit(ENTRY_LIMIT)
 def exam_client_my_exit_code(attempt_id):
     """L'étudiant lit, pour SA tentative seulement, le code de sortie qu'un surveillant vient d'émettre pour lui (avant l'entrée dans l'examen,
     quand le heartbeat de la page d'examen ne tourne pas encore : caméra bloquée, scan qui n'aboutit pas…). Jamais le code d'un autre."""
@@ -231,7 +231,7 @@ def exam_client_my_exit_code(attempt_id):
 
 
 @exam_client_bp.route('/api/exam-client/exit', methods=['POST'])
-@limiter.limit('60 per minute')
+@limiter.limit(ENTRY_LIMIT)
 def exam_client_exit():
     """Vérifie le code de sortie saisi dans l'application. Appelé par le client lui-même (signature HMAC du secret embarqué + horodatage),
     pas par la page : l'étudiant ne peut donc ni lire ni contourner la vérification. Usage unique : la première réussite détruit le code."""

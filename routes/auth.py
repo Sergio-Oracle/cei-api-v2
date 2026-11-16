@@ -560,7 +560,8 @@ def change_password():
 
 # ── Mot de passe oublié ───────────────────────────────────────────────────────
 @auth_bp.route('/api/auth/forgot-password', methods=['POST'])
-@limiter.limit("5 per minute;20 per hour")
+@limiter.limit("600 per minute;6000 per hour")                          # par IP : très large (un réseau partagé par des centaines d'étudiants)
+@limiter.limit("5 per hour", key_func=_login_rate_limit_key)            # par ADRESSE E-MAIL : on ne peut pas inonder la boîte d'une personne
 def forgot_password():
     try:
         import secrets as _secrets

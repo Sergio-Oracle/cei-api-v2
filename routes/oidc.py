@@ -22,7 +22,7 @@ from urllib.parse import urlencode
 from flask import Blueprint, request, redirect, jsonify, make_response, g
 
 import oidc_keycloak
-from extensions import limiter
+from extensions import limiter, ENTRY_LIMIT
 from helpers import utcnow
 from auth_paseto import (
     create_access_token, create_refresh_token, set_refresh_cookie,
@@ -149,7 +149,7 @@ def _relay_page(target: str):
 
 
 @oidc_bp.route('/api/auth/from-moodle', methods=['GET'])
-@limiter.limit("60 per minute")
+@limiter.limit(ENTRY_LIMIT)
 def from_moodle():
     """Bouton « CEI » du menu de Moodle (une ligne ajoutée une fois par l'admin
     Moodle, visible sur toutes les pages et dans tous les cours). Même fenêtre,
@@ -209,7 +209,7 @@ def oidc_enabled():
 
 
 @oidc_bp.route('/api/auth/oidc/login', methods=['GET'])
-@limiter.limit("30 per minute")
+@limiter.limit(ENTRY_LIMIT)
 def oidc_login():
     if not _configured():
         return redirect(f"{_app_url()}/login?sso_error=not_configured")
@@ -222,7 +222,7 @@ def oidc_login():
 
 
 @oidc_bp.route('/api/auth/oidc/callback', methods=['GET'])
-@limiter.limit("30 per minute")
+@limiter.limit(ENTRY_LIMIT)
 def oidc_callback():
     error = request.args.get('error')
     if error:
@@ -287,7 +287,7 @@ def oidc_callback():
 
 
 @oidc_bp.route('/api/auth/oidc/force-login', methods=['POST'])
-@limiter.limit("30 per minute")
+@limiter.limit(ENTRY_LIMIT)
 def oidc_force_login():
     data = request.get_json(force=True) or {}
     retry_token = data.get('retry_token', '')
@@ -334,7 +334,7 @@ def oidc_force_login():
 
 @oidc_bp.route('/api/auth/oidc/exchange', methods=['POST'])
 @api_key_required
-@limiter.limit("30 per minute")
+@limiter.limit(ENTRY_LIMIT)
 def oidc_exchange():
     """Échange serveur-à-serveur : un backend ENT qui a déjà authentifié un
     utilisateur via le Keycloak UNCHK (donc possède un access_token Keycloak

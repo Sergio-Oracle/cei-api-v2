@@ -35,6 +35,11 @@ _LIMITER_STORAGE = os.getenv('REDIS_LIMITER_URL', 'redis://127.0.0.1:6379/1')
 _LIMIT_PER_HOUR   = os.getenv('RATE_LIMIT_PER_HOUR',   '20000')
 _LIMIT_PER_MINUTE = os.getenv('RATE_LIMIT_PER_MINUTE', '2000')
 
+# Parcours d'ENTRÉE des étudiants (SSO, retour Moodle, code de sortie du client) : limite par IP volontairement très large (16/11/2026). Un réseau mobile ou un
+# centre partage UNE adresse entre des centaines d'étudiants : « 30 par minute » a refusé 360 connexions SSO le 28/10. Ces routes exigent des jetons à usage
+# unique impossibles à deviner, la limite ne sert plus que de garde-fou contre un client en boucle. Réglable : ENTRY_RATE_LIMIT.
+ENTRY_LIMIT = os.getenv('ENTRY_RATE_LIMIT', '20000 per minute')
+
 limiter = Limiter(
     key_func=get_remote_address,
     storage_uri=_LIMITER_STORAGE,

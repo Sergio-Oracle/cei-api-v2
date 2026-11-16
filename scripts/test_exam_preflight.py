@@ -31,13 +31,17 @@ try:
         ex = OnlineExam(subject_id=sub.id, title=title, duration_minutes=60, start_time=now + timedelta(minutes=start_in), end_time=now + timedelta(minutes=start_in + 120),
                         status=status, created_by_id=adm.id); s.add(ex); s.commit(); made['ex'].append(ex.id); return ex
     ok = mk('ZZ examen sain', GOOD)
+    ok_exam = s.get(OnlineExam, ok.id); ok_exam.subject_validated_at = now; s.commit()          # sujet validé par l'enseignant
     bad = mk('ZZ examen barème cassé', BAD_MD)
     late = mk('ZZ examen dans 2 h', BAD_MD, start_in=120)
     past = mk('ZZ examen déjà commencé', BAD_MD, start_in=-5, status=ExamStatus.ACTIVE)
     empty = mk('ZZ sans sujet', '', content='   ', start_in=25)
 
     print('== Contenu du contrôle ==')
-    r = PF.check_exam(s.get(OnlineExam, ok.id)); chk("sujet sain : aucun problème", not r['errors'] and not r['warns'] and r['questions'] == 6, r)
+    r = PF.check_exam(s.get(OnlineExam, ok.id)); chk("sujet sain et validé : aucun problème", not r['errors'] and not r['warns'] and r['questions'] == 6, r)
+    ok_exam = s.get(OnlineExam, ok.id); ok_exam.subject_validated_at = None; s.commit()
+    r = PF.check_exam(ok_exam); chk("sujet sain mais affichage NON validé : un avertissement (jamais validé à la place de l'enseignant)", not r['errors'] and len(r['warns']) == 1 and 'validé' in r['warns'][0], r)
+    ok_exam.subject_validated_at = now; s.commit()
     r = PF.check_exam(s.get(OnlineExam, bad.id))
     chk("barème qui ne couvre que 3 questions sur 6 : erreurs listées (questions 4 à 6)", len(r['errors']) >= 3 and any('Question 4' in e for e in r['errors']), r['errors'])
     r = PF.check_exam(s.get(OnlineExam, empty.id)); chk("sujet vide : erreur claire", r['errors'] and 'vide' in r['errors'][0], r)
@@ -45,8 +49,10 @@ try:
     print('\n== Alertes ==')
     n = PF.run_once(now)
     mine = [x for x in sent if x[1] in (bad.id, empty.id) or x[0] == 'admins']
-    chk("2 examens à problème (début dans 20 et 25 min) → alertes", n == 2, n)
-    chk("l'examen sain, celui dans 2 h et celui déjà commencé ne déclenchent rien", not any(x[1] in (ok.id, late.id, past.id) for x in sent), [x[1] for x in sent])
+    chk("3 examens à problème (début dans 20 min, 25 min et 2 h) → 3 alertes, une chacun", n == 3, n)
+    chk("l'examen sain (validé) et celui déjà commencé ne déclenchent rien", not any(x[1] in (ok.id, past.id) for x in sent), [x[1] for x in sent])
+    la = next(x for x in sent if x[0] == 'exam' and x[1] == late.id)
+    chk("l'examen dans 2 h est prévenu à l'avance (point de contrôle de 24 h), « dans 2 h »", 'commence dans 2 h' in la[4], la[4])
     a = next(x for x in sent if x[0] == 'exam' and x[1] == bad.id)
     chk("le message dit combien de minutes restent, les questions concernées et où corriger", 'commence dans 20 min' in a[4] and 'Question 4' in a[4] and 'Modifier le sujet' in a[4], a[4])
     chk("les administrateurs sont prévenus aussi", any(x[0] == 'admins' and 'barème cassé' in x[3] for x in sent))
@@ -58,10 +64,13 @@ try:
     PF.run_once(now + timedelta(minutes=15))
     after10 = len([x for x in sent if x[0] == 'exam' and x[1] == bad.id])
     chk("rappel UNE fois à moins de 10 minutes si le problème persiste", after10 == 2, after10)
-    ex_bad = s.get(OnlineExam, bad.id); ex_bad.subject.rubric = GOOD; s.commit()
+    ex_bad = s.get(OnlineExam, bad.id); ex_bad.subject.rubric = GOOD; ex_bad.subject_validated_at = now; s.commit()
     cache_delete(f'cei:preflight:{bad.id}:exam:10:{ex_bad.start_time.isoformat()}')
     k = len(sent); PF.run_once(now + timedelta(minutes=17))      # barème corrigé entre-temps
     chk("problème corrigé avant le point de contrôle suivant : silence", len([x for x in sent[k:] if x[1] == bad.id]) == 0)
+    print('\n== Un examen créé tard ne reçoit qu\'UNE alerte, pas une par point de contrôle ==')
+    k = len(sent); soon = mk('ZZ examen créé tard', BAD_MD, start_in=8); PF.run_once(now); PF.run_once(now + timedelta(minutes=1))
+    chk("début dans 8 min : une seule alerte (24 h, 30 min et 10 min atteints en même temps)", len([x for x in sent[k:] if x[0] == 'exam' and x[1] == soon.id]) == 1, [x[1] for x in sent[k:]])
 finally:
     notif_bus.notify_exam, notif_bus.notify_admins = real_exam, real_adm
     try:

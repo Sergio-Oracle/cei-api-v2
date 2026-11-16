@@ -5,7 +5,7 @@ question 1 ; personne n'avait été prévenu. Ce service relit, 30 puis 10 minut
 ce que la correction fera du sujet, et prévient TOUT le personnel de l'examen (créateur, responsables, enseignants de l'EC, surveillants,
 superviseurs) ainsi que les administrateurs quand quelque chose ne va pas. Silence = tout va bien.
 
-Contrôles : sujet absent ou vide ; erreurs de lecture (exercice vide, questions illisibles) ; barème qui ne donne pas de bonne réponse à une
+Contrôles (à 24 h, 30 min puis 10 min du début) : sujet absent ou vide ; erreurs de lecture (exercice vide, questions illisibles) ; barème qui ne donne pas de bonne réponse à une
 question à correction automatique, bonne réponse absente des propositions, points manquants ; barème qui décrit des questions absentes du
 sujet ; sujet non validé. Jamais bloquant : un contrôle qui échoue est simplement journalisé.
 """
@@ -17,8 +17,8 @@ from datetime import datetime, timedelta
 from cache import cache_set_nx
 
 log = logging.getLogger(__name__)
-CHECKPOINTS = (30, 10)            # minutes avant le début : premier contrôle, puis rappel si le problème persiste
-TTL = 6 * 3600
+CHECKPOINTS = (1440, 30, 10)      # minutes avant le début : 24 h (le temps de corriger / valider), 30 min, puis rappel à 10 min si le problème persiste
+TTL = 3 * 24 * 3600                # plus long que le plus grand point de contrôle (24 h) : jamais de second envoi pour le même point
 
 
 def check_exam(exam) -> dict:
@@ -46,6 +46,8 @@ def check_exam(exam) -> dict:
             add(i['level'], i.get('message'))
     if not (subject.rubric or '').strip():
         add('warn', "Aucun barème : les questions seront corrigées par l'IA sans critères.")
+    if getattr(exam, 'subject_validated_at', None) is None:      # attestation de l'enseignant : jamais posée à sa place
+        add('warn', "L'affichage du sujet n'est pas validé : ouvrez « Prévisualiser » (vue étudiante) puis cliquez sur « Valider l'affichage ».")
     return out
 
 
@@ -81,21 +83,22 @@ def run_once(now: datetime | None = None) -> int:
                 minutes = (start - now).total_seconds() / 60.0
                 if minutes < 0 or minutes > max(CHECKPOINTS):
                     continue
-                for cp in sorted(CHECKPOINTS, reverse=True):
-                    if minutes > cp:
-                        continue
-                    if not cache_set_nx(f'cei:preflight:{exam.id}:{tag}:{cp}:{start.isoformat()}', TTL):
-                        continue                                              # ce point de contrôle a déjà été traité
+                # Points de contrôle atteints : on les marque TOUS (un examen créé 20 min avant son début ne reçoit pas trois alertes d'un coup),
+                # mais seul le plus proche du début déclenche, une seule fois.
+                reached = [cp for cp in sorted(CHECKPOINTS) if minutes <= cp]
+                fresh = [cp for cp in reached if cache_set_nx(f'cei:preflight:{exam.id}:{tag}:{cp}:{start.isoformat()}', TTL)]
+                for cp in ([reached[0]] if reached and reached[0] in fresh else []):
                     rep = check_exam(exam)
                     probs = rep['errors'] + rep['warns']
                     if not probs:
                         continue
                     n = int(round(minutes))
+                    delay = f"{int(round(n / 60.0))} h" if n >= 120 else f"{n} min"
                     title = f"Contrôle avant examen — {len(probs)} point(s) à vérifier : {exam.title}"
                     lines = [("⛔ " if p in rep['errors'] else "⚠ ") + p for p in probs[:6]]
                     more = f"\n… et {len(probs) - 6} autre(s)." if len(probs) > 6 else ''
-                    msg = (f"« {exam.title} » commence dans {n} min.\n" + '\n'.join(lines) + more
-                           + "\nOuvrez l'aperçu du sujet (Modifier le sujet → contrôle) pour corriger avant le début.")
+                    msg = (f"« {exam.title} » commence dans {delay}.\n" + '\n'.join(lines) + more
+                           + "\nOuvrez l'aperçu du sujet (Prévisualiser → Modifier le sujet → contrôle) pour corriger ou valider avant le début.")
                     try:
                         notif_bus.notify_exam(exam.id, 'exam_preflight', title, msg, priority='high')
                         notif_bus.notify_admins('exam_preflight', title, msg, priority='high')

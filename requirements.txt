@@ -35,7 +35,7 @@ psycopg2-binary
 pydantic
 pydantic_core
 PyJWT>=2.15.1
-PyPDF2
+pypdf>=7.1.0
 python-docx
 python-dotenv
 reportlab

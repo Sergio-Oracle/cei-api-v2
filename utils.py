@@ -15,7 +15,7 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
 from email import encoders
-import PyPDF2
+import pypdf
 import docx
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -147,7 +147,7 @@ def _is_garbled(text):
     if not text or len(text) < 20:
         return True
 
-    # Format PyPDF2 : /0 /1 /i255 /3/4 ...
+    # Format pypdf : /0 /1 /i255 /3/4 ...
     tokens = text.split()
     if tokens:
         garbled_tokens = sum(1 for t in tokens if re.match(r'^(/[i]?\d+)+$', t))
@@ -305,7 +305,7 @@ def _pdf_page_text(page) -> str:
 
 
 def extract_text_from_pdf(filepath):
-    """Extraire le texte d'un PDF : pdfplumber → PyPDF2 → OCR tesseract."""
+    """Extraire le texte d'un PDF : pdfplumber → pypdf → OCR tesseract."""
     # 1. pdfplumber (meilleur support CMap/CIDFont)
     try:
         import pdfplumber
@@ -319,26 +319,26 @@ def extract_text_from_pdf(filepath):
         if text and not _is_garbled(text):
             print(f"pdfplumber OK — {len(text)} caractères")
             return text
-        print("pdfplumber : texte garbled, bascule PyPDF2")
+        print("pdfplumber : texte garbled, bascule pypdf")
     except Exception as e:
         print(f"pdfplumber erreur : {e}")
 
-    # 2. PyPDF2
+    # 2. pypdf (successeur maintenu de PyPDF2, abandonné et vulnérable : boucle infinie sur un PDF piégé)
     try:
         text = ""
         with open(filepath, 'rb') as file:
-            pdf_reader = PyPDF2.PdfReader(file)
+            pdf_reader = pypdf.PdfReader(file)
             for page in pdf_reader.pages:
                 page_text = page.extract_text()
                 if page_text:
                     text += page_text + "\n"
         text = text.strip()
         if text and not _is_garbled(text):
-            print(f"PyPDF2 OK — {len(text)} caractères")
+            print(f"pypdf OK — {len(text)} caractères")
             return text
-        print("PyPDF2 : texte garbled, bascule OCR")
+        print("pypdf : texte garbled, bascule OCR")
     except Exception as e:
-        print(f"Erreur PDF PyPDF2: {e}")
+        print(f"Erreur PDF pypdf: {e}")
 
     # 3. OCR tesseract (pour PDFs avec polices non-Unicode)
     print("Tentative OCR tesseract...")

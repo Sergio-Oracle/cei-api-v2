@@ -22,7 +22,7 @@ PR.get_livekit_config = lambda: {'url': 'wss://lk.test', 'api_url': 'https://lk.
 sent = []
 notif_bus.notify_user = lambda uid, ev, title, msg, priority='default', tags=None, extra=None: sent.append((uid, ev, title, msg, extra))
 try:
-    adm = s.query(User).filter(User.role == UserRole.ADMIN).first()
+    adm = s.query(User).filter(User.role == UserRole.ADMIN, User.is_active == True).first()
     prof, prof2 = mk(UserRole.PROFESSOR, 'prof'), mk(UserRole.PROFESSOR, 'prof2')
     resp = mk(UserRole.RESPONSABLE_EXAMEN, 'resp')
     sv, sv2, sv3 = mk(UserRole.SURVEILLANT, 'sv'), mk(UserRole.SURVEILLANT, 'sv2'), mk(UserRole.SURVEILLANT, 'sv3')

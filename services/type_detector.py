@@ -31,8 +31,11 @@ _UPLOAD_LINE_RE = re.compile(r'^\s*(?:Fichier|Pi[èe]ce\s+jointe|D[ée]p[ôo]t)\
 _HINT_RE = re.compile(r'\s*[☐□▢]\s*indice\s*$', re.I)
 _MULTI_RE = re.compile(r'plusieurs\s+(?:bonnes?\s+)?r[ée]ponses|toutes\s+les\s+(?:bonnes?\s+)?r[ée]ponses|une\s+ou\s+plusieurs|cochez\s+toutes', re.I)
 _VF_TITLE_RE = re.compile(r'vrai\s*(?:ou|/|-)\s*faux|\bV\s*/\s*F\b', re.I)
-_ASSOC_ROW_RE = re.compile(r'^\s*(\d{1,2})[.)]\s+(.+?)\s+([a-f])[.)]\s+(.+)$')
-_LETTER_SPLIT_RE = re.compile(r'\s([a-f])[.)]\s+')
+# Lettres de a à p (16 définitions) : « 8 notions, 10 définitions (a à j) » est courant ; la limite a-f faisait perdre les lignes 7 et 8 (g, h) et les définitions i, j
+# d'un tableau d'association (sujet « Épreuve de synthèse », 16/11/2026) : elles devenaient des questions ouvertes.
+_ASSOC_ROW_RE = re.compile(r'^\s*(\d{1,2})[.)]\s+(.+?)\s+([a-p])[.)]\s+(.+)$')
+_LETTER_SPLIT_RE = re.compile(r'\s([a-p])[.)]\s+')
+_ASSOC_DEF_RE = re.compile(r'^\s*([a-p])[.)]\s+(.+)$')       # définition sans notion en face (lignes de tableau en plus : i., j.)
 _ORDER_RE = re.compile(r"(?:remett|class|rang|ordonn|plac|numérot)\w*[^.\n]{0,60}(?:dans\s+l['’]ordre|ordre\s+(?:chronologique|croissant|décroissant|correct|logique|alphabétique)|chronolog)|(?:ordre\s+chronologique|remise\s+en\s+ordre)", re.I)
 _BANK_RE = re.compile(r'^\s*(?:Mots?|Liste\s+de\s+mots|Banque\s+de\s+mots|Propositions|Expressions?)(?:\s+(?:à|a)\s+(?:utiliser|placer|choisir|insérer))?\s*:\s*(.+)$', re.I)
 _CATS_LINE_RE = re.compile(r'^\s*(?:Cat[ée]gories?|Colonnes?|Groupes?)(?:\s+suivantes?)?\s*:\s*(.+)$', re.I)
@@ -144,6 +147,13 @@ def _collapse_associations(lines, report):
             for k in range(1, len(parts) - 1, 2):
                 defs[parts[k].upper()] = parts[k + 1].strip()
             rows.append(notion)
+            j += 1
+        # définitions « leurres » en fin de tableau, sans notion en face : « i. … », « j. … » — rattachées tant que la lettre suit la dernière lue
+        while j < n:
+            md = _ASSOC_DEF_RE.match(lines[j])
+            if not md or not defs or ord(md.group(1)) != ord(max(defs).lower()) + 1:
+                break
+            defs[md.group(1).upper()] = md.group(2).strip()
             j += 1
         letters = sorted(defs)
         if len(rows) >= 2 and len(letters) >= 2 and letters[0] == 'A':

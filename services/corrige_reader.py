@@ -20,7 +20,7 @@ def _kind(title):
     t = (title or '').lower()
     if 'vrai' in t and 'faux' in t:
         return 'vf'
-    if 'associ' in t:
+    if 'associ' in t or 'appari' in t:
         return 'assoc'
     if 'trous' in t or 'compl' in t:
         return 'trous'
@@ -34,24 +34,34 @@ def _kind(title):
 def _text_keys(text, key):
     """Clés lisibles dans le TEXTE (Word comme PDF) : QCM, Vrai/Faux, association, mots croisés."""
     kind = None
+    key.setdefault('assoc_ex', [])
     for raw in (text or '').split('\n'):
         l = raw.strip()
         m = _EX_RE.match(l)
         if m:
             kind = _kind(m.group(2))
+            if kind == 'assoc':
+                key['assoc_ex'].append({})              # UNE série de clés par exercice d'association (il peut y en avoir plusieurs)
             continue
         if kind == 'qcm':
             q = re.match(r'^(\d{1,2})\.\s+([A-F])\.\s', l)
             if q:
                 key['qcm'].append(q.group(2))
+            else:
+                q = re.match(r'^R[ée]ponse\s*:\s*([A-F])\s*[.)]', l, re.I)      # corrigé « question puis ligne Réponse : C. texte »
+                if q:
+                    key['qcm'].append(q.group(1).upper())
         elif kind == 'vf':
-            q = re.match(r'^(\d{1,2})\s+.+?\s+(Vrai|Faux)\s', l + ' ')
+            q = re.match(r'^(\d{1,2})\s+.+?\s+(Vrai|Faux)\s', l + ' ', re.I)       # VRAI / FAUX / Vrai / Faux
             if q:
-                key['vf'].append(q.group(2))
+                key['vf'].append(q.group(2).capitalize())
         elif kind == 'assoc':
-            q = re.match(r'^(\d{1,2})\.\s+.+?\s+(?:\[[^\]]*\]\s+)?([a-f])\s+\S', l)
+            # « 3. Notion  [S1]  d  définition » (ancien format) ou « 3. Notion  d. définition » (lettre suivie d'un point, a à p)
+            q = re.match(r'^(\d{1,2})\.\s+.+?\s+(?:\[[^\]]*\]\s+)?([a-p])(?:\s|[.)]\s)\s*\S', l)
             if q:
                 key['assoc'][int(q.group(1))] = q.group(2).upper()
+                if key['assoc_ex']:
+                    key['assoc_ex'][-1][int(q.group(1))] = q.group(2).upper()
         elif kind == 'cw':
             q = re.match(r'^(\d{1,2})\.\s+([A-ZÉÈÀÂÊÎÔÛÇ]{3,})\s', l)
             if q:
@@ -135,7 +145,7 @@ def _docx_crossword(path, key):
 
 
 def read_corrige_file(path, text):
-    key = {'qcm': [], 'vf': [], 'assoc': {}, 'trous': [], 'cw': {}, 'warnings': []}
+    key = {'qcm': [], 'vf': [], 'assoc': {}, 'assoc_ex': [], 'trous': [], 'cw': {}, 'warnings': []}
     _text_keys(text, key)
     low = (path or '').lower()
     if low.endswith('.docx'):
@@ -161,10 +171,10 @@ def read_corrige_file(path, text):
 
 
 def merge(keys):
-    out = {'qcm': [], 'vf': [], 'assoc': {}, 'trous': [], 'cw': {}, 'warnings': []}
+    out = {'qcm': [], 'vf': [], 'assoc': {}, 'assoc_ex': [], 'trous': [], 'cw': {}, 'warnings': []}
     for k in keys:
         out['qcm'] += k['qcm']; out['vf'] += k['vf']; out['trous'] += k['trous']
-        out['assoc'].update(k['assoc']); out['cw'].update(k['cw'])
+        out['assoc'].update(k['assoc']); out['cw'].update(k['cw']); out['assoc_ex'] += k.get('assoc_ex', [])
     return out
 
 
@@ -199,6 +209,7 @@ def rubric_from_exercise_key(content, key):
         elif b['type'] != 'description':
             count[cur] = count.get(cur, 0) + 1
     qcm, vf, trous = list(key['qcm']), list(key['vf']), list(key['trous'])
+    assoc_ex = [d for d in key.get('assoc_ex', []) if d]            # une série de clés par exercice d'association, dans l'ordre du sujet
     out, warns, total = ['=== BARÈME DE NOTATION (écrit depuis le corrigé officiel) ===', ''], [], 0.0
     cur = None
     for b in blocks:
@@ -225,9 +236,10 @@ def rubric_from_exercise_key(content, key):
             out += [head, f"  • Réponse : {v}", '']
         elif b['type'] == 'association':
             items = b.get('items') or []
-            if not items or any(i + 1 not in key['assoc'] for i in range(len(items))):
+            ak = assoc_ex.pop(0) if assoc_ex else key['assoc']
+            if not items or any(i + 1 not in ak for i in range(len(items))):
                 warns.append(f"Question {n} : association incomplète dans le corrigé"); continue
-            out += [head, "  • Réponse : " + ', '.join(f"{i + 1}-{key['assoc'][i + 1]}" for i in range(len(items))), '']
+            out += [head, "  • Réponse : " + ', '.join(f"{i + 1}-{ak[i + 1]}" for i in range(len(items))), '']
         elif b['type'] == 'cloze' and b.get('grid'):
             fields = []
             for w in b['grid']:

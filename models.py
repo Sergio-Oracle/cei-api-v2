@@ -1208,6 +1208,19 @@ class GradeTranscript(Base):
             'generated_at': self.generated_at.isoformat() if self.generated_at else None
         }
 
+class ExamStaffMessage(Base):
+    """Messagerie du PERSONNEL d'un examen (14/11/2026 : enseignant, responsable d'examen, administrateur, superviseur ↔ surveillants).
+    Temps réel par sondage de la page de surveillance + notification. `recipient_id` NULL = toute l'équipe de l'examen."""
+    __tablename__ = 'exam_staff_messages'
+
+    id = Column(Integer, primary_key=True)
+    exam_id = Column(Integer, ForeignKey('online_exams.id', ondelete='CASCADE'), nullable=False, index=True)
+    sender_id = Column(Integer, ForeignKey('users.id'), nullable=False)
+    recipient_id = Column(Integer, ForeignKey('users.id'), nullable=True, index=True)
+    body = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+
 class ExamProctor(Base):
     """Surveillant affecté à un examen par l'enseignant"""
     __tablename__ = 'exam_proctors'

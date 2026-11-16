@@ -3073,6 +3073,36 @@ OPENAPI_SPEC = {
             "parameters": [{"name": "proctor_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
             "responses": {"200": {"description": "Demande envoyée"}, "403": {"description": "Rôle non autorisé ou surveillant hors périmètre"}}
         }},
+        "/api/proctor_call/{staff_id}/request": {"post": {
+            "tags": ["Superviseur"],
+            "summary": "Un surveillant appelle un membre du personnel (responsable d'examen, enseignant, superviseur, administrateur)",
+            "description": "Sens inverse de `/api/superviseur/proctor_call/{proctor_id}/request`. Réservé au rôle surveillant. Notifie le destinataire en temps réel (`proctor_call_request`, avec `proctor_id`, `proctor_name`) et renvoie la salle `supcall-<id du surveillant>` ; le destinataire se connecte avec `/api/superviseur/proctor_call/{proctor_id}/token`. Administrateurs et responsables : appel libre ; enseignants et superviseurs : seulement s'ils font partie de l'équipe d'un examen proche (≤ 2 jours) auquel le surveillant est affecté.",
+            "parameters": [{"name": "staff_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+            "responses": {"200": {"description": "Demande envoyée (room, destinataire)"}, "403": {"description": "Destinataire hors périmètre ou appelant non surveillant"}}
+        }},
+        "/api/online_exams/{exam_id}/staff_chat": {
+            "get": {
+                "tags": ["Superviseur"],
+                "summary": "Messagerie de l'équipe d'un examen : lire les messages (enseignant, responsable, surveillants, superviseurs)",
+                "description": "Renvoie les messages visibles par l'appelant (messages à toute l'équipe + messages privés échangés avec lui), plus récents que `since_id`. Au premier chargement : `participants` (nom + rôle) et `me`. Limite : 120 requêtes par minute.",
+                "parameters": [
+                    {"name": "exam_id", "in": "path", "required": True, "schema": {"type": "integer"}},
+                    {"name": "since_id", "in": "query", "required": False, "schema": {"type": "integer", "default": 0}}
+                ],
+                "responses": {"200": {"description": "messages, participants, me"}, "403": {"description": "Pas membre de l'équipe de cet examen"}}
+            },
+            "post": {
+                "tags": ["Superviseur"],
+                "summary": "Envoyer un message à toute l'équipe de l'examen ou en privé à un membre",
+                "description": "Corps : `body` (1 à 1000 caractères) et `to_id` optionnel (message privé). Notifie les destinataires en temps réel (`staff_message`). Limite : 30 envois par minute.",
+                "parameters": [{"name": "exam_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+                "requestBody": {"required": True, "content": {"application/json": {"schema": {
+                    "type": "object", "required": ["body"],
+                    "properties": {"body": {"type": "string", "maxLength": 1000}, "to_id": {"type": "integer", "nullable": True}}
+                }}}},
+                "responses": {"200": {"description": "Message enregistré"}, "400": {"description": "Message vide, trop long ou destinataire invalide"}, "403": {"description": "Pas membre de l'équipe de cet examen"}}
+            }
+        },
         "/api/exam_attempts/{attempt_id}/recording": {"post": {
             "tags": ["Proctoring"],
             "summary": "Démarrer ou arrêter l'enregistrement vidéo individuel (LiveKit → MinIO)",

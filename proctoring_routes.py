@@ -3139,6 +3139,8 @@ def _may_call_proctor(role, user_id, proctor_id, session):
             exam = session.query(OnlineExam).filter_by(id=ep.exam_id).first()
             if exam and can_view_exam(session, exam, user_id):
                 return True
+    if role in ('professor', 'superviseur'):                # symétrique de _may_call_staff : qui peut être appelé par le surveillant peut le rejoindre
+        return _may_call_staff(proctor_id, session.query(User).filter_by(id=user_id).first(), session)
     return False
 
 
@@ -3214,6 +3216,52 @@ def request_supervisor_call(proctor_id):
         except Exception:
             pass
         return jsonify({'success': True})
+    finally:
+        session.close()
+
+
+def _may_call_staff(proctor_id, staff, session):
+    """Un surveillant peut appeler : les administrateurs et responsables d'examen (tous les examens), et les enseignants / superviseurs de l'équipe
+    d'un examen auquel il est affecté (examens récents ou à venir seulement)."""
+    if staff is None or not staff.is_active:
+        return False
+    if staff.role in (UserRole.ADMIN, UserRole.RESPONSABLE_EXAMEN):
+        return True
+    if staff.role not in (UserRole.PROFESSOR, UserRole.SUPERVISEUR):
+        return False
+    from notif_bus import _exam_staff_ids
+    limit = datetime.utcnow() - timedelta(days=2)
+    for ep in session.query(ExamProctor).filter_by(proctor_id=proctor_id).all():
+        exam = session.query(OnlineExam).filter_by(id=ep.exam_id).first()
+        if exam and (exam.end_time is None or exam.end_time >= limit) and staff.id in _exam_staff_ids(exam.id):
+            return True
+    return False
+
+
+@proctoring_bp.route('/api/proctor_call/<int:staff_id>/request', methods=['POST'])
+@paseto_required
+@limiter.limit('20 per minute')
+def proctor_calls_staff(staff_id):
+    """Appel dans l'AUTRE sens (14/11/2026) : le surveillant appelle l'enseignant, le responsable d'examen, l'administrateur ou son superviseur.
+    Même salle que l'appel du personnel vers le surveillant (`supcall-<surveillant>`) : la personne appelée la rejoint avec le jeton habituel."""
+    user_id, role = get_current_user_id(), get_current_user_role()
+    if role != 'surveillant':
+        return jsonify({'error': 'Réservé aux surveillants'}), 403
+    session = get_session()
+    try:
+        staff = session.query(User).filter_by(id=staff_id).first()
+        if not _may_call_staff(user_id, staff, session):
+            return jsonify({'error': 'Vous ne pouvez pas appeler cette personne'}), 403
+        me = session.query(User).filter_by(id=user_id).first()
+        name = me.full_name if me else 'Un surveillant'
+        session.close()
+        try:
+            from notif_bus import notify_user
+            notify_user(staff_id, 'proctor_call_request', 'Appel entrant — un surveillant', f'{name} souhaite vous parler',
+                        priority='urgent', tags=['phone'], extra={'proctor_id': user_id, 'proctor_name': name})
+        except Exception:
+            pass
+        return jsonify({'success': True, 'room': f'supcall-{user_id}'})
     finally:
         session.close()
 

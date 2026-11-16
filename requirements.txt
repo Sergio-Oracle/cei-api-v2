@@ -4,10 +4,10 @@ flask-compress
 anthropic
 google-genai
 faster-whisper
-anyio
+anyio>=4.14.2
 bcrypt
 blinker
-certifi
+certifi>=2026.10.18
 charset-normalizer
 click
 colorama
@@ -30,11 +30,11 @@ Jinja2
 jiter
 lxml
 MarkupSafe
-pillow
+pillow>=12.3.0
 psycopg2-binary
 pydantic
 pydantic_core
-PyJWT
+PyJWT>=2.15.1
 PyPDF2
 python-docx
 python-dotenv
@@ -44,8 +44,8 @@ sniffio
 SQLAlchemy
 typing-inspection
 typing_extensions
-urllib3
-Werkzeug
+urllib3>=2.8.0
+Werkzeug>=3.1.9
 pandas
 openpyxl
 chardet

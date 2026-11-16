@@ -120,10 +120,18 @@ def _link_student_to_formation(session, student, formation_id):
 @auth_bp.route('/api/auth/register', methods=['POST'])
 @limiter.limit("10 per hour")
 def register():
+    # Fermée par défaut (16/11/2026) : le site n'appelle pas cette route, et elle inscrivait n'importe qui, depuis Internet, à toutes les UE d'une
+    # formation. Les comptes étudiants sont créés par l'administration (import, SSO, Moodle). Réouverture explicite : ALLOW_PUBLIC_REGISTRATION=1.
+    if os.getenv('ALLOW_PUBLIC_REGISTRATION', '').strip().lower() not in ('1', 'true', 'yes'):
+        return jsonify({'error': "L'inscription publique est désactivée. Les comptes sont créés par l'administration."}), 403
     session = get_session()
     try:
         data = request.get_json(silent=True) or {}
-        if session.query(User).filter_by(email=data.get('email', '')).first():
+        email = (data.get('email') or '').strip().lower()
+        if not email or not data.get('password') or not (data.get('full_name') or '').strip():
+            return jsonify({'error': 'email, password et full_name sont requis'}), 400
+        data['email'] = email
+        if session.query(User).filter_by(email=email).first():
             return jsonify({'error': 'Cet email est déjà utilisé'}), 400
 
         hashed = bcrypt.generate_password_hash(data['password']).decode('utf-8')
@@ -140,9 +148,10 @@ def register():
         # Envoi en tâche de fond — ne doit pas faire attendre l'étudiant qui s'inscrit.
         Thread(target=send_account_created_email, args=(data['email'], data['full_name'], 'student'), daemon=True).start()
         return jsonify({'success': True, 'message': 'Inscription réussie', 'user': user_dict}), 201
-    except Exception as e:
+    except Exception:
         session.rollback()
-        return jsonify({'error': str(e)}), 500
+        _log.exception('register')
+        return jsonify({'error': "Inscription impossible pour le moment."}), 500
     finally:
         session.close()
 

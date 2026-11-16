@@ -696,7 +696,7 @@ OPENAPI_SPEC = {
         }},
         "/api/auth/register": {"post": {
             "tags": ["Authentification"], "summary": "Créer un compte",
-            "description": "Auto-inscription publique — crée toujours un compte **student**, quoi qu'il arrive. Il n'y a pas de champ `role` : cette route ne permet de créer que des étudiants. Pour créer un compte professeur, surveillant, superviseur ou admin, un administrateur doit utiliser `POST /api/admin/users`.",
+            "description": "**Désactivée par défaut depuis le 16/11/2026** (403) : le site ne l'utilise pas et elle inscrivait n'importe qui à toutes les UE d'une formation. Les comptes étudiants sont créés par l'administration (import, SSO, Moodle). Réouverture explicite : variable d'environnement `ALLOW_PUBLIC_REGISTRATION=1`. Quand elle est ouverte : crée toujours un compte **student** (pas de champ `role`) ; pour un professeur, surveillant, superviseur ou admin, un administrateur utilise `POST /api/admin/users`.",
             "security": [],
             "requestBody": {"required": True, "content": {"application/json": {"schema": {
                 "type": "object", "required": ["email","password","full_name"],
@@ -707,7 +707,7 @@ OPENAPI_SPEC = {
                     "formation_id":  {"type": "integer", "description": "Optionnel — rattache l'étudiant à sa Formation et l'inscrit automatiquement à toutes les UE de cette formation."}
                 }
             }}}},
-            "responses": {"201": {"description": "Compte créé (toujours role=student)"}, "400": {"description": "Email déjà utilisé"}}
+            "responses": {"201": {"description": "Compte créé (toujours role=student) — seulement si la route est rouverte"}, "400": {"description": "Champs manquants ou email déjà utilisé"}, "403": {"description": "Inscription publique désactivée (cas par défaut)"}}
         }},
         "/api/auth/me": {"get": {
             "tags": ["Authentification"], "summary": "Profil de l'utilisateur connecté",
@@ -3094,11 +3094,11 @@ OPENAPI_SPEC = {
             "post": {
                 "tags": ["Superviseur"],
                 "summary": "Envoyer un message à toute l'équipe de l'examen ou en privé à un membre",
-                "description": "Corps : `body` (1 à 1000 caractères) et `to_id` optionnel (message privé). Notifie les destinataires en temps réel (`staff_message`). Limite : 30 envois par minute.",
+                "description": "Corps : `body` (1 à 1000 caractères) et `to` optionnel (identifiant du destinataire, pour un message privé). Notifie les destinataires en temps réel (`staff_message`). Limite : 30 envois par minute.",
                 "parameters": [{"name": "exam_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
                 "requestBody": {"required": True, "content": {"application/json": {"schema": {
                     "type": "object", "required": ["body"],
-                    "properties": {"body": {"type": "string", "maxLength": 1000}, "to_id": {"type": "integer", "nullable": True}}
+                    "properties": {"body": {"type": "string", "maxLength": 1000}, "to": {"type": "integer", "nullable": True, "description": "Destinataire (message privé) ; absent = toute l'équipe"}}
                 }}}},
                 "responses": {"200": {"description": "Message enregistré"}, "400": {"description": "Message vide, trop long ou destinataire invalide"}, "403": {"description": "Pas membre de l'équipe de cet examen"}}
             }

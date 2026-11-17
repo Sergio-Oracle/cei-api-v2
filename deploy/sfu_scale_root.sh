@@ -50,7 +50,8 @@ for unit in livekit nginx; do
 done
 
 # ── 3. Noyau : fichiers, files d'attente TCP, ports, tampons UDP, suivi de connexions ────────────
-SYSCTL="${ROOT}/etc/sysctl.d/99-cei-sfu-scale.conf"
+SYSCTL="${ROOT}/etc/sysctl.d/99-zz-cei-sfu-scale.conf"        # « 99-zz » : lu APRÈS 99-tuning.conf et 99-livekit.conf (le dernier fichier lu gagne)
+OLDSYSCTL="${ROOT}/etc/sysctl.d/99-cei-sfu-scale.conf"           # ancien nom (17/11 13:56) : écrasé par 99-tuning.conf, retiré
 read -r -d '' SC <<'EOF' || true
 # CEI — SFU : montée en charge (10 000+ participants). Géré par deploy/sfu_scale_root.sh
 fs.file-max = 4194304
@@ -73,6 +74,7 @@ net.netfilter.nf_conntrack_tcp_timeout_established = 86400
 net.netfilter.nf_conntrack_udp_timeout_stream = 60
 EOF
 say "-- noyau (sysctl)"
+if [ -f "$OLDSYSCTL" ]; then say "   retirer l'ancien fichier $OLDSYSCTL (remplacé par $SYSCTL)"; CHANGED=1; doit "backup '$OLDSYSCTL'; rm -f '$OLDSYSCTL'"; fi
 if [ -f "$SYSCTL" ] && [ "$(cat "$SYSCTL")" = "$SC" ]; then say "   déjà en place : $SYSCTL"
 else say "   écrire $SYSCTL puis « sysctl --system »"; CHANGED=1; doit "backup '$SYSCTL'; mkdir -p '$(dirname "$SYSCTL")'; printf '%s\n' \"\$SC\" > '$SYSCTL'; sysctl -e --system >/dev/null"; fi
 if [ -r /proc/sys/net/netfilter/nf_conntrack_count ]; then
@@ -125,5 +127,9 @@ if [ "$MODE" = apply ] && [ "${RESTART:-0}" = 1 ] && [ "$DRY" != 1 ]; then
 elif [ "$MODE" = apply ] && [ "$DRY" != 1 ]; then
   systemctl daemon-reload
   say "(LiveKit non redémarré : les nouvelles limites systemd ne s'appliquent à son processus qu'au prochain redémarrage — RESTART=1 hors examen)"
+fi
+if [ "$MODE" = apply ] && [ "$DRY" != 1 ] && [ -z "$ROOT" ]; then
+  say "-- valeurs effectives du noyau (attendu : somaxconn 65535, rmem_max 26214400, conntrack 2097152)"
+  for k in net.core.somaxconn net.core.rmem_max net.core.wmem_max net.core.netdev_max_backlog net.netfilter.nf_conntrack_max; do say "   $k = $(sysctl -n $k 2>/dev/null)"; done
 fi
 say "== terminé ($([ "$CHANGED" = 1 ] && echo 'des changements étaient nécessaires' || echo 'rien à changer'))"

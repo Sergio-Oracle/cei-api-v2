@@ -825,6 +825,24 @@ class OnlineExam(Base):
     attempts = relationship('ExamAttempt', back_populates='exam', cascade='all, delete-orphan')
     proctors = relationship('ExamProctor', back_populates='exam', cascade='all, delete-orphan')
     
+    def _seen_attempts_count(self):
+        """Nombre de copies affichées. UN comptage SQL mis en cache 10 s : avant, `self.attempts` chargeait TOUTES les copies (réponses comprises) de l'examen
+        à chaque ouverture du tableau de bord d'un étudiant — avec 2 500 copies, l'API s'effondrait (17/11/2026, examen 192)."""
+        try:
+            from cache import cache_get, cache_set
+            key = f'cei:exam_seen_count:{self.id}'
+            v = cache_get(key)
+            if isinstance(v, int):
+                return v
+            from sqlalchemy.orm import object_session
+            from sqlalchemy import func
+            sess = object_session(self)
+            n = int(sess.query(func.count(ExamAttempt.id)).filter(ExamAttempt.exam_id == self.id, ExamAttempt.exam_seen_at.isnot(None)).scalar() or 0)
+            cache_set(key, n, ttl=10)
+            return n
+        except Exception:
+            return sum(1 for a in (self.attempts or []) if a.exam_seen_at is not None)
+
     def to_dict(self):
         return {
             'id': self.id,
@@ -863,7 +881,7 @@ class OnlineExam(Base):
             'creator_name': self.creator.full_name if self.creator else None,
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'is_active': self.status == ExamStatus.ACTIVE,
-            'attempts_count': sum(1 for a in (self.attempts or []) if a.exam_seen_at is not None),
+            'attempts_count': self._seen_attempts_count(),
             'makeup_of_id': self.makeup_of_id,
         }
 

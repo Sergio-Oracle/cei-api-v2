@@ -64,6 +64,7 @@ try:
 
     print('\n== Les compteurs ne retiennent que les 4 étudiants qui ont vu leur copie ==')
     ex = s.get(OnlineExam, ex.id)
+    from cache import cache_delete; cache_delete(f'cei:exam_seen_count:{ex.id}')       # le compteur est mis en cache 10 s (models.OnlineExam._seen_attempts_count)
     check('carte d\'examen : 4 participants', ex.to_dict()['attempts_count'] == 4, ex.to_dict()['attempts_count'])
     r = c.get(f'/api/online_exams/{ex.id}/stats', headers=H(adm)).get_json()
     check('statistiques : 4 participants (rien sur les tentatives jamais affichées)', r['total'] == 4 and 'not_reached' not in r, (r['total'], r.get('not_reached')))

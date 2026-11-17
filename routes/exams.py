@@ -905,7 +905,8 @@ def get_online_exam_details(exam_id):
             own_attempt = session.query(ExamAttempt).filter_by(
                 exam_id=exam_id, student_id=user_id, status=AttemptStatus.IN_PROGRESS
             ).first()
-            deadline = end_time + timedelta(minutes=own_attempt.extra_minutes or 0) if own_attempt else end_time
+            from services.deadline_cap import deadline_extra_minutes
+            deadline = end_time + timedelta(minutes=deadline_extra_minutes(own_attempt)) if own_attempt else end_time
 
             if exam.status not in (ExamStatus.ACTIVE, ExamStatus.CLOSED) or now < start_time or now > deadline:
                 session.close()
@@ -1389,6 +1390,12 @@ def download_attempt_attachment(attempt_id):
         session.close()
 
 
+def _closes_in(session, attempt):
+    """Secondes avant la clôture réelle de la copie (voir services/deadline_cap.py) ; None si le calcul est impossible."""
+    from services.deadline_cap import closes_in_seconds
+    return closes_in_seconds(session, attempt.exam, attempt)
+
+
 @exams_bp.route('/api/exam_attempts/<int:attempt_id>/seen', methods=['POST'])
 @paseto_required
 @limiter.exempt
@@ -1413,7 +1420,7 @@ def exam_copy_seen(attempt_id):
             session.commit()
         # L'horloge de l'examen démarre ici : le serveur donne le temps écoulé de référence (≈ 0 à la première copie affichée)
         return jsonify({'success': True, 'exam_seen': True, 'elapsed_seconds': attempt.clock_elapsed_seconds(),
-                        'server_now': utc_iso(datetime.utcnow())})
+                        'closes_in_seconds': _closes_in(session, attempt), 'server_now': utc_iso(datetime.utcnow())})
     except Exception as e:
         try: session.rollback()
         except Exception: pass
@@ -1787,6 +1794,7 @@ def get_exam_attempt_subject(attempt_id):
             'started_at': utc_iso(attempt.started_at),
             'server_now': utc_iso(datetime.utcnow()),
             'elapsed_seconds': attempt.clock_elapsed_seconds(),     # l'horloge court depuis l'affichage de la copie
+            'closes_in_seconds': _closes_in(session, attempt),       # temps réellement restant avant la clôture serveur (le minuteur ne promet pas plus)
             'current_answer': current_answer,
         }
 
@@ -8048,7 +8056,8 @@ def start_break(attempt_id):
     pour que l'échéance soit protégée dès le départ, y compris contre le job
     d'auto-clôture (ligne ~111 plus haut) qui ne connaît que extra_minutes,
     pas la notion de pause elle-même."""
-    BREAK_MINUTES = 3
+    from services.deadline_cap import PAUSE_CREDIT_MINUTES
+    BREAK_MINUTES = PAUSE_CREDIT_MINUTES
     try:
         user_id = get_current_user_id()
         role = get_current_user_role()

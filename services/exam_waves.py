@@ -72,7 +72,8 @@ def attempt_deadline(session, exam, attempt) -> datetime:
     """Échéance d'une tentative : fin de la vague de l'étudiant (ou de l'examen)
     plus le temps supplémentaire qui lui a été accordé."""
     _, end, _, _ = window_for(session, exam, attempt.student_id)
-    return end + timedelta(minutes=attempt.extra_minutes or 0)
+    from services.deadline_cap import deadline_extra_minutes
+    return end + timedelta(minutes=deadline_extra_minutes(attempt))      # le crédit de la pause n'y compte pas (services/deadline_cap.py)
 
 
 def wave_dict(w) -> dict:

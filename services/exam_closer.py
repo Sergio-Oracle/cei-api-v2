@@ -50,7 +50,8 @@ def _deadlines(session, exam, attempts) -> dict:
             .filter(ExamWaveStudent.exam_id == exam.id).all())
     for sid, end in rows:
         ends[sid] = end
-    return {a.id: ends.get(a.student_id, exam.end_time) + timedelta(minutes=a.extra_minutes or 0) for a in attempts}
+    from services.deadline_cap import deadline_extra_minutes      # le crédit de la pause (3 min) n'y compte pas
+    return {a.id: ends.get(a.student_id, exam.end_time) + timedelta(minutes=deadline_extra_minutes(a)) for a in attempts}
 
 
 def autosubmit_if_expired(session, attempt, exam=None, grace=ROUTE_GRACE_SECONDS) -> bool:

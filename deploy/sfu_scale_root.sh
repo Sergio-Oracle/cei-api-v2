@@ -29,6 +29,7 @@ say "-- LiveKit"
 if [ -n "$LKPID" ] && [ -r "/proc/$LKPID/limits" ]; then
   say "   fichiers ouverts autorisés : $(awk '/Max open files/{print $4}' /proc/$LKPID/limits) | utilisés : $(ls /proc/$LKPID/fd 2>/dev/null | wc -l)"
 else say "   (processus livekit-server non trouvé)"; fi
+[ -z "$ROOT" ] && say "   unité systemd : $(systemctl show livekit -p LimitNOFILE -p TasksMax 2>/dev/null | tr '\n' ' ')  (TasksMax = plafond de threads ; « infinity » attendu)"
 CONN="$(ss -Htn state established '( sport = :7880 or sport = :7881 or sport = :443 )' 2>/dev/null | wc -l)"
 say "   connexions établies (443/7880/7881) : $CONN"
 LKYAML="${ROOT}/etc/livekit/livekit.yaml"

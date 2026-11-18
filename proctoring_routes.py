@@ -553,13 +553,22 @@ def log_proctoring_event(attempt_id):
             risk_increment = 0
 
         if event_type != 'session_end':
-            # Incrémentation atomique avec plafonnement à 100 via LEAST (évite race condition)
+            # Score recalibré le 18/11/2026 (services/risk_score.py) : points par CATÉGORIE, chacune plafonnée — les signaux faibles répétés ne saturent plus le score.
+            # Si Redis est indisponible, repli sur l'ancien cumul plafonné à 100 (jamais de perte du suivi).
             from sqlalchemy import func as _sa_func
-            session.execute(
-                _sa_update(ExamAttempt)
-                .where(ExamAttempt.id == attempt_id)
-                .values(risk_score=_sa_func.least(ExamAttempt.risk_score + risk_increment, 100))
-            )
+            from cache import _get_client as _rc_get
+            from services import risk_score as _risk
+            _new_score = _risk.apply_event(_rc_get(), attempt_id, event_type, risk_increment) if risk_increment is not None else None
+            if _new_score is not None:
+                session.execute(
+                    _sa_update(ExamAttempt).where(ExamAttempt.id == attempt_id).values(risk_score=_new_score)
+                )
+            else:
+                session.execute(
+                    _sa_update(ExamAttempt)
+                    .where(ExamAttempt.id == attempt_id)
+                    .values(risk_score=_sa_func.least(ExamAttempt.risk_score + risk_increment, 100))
+                )
             session.refresh(attempt)
 
         # Déterminer si l'on doit notifier, récupérer les données utiles.
@@ -573,6 +582,8 @@ def log_proctoring_event(attempt_id):
         # les nouveaux types d'événements du moteur de corrélation, mais ne
         # leur est pas spécifique.
         notify_high_risk = (event_type != 'session_end' and attempt.risk_score >= 75)
+        if notify_high_risk and not cache_should_score(f'cei:riskalert:{attempt_id}', 600):
+            notify_high_risk = False        # déjà signalé il y a moins de 10 min : pas de nouvelle notification pour le même étudiant
         # Signal d'identité soutenue — notifie TOUJOURS immédiatement le
         # surveillant, indépendamment du score cumulé (qui peut ne pas
         # encore atteindre 75 malgré un mismatch confirmé) : voir A dans le
@@ -1059,11 +1070,18 @@ def get_active_proctoring(exam_id):
             if ep.proctor
         }
 
+        try:
+            from cache import _get_client as _rc_get
+            from services import risk_score as _risk
+            _bd = _risk.read_breakdowns(_rc_get(), [a.id for a in attempts])
+        except Exception:
+            _bd = {}
         result = []
         for a in attempts:
             pid = by_attempt_id.get(a.id) or by_student_id.get(a.student_id)
             result.append({
                 'attempt_id': a.id,
+                'risk_breakdown': _bd.get(a.id, []),
                 'student_id': a.student_id,
                 'student_name': a.student.full_name if a.student else '?',
                 'student_email': a.student.email if a.student else '',
@@ -3597,6 +3615,21 @@ def agent_push_alert():
     data['read'] = False
     _push_alert(data)
 
+    # Compteurs d'alertes PERSISTANTS par examen (Redis) : l'ancien compteur vivait dans la mémoire de l'agent — remis à zéro à chaque redémarrage et
+    # comptant chaque rappel (2 154 en séance contre 487 à la clôture le 17/11). On compte désormais les alertes envoyées ET les étudiants distincts alertés.
+    try:
+        _ex = data.get('exam_id')
+        if _ex:
+            from cache import _get_client as _rc
+            _c = _rc()
+            if _c is not None:
+                _c.incr(f'cei:agent:alerts:{int(_ex)}:sent')
+                _c.sadd(f'cei:agent:alerts:{int(_ex)}:students', int(data['attempt_id']))
+                _c.expire(f'cei:agent:alerts:{int(_ex)}:sent', 14 * 86400)
+                _c.expire(f'cei:agent:alerts:{int(_ex)}:students', 14 * 86400)
+    except Exception as _ce:
+        _alerts_log.warning('compteur alertes: %s', _ce)
+
     # Notification temps réel vers le dashboard du surveillant
     try:
         exam_id = data.get('exam_id')
@@ -3840,6 +3873,16 @@ def agent_status():
                 'alerts_sent': exam_stats.get('alerts_sent', 0),
                 'banned':      exam_stats.get('banned', 0),
             }
+            # Compteurs persistants (voir agent_push_alert) : prioritaires sur ceux, volatils, du battement de l'agent
+            try:
+                from cache import _get_client as _rc
+                _c = _rc()
+                if _c is not None:
+                    _sent = _c.get(f'cei:agent:alerts:{int(exam_id)}:sent')
+                    result['exam']['alerts_sent'] = int(_sent) if _sent is not None else 0
+                    result['exam']['students_alerted'] = int(_c.scard(f'cei:agent:alerts:{int(exam_id)}:students') or 0)
+            except Exception:
+                pass
 
         return jsonify(result)
 

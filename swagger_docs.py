@@ -2471,6 +2471,32 @@ OPENAPI_SPEC = {
             "description": "`updates` : fichiers de mise à jour AUTOMATIQUE de l'application ({name, platform, arch, mode: nsis|appimage|mac-zip, size, sha256, sig}). `sig` = HMAC-SHA256(secret embarqué, `update|version|name|sha256`) calculée à la publication ; le poste vérifie somme et signature avant d'installer, et ne met jamais à jour pendant un examen.",
             "responses": {"200": {"description": "{version, files: [{name, platform, label, size, sha256, url}], updates: [...]}"}}
         }},
+        "/api/tech_test/livekit_token": {"post": {
+            "tags": ["Test technique"], "summary": "Jeton pour la salle PRIVÉE de test de l'étudiant",
+            "description": "Salle `techtest-<id>`, identité `techtest-<id>`, valable 15 min, sans droit d'écoute (jamais la salle d'examen). L'étudiant y publie caméra, micro et écran pour le test.",
+            "responses": {"200": {"description": "{ws_url, token}"}, "503": {"description": "LiveKit non configuré"}}
+        }},
+        "/api/tech_test/verify": {"post": {
+            "tags": ["Test technique"], "summary": "Ce que le serveur vidéo REÇOIT réellement de l'étudiant",
+            "description": "Interroge l'API d'administration du serveur vidéo (liste des participants de la salle de test). Le navigateur ne peut donc pas se déclarer « prêt » seul : une caméra non parvenue au serveur est détectée.",
+            "responses": {"200": {"description": "{reachable, connected, camera, mic, screen, width, height}"}, "503": {"description": "Serveur vidéo injoignable"}}
+        }},
+        "/api/tech_test/result": {"post": {
+            "tags": ["Test technique"], "summary": "Enregistrer le résultat du test technique (statut recalculé par le serveur)",
+            "description": "Les relevés du navigateur (caméra, luminosité 0-255, micro, écran, débit, version de l'application) sont évalués côté serveur avec la vérification de diffusion de `/verify`. Statut : `ready`, `warn` (à surveiller) ou `not_ready`, avec la liste des problèmes (messages en français, niveau `bloquant` ou `attention`). Conservé 14 jours ; un test de plus de 24 h compte comme « ancien ».",
+            "requestBody": {"content": {"application/json": {"schema": {"type": "object", "properties": {"checks": {"type": "object"}, "ua": {"type": "string"}}}}}},
+            "responses": {"200": {"description": "{status, problems: [{code, niveau, message}]}"}}
+        }},
+        "/api/tech_test/me": {"get": {
+            "tags": ["Test technique"], "summary": "Dernier test technique de l'étudiant connecté",
+            "responses": {"200": {"description": "{status: ready|warn|not_ready|stale|never, record}"}}
+        }},
+        "/api/online_exams/{exam_id}/readiness": {"get": {
+            "tags": ["Test technique"], "summary": "Préparation des étudiants d'un examen (surveillant, enseignant, administrateur)",
+            "description": "Étudiants inscrits à l'UE de l'examen (pour un surveillant : ceux qui lui sont affectés s'il y en a). `counts` : ready, warn, not_ready, stale, never. `students` : tous ceux qui ne sont pas prêts, non prêts d'abord, avec la cause (400 maximum).",
+            "parameters": [{"name": "exam_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+            "responses": {"200": {"description": "{total, counts, students: [{student_id, name, email, status, tested_at, problems}], truncated}"}, "403": {"description": "Accès refusé"}}
+        }},
         "/api/exam-client/download/{name}": {"get": {
             "tags": ["Application CEI Examen"], "summary": "Télécharger un installateur ou un fichier de mise à jour listé (public)",
             "parameters": [{"name": "name", "in": "path", "required": True, "schema": {"type": "string"}}],
@@ -2732,6 +2758,7 @@ OPENAPI_SPEC = {
                 "type": "object",
                 "properties": {
                     "risk_score":     {"type": "integer", "minimum": 0, "maximum": 100},
+                    "risk_breakdown": {"type": "array", "description": "Pourquoi ce score : points par catégorie (chacune plafonnée — les signaux faibles ne dépassent jamais 30 au total, un signal fort isolé n'atteint pas 60). Redis, 7 jours.", "items": {"type": "object", "properties": {"categorie": {"type": "string"}, "libelle": {"type": "string"}, "points": {"type": "integer"}, "plafond": {"type": "integer"}}}},
                     "warnings_count": {"type": "integer"},
                     "tab_switches":   {"type": "integer"},
                     "banned":         {"type": "boolean"},
@@ -3270,6 +3297,7 @@ OPENAPI_SPEC = {
                                     "exam_id":     {"type": "integer"},
                                     "students":    {"type": "integer", "description": "Nb d'étudiants surveillés"},
                                     "alerts_sent": {"type": "integer", "description": "Alertes envoyées pour cet examen"},
+                                    "students_alerted": {"type": "integer", "description": "Étudiants distincts alertés (compteur persistant Redis, plus remis à zéro au redémarrage de l'agent)"},
                                     "banned":      {"type": "integer", "description": "Étudiants exclus"}
                                 }
                             }

@@ -137,6 +137,7 @@ from routes.exam_waves     import exam_waves_bp;      app.register_blueprint(exa
 from routes.exam_makeup     import exam_makeup_bp;     app.register_blueprint(exam_makeup_bp)   # rattrapage : session à part (distincte des vagues)
 from routes.subject_check   import subject_check_bp;   app.register_blueprint(subject_check_bp)
 from routes.exam_client     import exam_client_bp;     app.register_blueprint(exam_client_bp)   # application « CEI Examen » : poignée de main + téléchargements
+from routes.tech_test      import tech_test_bp;       app.register_blueprint(tech_test_bp)     # test technique avant l'examen (caméra, micro, écran, réseau, diffusion réelle)
 from routes.audit          import audit_bp;           app.register_blueprint(audit_bp)
 from routes.staff_chat     import staff_chat_bp;      app.register_blueprint(staff_chat_bp)   # messagerie du personnel d'un examen
 from services import subject_normalizer as _subject_normalizer;  _subject_normalizer.install()   # sujets de PDF : tableaux Vrai/Faux lus, numérotation continue

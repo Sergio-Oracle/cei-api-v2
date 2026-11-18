@@ -280,7 +280,7 @@ _SCHEMAS = {
     },
     "OnlineExam": {
         "type": "object",
-        "description": "Champs réels renvoyés par OnlineExam.to_dict() (models.py) — pas de champ access_code/max_attempts : la reprise après déconnexion utilise un code persistant et self-service par tentative (voir /api/online_exams/{exam_id}/start).",
+        "description": "Champs réels renvoyés par OnlineExam.to_dict() (models.py) — pas de champ access_code/max_attempts : la reprise après déconnexion utilise un code persistant et self-service par tentative (voir /api/online_exams/{exam_id}/start). Copie JAMAIS affichée (exam_seen_at nul et aucune réponse) : reprise immédiate, sans code ni notification (`resumed_without_code`) ; `my_attempt.never_seen` le signale au tableau de bord.",
         "properties": {
             "id":                  {"type": "integer"},
             "subject_id":          {"type": "integer"},

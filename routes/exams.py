@@ -228,6 +228,8 @@ def get_online_exams():
                         'corrected_at': attempt.corrected_at.isoformat() if (attempt.corrected_at and published) else None,
                         'submitted_at': utc_iso(attempt.submitted_at),
                         'pending_publication': attempt.score is not None and not published,
+                        # Copie jamais affichée : l'étudiant reprend directement (aucun code, aucun appel à faire) — voir start_exam_attempt
+                        'never_seen':   _never_seen(attempt),
                     }
                 else:
                     d['my_attempt'] = None
@@ -1098,6 +1100,15 @@ def start_exam_attempt(exam_id):
             if existing.status in [AttemptStatus.SUBMITTED, AttemptStatus.AUTO_SUBMITTED]:
                 session.close()
                 return jsonify({'error': 'Vous avez déjà soumis cet examen'}), 400
+            # 18/11/2026 — copie JAMAIS affichée (et aucune réponse) : rien à protéger, donc AUCUN code, aucun appel, aucune notification : l'étudiant reprend tout de suite.
+            # Constat (examen 192, 1 075 tentatives) : un étudiant sur dix attendait plus de 5 minutes, jusqu'à 78, entre « Démarrer » et l'affichage de sa copie. Le plus souvent
+            # il rechargeait la page (autorisation caméra ou écran accordée, onglet fermé) : la page lui annonçait « Vous avez quitté l'examen — code de reprise », il appelait son
+            # surveillant et attendait la réponse de 7 à 45 minutes. Chaque surveillant suivant 135 étudiants, cette file d'attente grossit avec le nombre d'étudiants : avec
+            # 5 000 étudiants elle serait ingérable. Le code ne se justifie que lorsque la copie a réellement été vue.
+            if _never_seen(existing):
+                attempt_dict = existing.to_dict()
+                session.close()
+                return jsonify({'success': True, 'attempt': attempt_dict, 'continuing': True, 'resumed_without_code': True})
             # Si IN_PROGRESS : reprise derrière un code de reprise propre à
             # cette tentative — empêche le partage de session avec un autre
             # étudiant (il faut connaître le code exact). Contrairement à la

@@ -206,7 +206,7 @@ def notify_user(
     _executor.submit(_enqueue, user_id, _payload(event_type, title, message, extra))
 
 
-def _exam_staff_ids(exam_id: int) -> set:
+def _exam_staff_ids(exam_id: int, attempt_id: int | None = None) -> set:
     """Ensemble des identifiants du personnel couvrant un examen :
     surveillants assignés (ExamProctor) + superviseur(s) du/des groupe(s)
     rattaché(s) à l'EC + professeur créateur + enseignants affectés à l'EC +
@@ -223,9 +223,23 @@ def _exam_staff_ids(exam_id: int) -> set:
             if not exam:
                 return ids
 
-            for ep in session.query(ExamProctor).filter_by(exam_id=exam_id).all():
-                if ep.proctor_id:
-                    ids.add(ep.proctor_id)
+            # 18/11/2026 (rapport des surveillants : « notifications envahissantes », « chaque surveillant ne devrait voir que ses propres étudiants ») : une alerte
+            # concernant UN étudiant ne va qu'au(x) surveillant(s) auquel il est affecté. Si personne ne lui est affecté (surveillant absent, étudiant arrivé en retard),
+            # on prévient tous les surveillants de l'examen : aucune alerte ne doit se perdre.
+            assigned: set = set()
+            if attempt_id:
+                from models import ProctorAssignment, ExamAttempt
+                att = session.query(ExamAttempt).get(attempt_id)
+                if att is not None:
+                    for pa in session.query(ProctorAssignment).filter(ProctorAssignment.exam_id == exam_id):
+                        if pa.proctor_id and (pa.attempt_id == attempt_id or (pa.student_id and pa.student_id == att.student_id)):
+                            assigned.add(pa.proctor_id)
+            if assigned:
+                ids |= assigned
+            else:
+                for ep in session.query(ExamProctor).filter_by(exam_id=exam_id).all():
+                    if ep.proctor_id:
+                        ids.add(ep.proctor_id)
 
             from services.proctor_service import exam_groups
             for g in exam_groups(session, exam):
@@ -262,6 +276,7 @@ def notify_exam(
     message: str,
     priority: str = 'default',
     tags: list[str] | None = None,
+    attempt_id: int | None = None,
 ) -> None:
     """
     Notifie tout le personnel couvrant un examen (surveillants assignés +
@@ -276,7 +291,7 @@ def notify_exam(
     payload = _payload(event_type, title, message, {'exam_id': exam_id})
 
     def _fan_out() -> None:
-        staff_ids = _exam_staff_ids(exam_id)
+        staff_ids = _exam_staff_ids(exam_id, attempt_id)
         if staff_ids:
             _enqueue_many(staff_ids, payload)
 

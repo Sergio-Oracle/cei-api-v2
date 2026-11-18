@@ -1558,6 +1558,11 @@ def log_exam_activity(attempt_id):
             )
             session.refresh(attempt)
             max_sw = exam.max_tab_switches if exam.max_tab_switches is not None else 2
+            # 18/11/2026 — « Trop de changements de contexte : 4 (seuil : 0) » : avec un seuil réglé à 0, CHAQUE changement d'onglet alertait (près de tous les étudiants en alerte).
+            # Quand l'exclusion automatique est désactivée (alerte seule), on ne signale qu'à partir de 3 changements ; le seuil de l'enseignant reste appliqué tel quel s'il
+            # active l'exclusion automatique.
+            if max_sw >= 0 and not exam.auto_ban_enabled:
+                max_sw = max(max_sw, 3)
             if max_sw >= 0 and attempt.tab_switches > max_sw:
                 ban_reason = f"Trop de changements de contexte : {attempt.tab_switches} (seuil : {max_sw})"
 
@@ -1683,7 +1688,7 @@ def log_exam_activity(attempt_id):
                 from notif_bus import notify_exam
                 notify_exam(exam_id_val, 'threshold_alert', 'Seuil de surveillance atteint',
                             f'{student_name} — {ban_reason}. Bannissement automatique désactivé : intervention manuelle requise.',
-                            priority='urgent', tags=['rotating_light'])
+                            priority='urgent', tags=['rotating_light'], attempt_id=attempt_id)
             except Exception:
                 pass
             return jsonify({

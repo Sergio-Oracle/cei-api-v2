@@ -284,7 +284,10 @@ def login():
 #     jetons) au lieu de refuser. Au-delà de la fenêtre, ou si le nouveau jeton a déjà servi, c'est refusé.
 #  3. Chaque refus est journalisé avec sa raison et le compte quand il est connu : on peut enfin distinguer
 #     un visiteur sans session (normal) d'une session réellement perdue.
-_REFRESH_GRACE_S = int(os.getenv('REFRESH_REPLAY_GRACE_S', '30'))
+# 30 s → 600 s (18/11/2026) : à l'examen du 17/11, 361 étudiants ont vu leur renouvellement de session refusé (« jeton déjà utilisé », jusqu'à 27 fois de suite) — sur une
+# connexion lente la réponse se perd, et la tentative suivante arrive après la tolérance de 30 s. Pendant 10 minutes, rejouer le MÊME ancien jeton rend le MÊME nouveau jeton
+# (tant que celui-ci n'a pas servi) : la session se rattrape toute seule au lieu de renvoyer l'étudiant à la connexion.
+_REFRESH_GRACE_S = int(os.getenv('REFRESH_REPLAY_GRACE_S', '600'))
 # Relevées à la demande de l'utilisateur (04/11) : ne plus jamais refuser un renouvellement légitime.
 # Par jeton : fenêtre de 24 h (un jeton ne sert qu'une fois, quelques rejeux au plus). Par IP : pratiquement illimité.
 # Ajustables sans redéploiement par variables d'environnement.

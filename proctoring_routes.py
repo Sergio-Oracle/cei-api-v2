@@ -616,6 +616,7 @@ def log_proctoring_event(attempt_id):
                     f'{_sname} — score risque : {risk_score_val}/100',
                     priority='urgent',
                     tags=['rotating_light'],
+                    attempt_id=attempt_id,
                 )
             except Exception as _nb_err:
                 import logging as _lg
@@ -631,6 +632,7 @@ def log_proctoring_event(attempt_id):
                     f'{_sname} — vérification manuelle requise (5 échecs de reconnaissance faciale consécutifs)',
                     priority='urgent',
                     tags=['warning'],
+                    attempt_id=attempt_id,
                 )
             except Exception as _nb_err:
                 import logging as _lg
@@ -3564,6 +3566,41 @@ def _push_alert(alert: dict) -> None:
         _alerts_log.warning('Redis push alert failed: %s', exc)
 
 
+def _visible_alert_attempts(attempt_ids, role, user_id) -> set:
+    """Parmi `attempt_ids`, ceux dont l'utilisateur a le droit de voir l'alerte (rapport du 17/11 : « le surveillant voit les alertes de tous les étudiants, et non
+    uniquement de ceux qui lui sont affectés », d'où des « Avertir » refusés sur des étudiants d'autres surveillants).
+    - surveillant : seulement les étudiants qui lui sont affectés (par tentative ou par étudiant) ;
+    - enseignant : seulement les examens qu'il peut consulter ;
+    - administrateur / responsable d'examen : tout."""
+    ids = {int(a) for a in attempt_ids if a is not None}
+    if not ids or role in ('admin', 'responsable_examen'):
+        return ids
+    session = get_session()
+    try:
+        atts = session.query(ExamAttempt.id, ExamAttempt.exam_id, ExamAttempt.student_id).filter(ExamAttempt.id.in_(ids)).all()
+        if role == 'surveillant':
+            pas = session.query(ProctorAssignment).filter(ProctorAssignment.proctor_id == user_id).all()
+            by_attempt = {pa.attempt_id for pa in pas if pa.attempt_id}
+            by_student = {(pa.exam_id, pa.student_id) for pa in pas if pa.student_id}
+            return {a.id for a in atts if a.id in by_attempt or (a.exam_id, a.student_id) in by_student}
+        if role == 'professor':
+            ok_exam = {}
+            out = set()
+            for a in atts:
+                if a.exam_id not in ok_exam:
+                    ex = session.query(OnlineExam).filter_by(id=a.exam_id).first()
+                    ok_exam[a.exam_id] = bool(ex and can_view_exam(session, ex, user_id))
+                if ok_exam[a.exam_id]:
+                    out.add(a.id)
+            return out
+        return set()
+    except Exception as exc:
+        _alerts_log.warning('périmètre des alertes: %s', exc)
+        return set()
+    finally:
+        session.close()
+
+
 def _mark_read(attempt_ids: set) -> None:
     """Marque des attempt_ids comme lus dans le Set Redis."""
     if not attempt_ids:
@@ -3647,6 +3684,7 @@ def agent_push_alert():
                 f"{data['student_name']} — {data.get('alert_type', 'anomalie détectée')}",
                 priority='urgent',
                 tags=['rotating_light'],
+                attempt_id=int(data['attempt_id']) if str(data.get('attempt_id', '')).isdigit() else None,
             )
     except Exception as _ne:
         _alerts_log.warning('notif_bus agent_alert: %s', _ne)
@@ -3693,6 +3731,12 @@ def agent_get_alerts():
                     a['read'] = True
 
     unread = [a for a in alerts if not a.get('read')]
+    # Périmètre : chacun ne voit que les alertes de SES étudiants (et de l'examen demandé s'il est précisé)
+    exam_q = request.args.get('exam_id', type=int)
+    if exam_q:
+        unread = [a for a in unread if a.get('exam_id') == exam_q]
+    visible = _visible_alert_attempts({a.get('attempt_id') for a in unread}, role, get_current_user_id())
+    unread = [a for a in unread if a.get('attempt_id') in visible]
     return jsonify({'alerts': unread[-50:], 'total_unread': len(unread)})
 
 
@@ -3704,7 +3748,7 @@ def agent_mark_read():
     if role not in ['professor', 'admin', 'responsable_examen', 'surveillant']:
         return jsonify({'error': 'Accès non autorisé'}), 403
     data = request.get_json(silent=True) or {}
-    ids  = set(data.get('attempt_ids', []))
+    ids  = _visible_alert_attempts(set(data.get('attempt_ids', [])), role, get_current_user_id())      # on ne marque « lues » que ses propres alertes
     _mark_read(ids)
     return jsonify({'success': True})
 

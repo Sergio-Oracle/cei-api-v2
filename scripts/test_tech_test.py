@@ -118,5 +118,5 @@ finally:
         s.rollback(); print('nettoyage incomplet :', ex_)
     s.close()
 bad = [n for n, ok in RESULTS if not ok]
-print(f"\n{len(RESULTS) - len(bad)}/{len(RESULTS)} vérifications OK" + (f" — ÉCHECS : {bad}" if bad else ''))
+print(f"\n{len(RESULTS) - len(bad)}/{len(RESULTS)} vérifications réussies" + (f" — ÉCHECS : {bad}" if bad else ''))
 sys.exit(1 if bad else 0)

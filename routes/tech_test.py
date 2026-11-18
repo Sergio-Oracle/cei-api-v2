@@ -188,7 +188,7 @@ def exam_readiness(exam_id):
             if st != 'ready':
                 rec = recs.get(r.id) or {}
                 out.append({'student_id': r.id, 'name': r.full_name, 'email': r.email, 'status': st,
-                            'tested_at': rec.get('ts'), 'problems': [p.get('staff') or p['message'] for p in (rec.get('problems') or [])][:3]})   # détail technique pour le surveillant, jamais montré à l'étudiant
+                            'tested_at': rec.get('ts'), 'problems': [p.get('staff') or p['message'] for p in (rec.get('problems') or [])][:3]})   # texte destiné au surveillant (3e personne, langage simple)
         order = {'not_ready': 0, 'warn': 1, 'stale': 2, 'never': 3}
         out.sort(key=lambda x: (order.get(x['status'], 9), x['name'] or ''))
         return jsonify({'total': len(rows), 'counts': counts, 'students': out[:400], 'truncated': len(out) > 400})

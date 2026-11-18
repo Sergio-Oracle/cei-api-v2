@@ -49,10 +49,11 @@ check("les messages sont en français et actionnables", all(len(p['message']) > 
 allp = []
 for kw in (dict(), dict(camera={'brightness': 5}), dict(network={'down_mbps': 0.3, 'latency_ms': 2000}), dict(client={'is_client': True, 'version': '1.7.0'}), dict(micro={'ok': False})):
     allp += TT.evaluate(mod(**kw), {'camera': False, 'mic': False, 'screen': False})[1] + TT.evaluate(mod(**kw), None)[1]
-BAN = ('serveur', 'pare-feu', 'livekit', 'mbit', 'latence', ' ms', 'réseau bloquant', 'vidéo (')
+BAN = ('serveur', 'pare-feu', 'livekit', 'mbit', 'latence', ' ms', 'bloquant', 'vidéo (', 'webrtc', 'ice')
 check("AUCUN message montré à l'étudiant ne contient de terme technique (serveur, pare-feu, Mbit/s, ms…)", allp and not [p['message'] for p in allp if any(b in p['message'].lower() for b in BAN)], [p['message'] for p in allp if any(b in p['message'].lower() for b in BAN)][:2])
-check("chaque problème garde un détail technique pour le seul surveillant", all(p.get('staff') for p in allp))
-check("le détail technique, lui, dit bien ce qui s'est passé (caméra non reçue par le serveur vidéo)", any('serveur vidéo' in p['staff'] for p in allp))
+check("AUCUN texte montré au SURVEILLANT n'en contient non plus", not [p['staff'] for p in allp if any(b in p['staff'].lower() for b in BAN)], [p['staff'] for p in allp if any(b in p['staff'].lower() for b in BAN)][:2])
+check("le texte du surveillant dit ce qui se passe ET ce qu'il peut demander à l'étudiant (3e personne)", all(p.get('staff') and ' vous ' not in (' ' + p['staff'].lower() + ' ').replace("jusqu'à vous", '') for p in allp), [p['staff'] for p in allp if p.get('staff') and ' vous ' in (' ' + p['staff'].lower() + ' ').replace("jusqu'à vous", '')][:2])
+check("… ex. caméra non transmise : « Sa caméra n'arrive pas jusqu'à vous »", any("Sa caméra n'arrive pas" in p['staff'] for p in allp))
 
 print('\n== Lecture de ce que reçoit le serveur vidéo ==')
 p = {'identity': 'techtest-1', 'tracks': [{'type': 'VIDEO', 'source': 'CAMERA', 'width': 640, 'height': 480}, {'type': 'AUDIO', 'source': 'MICROPHONE'}, {'type': 'VIDEO', 'source': 'SCREEN_SHARE', 'width': 1366, 'height': 768}]}
@@ -108,7 +109,7 @@ try:
     cnt = j.get('counts', {})
     check("le surveillant voit les compteurs (prêt 1, à surveiller 1, non prêt 2 dont celui du test sans diffusion)", r.status_code == 200 and cnt.get('warn', 0) >= 1 and cnt.get('not_ready', 0) >= 2, (r.status_code, cnt))
     check("… l'étudiant PRÊT n'est pas listé ; les autres le sont avec leur cause", stu[1].id not in mine and stu[0].id in mine and mine[stu[0].id]['problems'], list(mine)[:6])
-    check("… le surveillant lit le détail technique (« serveur vidéo »), pas le message de l'étudiant", any('serveur vidéo' in x for x in mine[stu[0].id]['problems']), mine[stu[0].id]['problems'])
+    check("… le surveillant lit son texte à lui (3e personne, sans jargon), pas le message de l'étudiant", any("n'arrive pas jusqu'à vous" in x or 'refaire' in x or 'lui demander' in x for x in mine[stu[0].id]['problems']) and not any('serveur' in x.lower() for x in mine[stu[0].id]['problems']), mine[stu[0].id]['problems'])
     check("… les non prêts d'abord", [x['status'] for x in j['students']][:2] == ['not_ready', 'not_ready'] or j['students'][0]['status'] == 'not_ready')
     sv2 = mk(UserRole.SURVEILLANT, 'sv2')
     r = c.get(f'/api/online_exams/{ex.id}/readiness', headers=H(sv2)); check("un surveillant non affecté à l'examen est refusé", r.status_code == 403)

@@ -40,65 +40,75 @@ def evaluate(checks, live):
     sub = lambda k: checks.get(k) if isinstance(checks.get(k), dict) else {}      # un relevé mal formé (venu du navigateur) vaut « absent », jamais une erreur
 
     def add(code, level, msg, staff=None):
-        # `message` : ce que lit l'ÉTUDIANT (langage simple, aucun terme technique) ; `staff` : détail technique réservé au surveillant.
+        # `message` : ce que lit l'ÉTUDIANT (à la 2e personne) ; `staff` : ce que lit le SURVEILLANT (3e personne, avec ce qu'il peut lui dire). Les deux en langage simple :
+        # aucun terme technique (serveur, pare-feu, Mbit/s, ms…) ni pour l'un ni pour l'autre.
         problems.append({'code': code, 'niveau': level, 'message': msg, 'staff': staff or msg})
 
     cam = sub('camera')
     if not cam.get('ok'):
-        add('camera', 'bloquant', "La caméra n'est pas accessible : autorisez-la dans le navigateur et fermez les autres applications qui l'utilisent (Teams, Zoom…).")
+        add('camera', 'bloquant', "La caméra n'est pas accessible : autorisez-la dans le navigateur et fermez les autres applications qui l'utilisent (Teams, Zoom…).",
+            "Sa caméra n'est pas accessible : lui demander de l'autoriser et de fermer les applications qui l'utilisent (Teams, Zoom…).")
     else:
         b = _num(cam.get('brightness'))
         if b is not None and b < MIN_BRIGHTNESS:
-            add('lumiere', 'bloquant', "Image presque noire : placez-vous face à une fenêtre ou une lampe (la lumière doit venir de face, jamais de derrière).")
+            add('lumiere', 'bloquant', "Image presque noire : placez-vous face à une fenêtre ou une lampe (la lumière doit venir de face, jamais de derrière).",
+                "Image presque noire : lui demander de se placer face à une fenêtre ou une lampe.")
         elif b is not None and b < WARN_BRIGHTNESS:
-            add('lumiere', 'attention', "Éclairage faible : augmentez la lumière devant vous pour éviter de fausses alertes « visage absent ».")
+            add('lumiere', 'attention', "Éclairage faible : augmentez la lumière devant vous pour éviter de fausses alertes « visage absent ».",
+                "Éclairage faible : risque de fausses alertes « visage absent ». Lui demander plus de lumière devant lui.")
         elif b is not None and b > MAX_BRIGHTNESS:
-            add('lumiere', 'attention', "Image trop claire (contre-jour ou lumière directe) : évitez de vous placer devant une fenêtre.")
+            add('lumiere', 'attention', "Image trop claire (contre-jour ou lumière directe) : évitez de vous placer devant une fenêtre.",
+                "Image trop claire (contre-jour) : lui demander de ne pas se placer devant une fenêtre.")
         if cam.get('face') is False:
-            add('visage', 'attention', "Aucun visage détecté pendant le test : placez-vous face à la caméra, visage entier visible.")
+            add('visage', 'attention', "Aucun visage détecté pendant le test : placez-vous face à la caméra, visage entier visible.",
+                "Aucun visage vu pendant le test : lui demander de se placer face à la caméra.")
 
     mic = sub('micro')
     if not mic.get('ok'):
-        add('micro', 'bloquant', "Le micro n'est pas accessible : autorisez-le dans le navigateur.")
+        add('micro', 'bloquant', "Le micro n'est pas accessible : autorisez-le dans le navigateur.",
+            "Son micro n'est pas accessible : lui demander de l'autoriser.")
     elif (_num(mic.get('level'), 0) or 0) < MIN_MIC_LEVEL:
-        add('micro_silence', 'attention', "Aucun son capté : parlez pendant le test ou vérifiez que le micro n'est pas coupé.")
+        add('micro_silence', 'attention', "Aucun son capté : parlez pendant le test ou vérifiez que le micro n'est pas coupé.",
+            "Aucun son capté pendant le test : micro peut-être coupé.")
 
     scr = sub('screen')
     if not scr.get('ok'):
-        add('ecran', 'bloquant', "Le partage d'écran complet n'a pas été accepté : choisissez « Écran entier ».")
+        add('ecran', 'bloquant', "Le partage d'écran complet n'a pas été accepté : choisissez « Écran entier ».",
+            "N'a pas partagé son écran entier : lui demander de refaire le test et de choisir « Écran entier ».")
 
     net = sub('network')
     lat, down = _num(net.get('latency_ms')), _num(net.get('down_mbps'))
     if lat is None or down is None:
-        add('reseau', 'attention', "Le test de débit n'a pas abouti : vérifiez votre connexion.")
+        add('reseau', 'attention', "Le test de votre connexion n'a pas abouti : vérifiez votre connexion Internet.",
+            "Le test de sa connexion Internet n'a pas abouti.")
     else:
         if down < MIN_DOWN_MBPS or lat > MAX_LATENCY_MS:
             add('reseau', 'bloquant', "Votre connexion Internet est trop lente pour l'examen : rapprochez-vous de votre box ou routeur et fermez tout ce qui télécharge.",
-                f"Connexion insuffisante ({down:.1f} Mbit/s, {int(lat)} ms)")
+                "Connexion Internet trop lente : lui demander de se rapprocher de sa box et de fermer ce qui télécharge.")
         elif down < WARN_DOWN_MBPS:
             add('reseau', 'attention', "Votre connexion Internet est juste suffisante : évitez toute autre utilisation d'Internet pendant l'examen.",
-                f"Connexion juste suffisante ({down:.1f} Mbit/s)")
+                "Connexion Internet juste suffisante : lui demander de n'utiliser rien d'autre pendant l'examen.")
 
     cl = sub('client')
     if cl.get('is_client'):
         v = _vt(cl.get('version'))
         if v is not None and v < MIN_CLIENT_VERSION:
             add('version', 'bloquant', "Votre application CEI Examen n'est pas à jour : fermez-la puis rouvrez-la pour qu'elle se mette à jour, ou téléchargez la dernière version.",
-                f"Application CEI Examen {cl.get('version')} trop ancienne (partage d'écran incomplet)")
+                f"Application CEI Examen pas à jour (version {cl.get('version')}) : lui demander de la fermer et de la rouvrir pour qu'elle se mette à jour.")
 
     if not live:
         add('diffusion', 'bloquant', "Le test n'est pas allé jusqu'au bout : refaites-le en entier, jusqu'au message de résultat.",
-            "Diffusion vers le serveur vidéo non vérifiée (test incomplet)")
+            "Test non terminé : lui demander de le refaire en entier.")
     else:
         if not live.get('camera'):
             add('diffusion_camera', 'bloquant', "Votre image ne peut pas être transmise au surveillant avec la connexion actuelle. Essayez avec un autre réseau (par exemple le partage de connexion de votre téléphone), puis refaites le test.",
-                "Caméra non reçue par le serveur vidéo (réseau ou pare-feu bloquant l'envoi)")
+                "Sa caméra n'arrive pas jusqu'à vous : lui demander de changer de réseau (partage de connexion de son téléphone).")
         if not live.get('screen'):
             add('diffusion_ecran', 'bloquant', "Votre écran ne peut pas être transmis au surveillant. Refaites le test en acceptant le partage de l'écran entier, ou essayez avec un autre réseau.",
-                "Écran non reçu par le serveur vidéo")
+                "Son écran n'arrive pas jusqu'à vous : lui demander de refaire le test en partageant l'écran entier, ou de changer de réseau.")
         if not live.get('mic'):
             add('diffusion_micro', 'attention', "Votre voix ne semble pas transmise au surveillant : vérifiez que votre micro n'est pas coupé, puis refaites le test.",
-                "Micro non reçu par le serveur vidéo")
+                "Sa voix n'arrive pas jusqu'à vous : son micro est peut-être coupé.")
 
     if any(p['niveau'] == 'bloquant' for p in problems):
         return 'not_ready', problems

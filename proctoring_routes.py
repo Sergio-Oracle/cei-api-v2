@@ -435,6 +435,9 @@ def log_proctoring_event(attempt_id):
             # ne prive l'étudiant d'aucune fonctionnalité de l'examen, ce
             # n'est qu'une couche de confort pour le surveillant.
             'live_monitoring_unavailable': 0,
+            # 18/11/2026 — la caméra de l'étudiant ne transmet plus d'image (piste terminée, coupée ou figée) : ce n'est pas une absence de l'étudiant,
+            # donc aucune pénalité (avant : comptée comme « visage absent »).
+            'camera_unavailable': 0,
             # Anti-usurpation par micro-mouvement (01/09) — signal neuf,
             # jamais calibré sur une vraie webcam (pas de matériel de test
             # disponible dans cet environnement). Poids 0 délibéré, comme
@@ -1082,6 +1085,8 @@ def get_active_proctoring(exam_id):
             result.append({
                 'attempt_id': a.id,
                 'risk_breakdown': _bd.get(a.id, []),
+                # Attente entre « Démarrer » et l'affichage de la copie (secondes) : sert au surveillant à compenser le temps perdu (voir le temps supplémentaire).
+                'entry_delay_s': (int((a.exam_seen_at - a.started_at).total_seconds()) if (a.exam_seen_at and a.started_at) else None),
                 'student_id': a.student_id,
                 'student_name': a.student.full_name if a.student else '?',
                 'student_email': a.student.email if a.student else '',

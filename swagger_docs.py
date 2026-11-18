@@ -2758,6 +2758,7 @@ OPENAPI_SPEC = {
                 "type": "object",
                 "properties": {
                     "risk_score":     {"type": "integer", "minimum": 0, "maximum": 100},
+                    "entry_delay_s": {"type": "integer", "nullable": True, "description": "Attente (secondes) entre « Démarrer » et l'affichage de la copie : permet au surveillant de compenser le temps perdu par un temps supplémentaire (plafonné à 30 min dans l'interface)."},
                     "risk_breakdown": {"type": "array", "description": "Pourquoi ce score : points par catégorie (chacune plafonnée — les signaux faibles ne dépassent jamais 30 au total, un signal fort isolé n'atteint pas 60). Redis, 7 jours.", "items": {"type": "object", "properties": {"categorie": {"type": "string"}, "libelle": {"type": "string"}, "points": {"type": "integer"}, "plafond": {"type": "integer"}}}},
                     "warnings_count": {"type": "integer"},
                     "tab_switches":   {"type": "integer"},

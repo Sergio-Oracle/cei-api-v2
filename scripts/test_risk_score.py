@@ -66,6 +66,9 @@ try:
     j = last.get_json() or {}
     check("120 événements faibles envoyés par la vraie route : score = 6 + 6 + 10 = 22", last.status_code == 200 and j.get('risk_score') == 22, (last.status_code, j))
     s.expire_all(); check("le score est bien enregistré sur la tentative", s.get(ExamAttempt, at.id).risk_score == 22)
+    before = (post('window_blur').get_json() or {}).get('risk_score')
+    j = post('camera_unavailable').get_json() or {}
+    check("« caméra sans image » (panne de caméra) ne pénalise JAMAIS l'étudiant : score inchangé", j.get('risk_score') == before, (before, j))
     j = post('pattern_multi_face_audio').get_json() or {}
     check("un motif combiné s'ajoute (25 max) : 47, pas de saturation", j.get('risk_score') == 47, j)
     j = post('multiple_faces').get_json() or {}

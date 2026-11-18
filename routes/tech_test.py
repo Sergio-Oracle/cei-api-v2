@@ -42,6 +42,11 @@ def _verify_key(uid):
     return f'cei:techtest:verify:{int(uid)}'
 
 
+def _student_view(problems):
+    """Ce que reçoit l'étudiant : le message simple seulement (le détail technique `staff` reste réservé au surveillant)."""
+    return [{k: v for k, v in p.items() if k != 'staff'} for p in (problems or [])]
+
+
 def list_participants(room):
     """Participants de la salle vus par le serveur vidéo (API d'administration). None si injoignable."""
     cfg = _lk()
@@ -116,7 +121,7 @@ def tech_test_result():
             c.setex(_rec_key(uid), TT.KEY_TTL, TT.dumps(rec))
         except Exception:
             pass
-    return jsonify({'status': status, 'problems': problems})
+    return jsonify({'status': status, 'problems': _student_view(problems)})
 
 
 @tech_test_bp.route('/api/tech_test/me', methods=['GET'])
@@ -132,6 +137,8 @@ def tech_test_me():
             rec = json.loads(raw) if raw else None
         except Exception:
             rec = None
+    if rec:
+        rec = {**rec, 'problems': _student_view(rec.get('problems'))}
     return jsonify({'status': TT.status_of_record(rec), 'record': rec})
 
 
@@ -181,7 +188,7 @@ def exam_readiness(exam_id):
             if st != 'ready':
                 rec = recs.get(r.id) or {}
                 out.append({'student_id': r.id, 'name': r.full_name, 'email': r.email, 'status': st,
-                            'tested_at': rec.get('ts'), 'problems': [p['message'] for p in (rec.get('problems') or [])][:3]})
+                            'tested_at': rec.get('ts'), 'problems': [p.get('staff') or p['message'] for p in (rec.get('problems') or [])][:3]})   # détail technique pour le surveillant, jamais montré à l'étudiant
         order = {'not_ready': 0, 'warn': 1, 'stale': 2, 'never': 3}
         out.sort(key=lambda x: (order.get(x['status'], 9), x['name'] or ''))
         return jsonify({'total': len(rows), 'counts': counts, 'students': out[:400], 'truncated': len(out) > 400})

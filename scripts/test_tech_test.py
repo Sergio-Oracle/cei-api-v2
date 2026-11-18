@@ -46,6 +46,14 @@ st, ps = TT.evaluate(mod(client={'is_client': True, 'version': '1.8.0'}), LIVE);
 st, ps = TT.evaluate({}, LIVE); check("relevés vides ou absents : non prêt, sans erreur", st == 'not_ready'); TT.evaluate(None, None); TT.evaluate({'camera': 'x'}, {})
 check("les messages sont en français et actionnables", all(len(p['message']) > 30 for p in TT.evaluate(mod(camera={'brightness': 5}), {**LIVE, 'camera': False})[1]))
 
+allp = []
+for kw in (dict(), dict(camera={'brightness': 5}), dict(network={'down_mbps': 0.3, 'latency_ms': 2000}), dict(client={'is_client': True, 'version': '1.7.0'}), dict(micro={'ok': False})):
+    allp += TT.evaluate(mod(**kw), {'camera': False, 'mic': False, 'screen': False})[1] + TT.evaluate(mod(**kw), None)[1]
+BAN = ('serveur', 'pare-feu', 'livekit', 'mbit', 'latence', ' ms', 'réseau bloquant', 'vidéo (')
+check("AUCUN message montré à l'étudiant ne contient de terme technique (serveur, pare-feu, Mbit/s, ms…)", allp and not [p['message'] for p in allp if any(b in p['message'].lower() for b in BAN)], [p['message'] for p in allp if any(b in p['message'].lower() for b in BAN)][:2])
+check("chaque problème garde un détail technique pour le seul surveillant", all(p.get('staff') for p in allp))
+check("le détail technique, lui, dit bien ce qui s'est passé (caméra non reçue par le serveur vidéo)", any('serveur vidéo' in p['staff'] for p in allp))
+
 print('\n== Lecture de ce que reçoit le serveur vidéo ==')
 p = {'identity': 'techtest-1', 'tracks': [{'type': 'VIDEO', 'source': 'CAMERA', 'width': 640, 'height': 480}, {'type': 'AUDIO', 'source': 'MICROPHONE'}, {'type': 'VIDEO', 'source': 'SCREEN_SHARE', 'width': 1366, 'height': 768}]}
 l = TT.summarize_participant(p); check("caméra + micro + écran reconnus, taille de la caméra relevée", l['camera'] and l['mic'] and l['screen'] and l['width'] == 640, l)
@@ -80,6 +88,10 @@ try:
     r = c.post('/api/tech_test/result', json={'checks': mod(camera={'brightness': 50})}, headers=H(stu[2])); j = r.get_json() or {}
     check("éclairage faible : à surveiller, avec le conseil", j.get('status') == 'warn' and j['problems'], j)
     r = c.get('/api/tech_test/me', headers=H(stu[1])); check("l'étudiant retrouve son dernier résultat", (r.get_json() or {}).get('status') == 'ready')
+    r = c.post('/api/tech_test/result', json={'checks': GOOD}, headers=H(stu[0])); j = r.get_json() or {}
+    check("la réponse faite à l'étudiant ne contient JAMAIS le détail technique", j.get('problems') and all('staff' not in p for p in j['problems']), j)
+    r = c.get('/api/tech_test/me', headers=H(stu[0])); j = r.get_json() or {}
+    check("… ni la relecture de son dernier résultat", all('staff' not in p for p in (j.get('record') or {}).get('problems', [])), j)
     r = c.post('/api/tech_test/result', data='pas du json', content_type='text/plain', headers=H(stu[3])); check("requête invalide : pas d'erreur 500", r.status_code == 200 and (r.get_json() or {}).get('status') == 'not_ready', r.status_code)
 
     adm_ = adm
@@ -96,6 +108,7 @@ try:
     cnt = j.get('counts', {})
     check("le surveillant voit les compteurs (prêt 1, à surveiller 1, non prêt 2 dont celui du test sans diffusion)", r.status_code == 200 and cnt.get('warn', 0) >= 1 and cnt.get('not_ready', 0) >= 2, (r.status_code, cnt))
     check("… l'étudiant PRÊT n'est pas listé ; les autres le sont avec leur cause", stu[1].id not in mine and stu[0].id in mine and mine[stu[0].id]['problems'], list(mine)[:6])
+    check("… le surveillant lit le détail technique (« serveur vidéo »), pas le message de l'étudiant", any('serveur vidéo' in x for x in mine[stu[0].id]['problems']), mine[stu[0].id]['problems'])
     check("… les non prêts d'abord", [x['status'] for x in j['students']][:2] == ['not_ready', 'not_ready'] or j['students'][0]['status'] == 'not_ready')
     sv2 = mk(UserRole.SURVEILLANT, 'sv2')
     r = c.get(f'/api/online_exams/{ex.id}/readiness', headers=H(sv2)); check("un surveillant non affecté à l'examen est refusé", r.status_code == 403)

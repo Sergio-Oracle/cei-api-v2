@@ -39,8 +39,9 @@ def evaluate(checks, live):
     problems = []
     sub = lambda k: checks.get(k) if isinstance(checks.get(k), dict) else {}      # un relevé mal formé (venu du navigateur) vaut « absent », jamais une erreur
 
-    def add(code, level, msg):
-        problems.append({'code': code, 'niveau': level, 'message': msg})
+    def add(code, level, msg, staff=None):
+        # `message` : ce que lit l'ÉTUDIANT (langage simple, aucun terme technique) ; `staff` : détail technique réservé au surveillant.
+        problems.append({'code': code, 'niveau': level, 'message': msg, 'staff': staff or msg})
 
     cam = sub('camera')
     if not cam.get('ok'):
@@ -72,25 +73,32 @@ def evaluate(checks, live):
         add('reseau', 'attention', "Le test de débit n'a pas abouti : vérifiez votre connexion.")
     else:
         if down < MIN_DOWN_MBPS or lat > MAX_LATENCY_MS:
-            add('reseau', 'bloquant', f"Connexion insuffisante ({down:.1f} Mbit/s, {int(lat)} ms) : rapprochez-vous du routeur, fermez les téléchargements, évitez le partage de connexion.")
+            add('reseau', 'bloquant', "Votre connexion Internet est trop lente pour l'examen : rapprochez-vous de votre box ou routeur et fermez tout ce qui télécharge.",
+                f"Connexion insuffisante ({down:.1f} Mbit/s, {int(lat)} ms)")
         elif down < WARN_DOWN_MBPS:
-            add('reseau', 'attention', f"Connexion juste suffisante ({down:.1f} Mbit/s) : évitez toute autre utilisation d'Internet pendant l'examen.")
+            add('reseau', 'attention', "Votre connexion Internet est juste suffisante : évitez toute autre utilisation d'Internet pendant l'examen.",
+                f"Connexion juste suffisante ({down:.1f} Mbit/s)")
 
     cl = sub('client')
     if cl.get('is_client'):
         v = _vt(cl.get('version'))
         if v is not None and v < MIN_CLIENT_VERSION:
-            add('version', 'bloquant', f"Application CEI Examen {cl.get('version')} trop ancienne : mettez-la à jour (le surveillant ne verrait pas votre écran correctement).")
+            add('version', 'bloquant', "Votre application CEI Examen n'est pas à jour : fermez-la puis rouvrez-la pour qu'elle se mette à jour, ou téléchargez la dernière version.",
+                f"Application CEI Examen {cl.get('version')} trop ancienne (partage d'écran incomplet)")
 
     if not live:
-        add('diffusion', 'bloquant', "Envoi vers le surveillant non vérifié : relancez le test jusqu'au bout.")
+        add('diffusion', 'bloquant', "Le test n'est pas allé jusqu'au bout : refaites-le en entier, jusqu'au message de résultat.",
+            "Diffusion vers le serveur vidéo non vérifiée (test incomplet)")
     else:
         if not live.get('camera'):
-            add('diffusion_camera', 'bloquant', "Votre caméra n'est pas parvenue jusqu'au serveur vidéo (réseau ou pare-feu bloquant) : essayez un autre réseau ou le partage de connexion d'un téléphone.")
+            add('diffusion_camera', 'bloquant', "Votre image ne peut pas être transmise au surveillant avec la connexion actuelle. Essayez avec un autre réseau (par exemple le partage de connexion de votre téléphone), puis refaites le test.",
+                "Caméra non reçue par le serveur vidéo (réseau ou pare-feu bloquant l'envoi)")
         if not live.get('screen'):
-            add('diffusion_ecran', 'bloquant', "Votre écran n'est pas parvenu jusqu'au serveur vidéo : relancez le test et acceptez le partage de l'écran entier.")
+            add('diffusion_ecran', 'bloquant', "Votre écran ne peut pas être transmis au surveillant. Refaites le test en acceptant le partage de l'écran entier, ou essayez avec un autre réseau.",
+                "Écran non reçu par le serveur vidéo")
         if not live.get('mic'):
-            add('diffusion_micro', 'attention', "Votre micro n'est pas parvenu jusqu'au serveur vidéo.")
+            add('diffusion_micro', 'attention', "Votre voix ne semble pas transmise au surveillant : vérifiez que votre micro n'est pas coupé, puis refaites le test.",
+                "Micro non reçu par le serveur vidéo")
 
     if any(p['niveau'] == 'bloquant' for p in problems):
         return 'not_ready', problems

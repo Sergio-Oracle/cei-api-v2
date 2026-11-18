@@ -2491,6 +2491,12 @@ OPENAPI_SPEC = {
             "tags": ["Test technique"], "summary": "Dernier test technique de l'étudiant connecté",
             "responses": {"200": {"description": "{status: ready|warn|not_ready|stale|never, record}"}}
         }},
+        "/api/online_exams/{exam_id}/vitals": {"get": {
+            "tags": ["Test technique"], "summary": "Santé de l'examen en cours (administrateur, responsable, enseignant, superviseur)",
+            "description": "Indicateurs mesurés par la plateforme : étudiants bloqués à l'entrée (copie non affichée 3 min après « Démarrer »), délai d'entrée (médiane, 90e centile), hors ligne (sans signe de vie depuis 90 s), liaison vidéo dégradée, caméras sans image, application fermée de façon inattendue, demandes d'appel, part d'étudiants à risque élevé. `niveau` : ok | attention | critique, avec la liste des problèmes (message en français simple + conseil). Pas de verdict sous 10 étudiants en cours. Une tâche de fond lit ces mêmes indicateurs chaque minute et prévient les administrateurs d'un problème CRITIQUE (une fois par tranche de 10 minutes).",
+            "parameters": [{"name": "exam_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+            "responses": {"200": {"description": "{exam_id, computed_at, niveau, verdict, problems: [{code, niveau, message, conseil}], kpi: {…}}"}, "403": {"description": "Rôle ou examen non autorisé"}, "404": {"description": "Examen introuvable"}}
+        }},
         "/api/online_exams/{exam_id}/readiness": {"get": {
             "tags": ["Test technique"], "summary": "Préparation des étudiants d'un examen (surveillant, enseignant, administrateur)",
             "description": "Étudiants inscrits à l'UE de l'examen (pour un surveillant : ceux qui lui sont affectés s'il y en a). `counts` : ready, warn, not_ready, stale, never. `students` : tous ceux qui ne sont pas prêts, non prêts d'abord, avec la cause (400 maximum).",

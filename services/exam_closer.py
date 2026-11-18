@@ -211,6 +211,12 @@ def tick() -> None:
         print(f"[exam_closer] {stats['submitted']} copie(s) soumise(s), {stats['closed']} examen(s) clos, "
               f"{stats['rooms']} salle(s) fermée(s)")
     rebalance_active_exams()
+    if cache_set_nx('cei:vitals:tick', 55):                  # santé de l'examen : une fois par minute, prévient l'administrateur d'un problème critique (voir services/exam_vitals.py)
+        try:
+            from services import exam_vitals
+            exam_vitals.watch_once()
+        except Exception as e:
+            print(f"[exam_closer] santé des examens : {e}")
     try:                                                      # contrôle sujet ↔ barème 30 puis 10 min avant chaque examen (silencieux si tout va bien)
         from services import exam_preflight
         exam_preflight.run_once()

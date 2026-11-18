@@ -5,6 +5,7 @@
   POST /api/tech_test/result                enregistre le résultat (statut recalculé par le serveur)
   GET  /api/tech_test/me                    dernier résultat de l'étudiant connecté
   GET  /api/online_exams/<id>/readiness     surveillant / enseignant : prêts, à surveiller, non prêts, jamais testés
+  GET  /api/online_exams/<id>/vitals        administrateur / responsable / enseignant : santé de l'examen en cours (voir services/exam_vitals.py)
 """
 import json
 import time
@@ -192,5 +193,26 @@ def exam_readiness(exam_id):
         order = {'not_ready': 0, 'warn': 1, 'stale': 2, 'never': 3}
         out.sort(key=lambda x: (order.get(x['status'], 9), x['name'] or ''))
         return jsonify({'total': len(rows), 'counts': counts, 'students': out[:400], 'truncated': len(out) > 400})
+    finally:
+        s.close()
+
+
+@tech_test_bp.route('/api/online_exams/<int:exam_id>/vitals', methods=['GET'])
+@paseto_required
+@limiter.exempt
+def exam_vitals(exam_id):
+    """Santé de l'examen (entrée en examen, liaison vidéo, hors ligne, alertes, appels) et verdict. Pas pour les surveillants (ils ont la vue de leur salle)."""
+    user_id, role = get_current_user_id(), get_current_user_role()
+    if role not in ('admin', 'responsable_examen', 'professor', 'superviseur'):
+        return jsonify({'error': 'Accès réservé'}), 403
+    s = get_session()
+    try:
+        exam = s.query(OnlineExam).filter_by(id=exam_id).first()
+        if not exam:
+            return jsonify({'error': 'Examen introuvable'}), 404
+        if role == 'professor' and not can_view_exam(s, exam, user_id):
+            return jsonify({'error': 'Accès refusé'}), 403
+        from services import exam_vitals as EV
+        return jsonify(EV.compute(s, exam_id))
     finally:
         s.close()

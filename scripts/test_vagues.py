@@ -220,6 +220,7 @@ try:
     s.expire_all()
     s.get(ExamWave, waves[0].id).end_time = now - timedelta(minutes=2)   # la vague 1 est terminée, la 3 ne l'est pas
     s.commit()
+    from cache import cache_delete as _cd; _cd(f'cei:wave_due:{eid}')   # le contrôle du tableau de bord est limité à un toutes les 5 s : on le réarme
     c.get('/api/online_exams', headers=ha)       # chaque chargement de liste applique les échéances
     c.get('/api/online_exams', headers=hs[w2[0].id])
     s.expire_all()
@@ -236,11 +237,11 @@ try:
     s.get(ExamAttempt, att_x).extra_minutes = 40      # temps supplémentaire individuel
     s.get(ExamWave, waves[0].id).end_time = now - timedelta(minutes=2)
     s.commit()
-    c.get('/api/online_exams', headers=ha)
+    _cd(f'cei:wave_due:{eid}'); c.get('/api/online_exams', headers=ha)
     s.expire_all()
     check("temps supplémentaire individuel respecté après la fin de la vague", s.get(ExamAttempt, att_x).status == AttemptStatus.IN_PROGRESS)
     s.get(ExamAttempt, att_x).extra_minutes = 0; s.commit()
-    c.get('/api/online_exams', headers=ha)
+    _cd(f'cei:wave_due:{eid}'); c.get('/api/online_exams', headers=ha)
     s.expire_all()
     check("sans temps supplémentaire : soumise à l'échéance de la vague", s.get(ExamAttempt, att_x).status == AttemptStatus.AUTO_SUBMITTED)
 

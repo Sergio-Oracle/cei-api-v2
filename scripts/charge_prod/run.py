@@ -10,7 +10,7 @@ Arrêt automatique si la santé de la plateforme se dégrade (sonde de santé le
 import asyncio, aiohttp, json, random, sys, time, statistics, argparse, subprocess, collections
 
 ap = argparse.ArgumentParser(); ap.add_argument('ctx', nargs='?', default=''); ap.add_argument('--base', default='https://cei.unchk.sn'); ap.add_argument('--ramp', type=float, default=20)
-ap.add_argument('--steady', type=float, default=240); ap.add_argument('--submit', type=float, default=30); ap.add_argument('--n', type=int, default=0)
+ap.add_argument('--snap-every', type=float, default=300); ap.add_argument('--steady', type=float, default=240); ap.add_argument('--submit', type=float, default=30); ap.add_argument('--n', type=int, default=0)
 ap.add_argument('--ssh', default='-i /root/.ssh/id_ed25519_unchk -p 3120 serge@196.207.246.205'); ap.add_argument('--no-guard', action='store_true'); ap.add_argument('--shard', default='0/1'); ap.add_argument('--dump', default=''); ap.add_argument('--aggregate', nargs='*'); ap.add_argument('--resolve', default=''); ap.add_argument('--local-server', action='store_true')
 A = ap.parse_args()
 SK, SM = (int(x) for x in A.shard.split('/'))
@@ -49,8 +49,8 @@ async def student(sess, i, t_submit_at):
     await call(sess, 'seen', 'POST', f'/api/exam_attempts/{aid}/seen', tok, {})
     await call(sess, 'subject', 'GET', f'/api/exam_attempts/{aid}/subject', tok)
     PH['phase'] = PH['phase'] if PH['phase'] != 'ruée' else PH['phase']
-    nxt = {'hb': random.random() * 20, 'save': random.random() * 30, 'msg': random.random() * 30, 'subj': random.random() * 30, 'log': random.random() * 60, 'ev': random.random() * 120, 'lock': random.random() * 20, 'snap': random.random() * 30}
-    every = {'hb': 20, 'save': 30, 'msg': 30, 'subj': 30, 'log': 60, 'ev': 120, 'lock': 20, 'snap': 30}
+    nxt = {'hb': random.random() * 20, 'save': random.random() * 30, 'msg': random.random() * 30, 'subj': random.random() * 30, 'log': random.random() * 60, 'ev': random.random() * 120, 'lock': random.random() * 20, 'snap': random.random() * A.snap_every}
+    every = {'hb': 20, 'save': 30, 'msg': 30, 'subj': 30, 'log': 60, 'ev': 120, 'lock': 20, 'snap': A.snap_every}   # captures : le vrai front n'en envoie que sur événement (examen 192 : ~2/s pour 1 075 étudiants) ; 300 s par étudiant est déjà plus sévère
     IMG = 'data:image/jpeg;base64,' + 'A' * 12000                                  # ~9 Ko : une capture 320x240 réelle
     base = time.perf_counter()
     while not abort.is_set():

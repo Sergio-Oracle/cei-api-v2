@@ -42,13 +42,18 @@ def _now() -> datetime:
 
 
 def _deadlines(session, exam, attempts) -> dict:
-    """{id de tentative: échéance} — fin de la vague de l'étudiant (ou de l'examen) + temps supplémentaire."""
+    """{id de tentative: échéance} — fin de la vague de l'étudiant (ou de l'examen) + temps supplémentaire.
+    19/11/2026 : pour quelques copies seulement (sauvegarde, battement, remise : UNE copie), on ne lit que les lignes de CES étudiants. Avant, tout l'effectif des vagues de
+    l'examen (3 000 à 10 000 lignes) était relu à CHAQUE sauvegarde et chaque battement : ce fut, avec 3 000 étudiants, la requête qui saturait les processeurs de la base."""
     from models import ExamWave, ExamWaveStudent
     ends = {}
-    rows = (session.query(ExamWaveStudent.student_id, ExamWave.end_time)
-            .join(ExamWave, ExamWave.id == ExamWaveStudent.wave_id)
-            .filter(ExamWaveStudent.exam_id == exam.id).all())
-    for sid, end in rows:
+    q = (session.query(ExamWaveStudent.student_id, ExamWave.end_time)
+         .join(ExamWave, ExamWave.id == ExamWaveStudent.wave_id)
+         .filter(ExamWaveStudent.exam_id == exam.id))
+    sids = {a.student_id for a in attempts}
+    if 0 < len(sids) <= 50:
+        q = q.filter(ExamWaveStudent.student_id.in_(sids))
+    for sid, end in q.all():
         ends[sid] = end
     from services.deadline_cap import deadline_extra_minutes      # le crédit de la pause (3 min) n'y compte pas
     return {a.id: ends.get(a.student_id, exam.end_time) + timedelta(minutes=deadline_extra_minutes(a)) for a in attempts}
@@ -75,6 +80,10 @@ def wave_expiry_possible(session, exam, now=None, grace=0) -> bool:
     from models import ExamWave, ExamWaveStudent
     from services.deadline_cap import PAUSE_CREDIT_MINUTES
     now = now or _now()
+    # Pré-contrôle minuscule : le temps accordé ne peut que RETARDER une échéance ; tant que la plus proche fin de vague n'est pas dépassée, aucune copie ne peut être échue.
+    first_end = session.query(func.min(ExamWave.end_time)).filter(ExamWave.exam_id == exam.id).scalar()
+    if first_end is None or first_end >= now - timedelta(seconds=grace):
+        return False
     extra = func.greatest(func.coalesce(ExamAttempt.extra_minutes, 0) - case((ExamAttempt.pause_used == True, PAUSE_CREDIT_MINUTES), else_=0), 0)
     q = (session.query(ExamAttempt.id)
          .join(ExamWaveStudent, and_(ExamWaveStudent.exam_id == ExamAttempt.exam_id, ExamWaveStudent.student_id == ExamAttempt.student_id))

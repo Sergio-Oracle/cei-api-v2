@@ -14,6 +14,7 @@ from models import (get_session, engine, User, UserRole, Subject, OnlineExam, Ex
                     ExamWave, ExamWaveStudent)
 from auth_paseto import create_access_token
 from werkzeug.security import generate_password_hash
+from cache import cache_delete
 from services import exam_closer as EC_, exam_waves as W
 
 RESULTS = []
@@ -52,6 +53,7 @@ try:
     exB, stB, _, _ = wave_exam(160, 'grand')
     # les deux examens sont visibles par leurs étudiants ; on mesure le même appel dans les deux cas (la 1re passe applique les échéances, on mesure la 2e)
     pet, gr = stA[1], stB[1]                                # étudiants de la vague OUVERTE
+    cache_delete(f'cei:wave_due:{exA.id}'); cache_delete(f'cei:wave_due:{exB.id}')
     c.get('/api/online_exams', headers=H(pet)); c.get('/api/online_exams', headers=H(gr))
     cnt['n'] = 0; r1 = c.get('/api/online_exams', headers=H(pet)); n1 = cnt['n']
     cnt['n'] = 0; r2 = c.get('/api/online_exams', headers=H(gr)); n2 = cnt['n']
@@ -71,7 +73,7 @@ try:
     atts[0].extra_minutes = 30                                  # temps accordé : reste en cours
     atts[1].extra_minutes = 3; atts[1].pause_used = True        # seulement le crédit de pause : échue
     s.commit()
-    c.get('/api/online_exams', headers=H(stC[1]))
+    cache_delete(f'cei:wave_due:{exC.id}'); c.get('/api/online_exams', headers=H(stC[1]))
     s.expire_all()
     st_ = [s.get(ExamAttempt, a.id).status for a in atts]
     check("temps accordé (30 min) : toujours en cours", st_[0] == AttemptStatus.IN_PROGRESS, st_)
@@ -90,6 +92,10 @@ try:
         ref = {a.id for a in rows if datetime.utcnow() > W.attempt_deadline(s, exD, a) + timedelta(seconds=grace)}
         got, n = EC_.expired_attempt_ids(s, exD, datetime.utcnow(), grace)
         check(f"marge {grace} s : mêmes copies échues que l'ancien calcul ({len(ref)} sur {n})", set(got) == ref and n == len(rows), (len(got), len(ref)))
+    un = [(a, EC_._deadlines(s, exD, [a])[a.id]) for a in rows[:12]]
+    check("échéance d'UNE copie (voie de chaque sauvegarde/battement) = ancien calcul, sans relire tout l'effectif", all(d == W.attempt_deadline(s, exD, a) + timedelta(minutes=0) for a, d in un), [(a.id, d, W.attempt_deadline(s, exD, a)) for a, d in un][:2])
+    cnt['n'] = 0; EC_._deadlines(s, exD, [rows[0]]); n1 = cnt['n']
+    check(f"… en 1 requête (pas une lecture de tout l'effectif : {len(rows)} étudiants)", n1 == 1, n1)
     check("EXISTS (wave_expiry_possible) cohérent avec le calcul complet", EC_.wave_expiry_possible(s, exD, datetime.utcnow()) == bool({a.id for a in rows if datetime.utcnow() > W.attempt_deadline(s, exD, a)}))
 
     print('\n== Verrou après soumission ==')

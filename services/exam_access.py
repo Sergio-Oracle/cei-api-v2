@@ -15,9 +15,24 @@ from models import ExamAttempt, ExamMakeupStudent, ExamWaveStudent, StudentUEEnr
 REFUSAL = "Vous n'êtes pas inscrit à cet examen. Si c'est une erreur, contactez votre enseignant."
 
 
+# UE d'un examen (examen → sujet → EC → UE) : change très rarement. Mémorisée 60 s dans le processus (19/11/2026) : la relire pour chaque étudiant à chaque ouverture de liste
+# chargeait la ligne complète de l'EC (une vingtaine de colonnes) des milliers de fois par minute. Une réorganisation d'UE est prise en compte au plus 60 s plus tard.
+import time as _time
+_UE_CACHE = {}
+_UE_TTL_S = 60.0
+
+
 def _ue_id(exam):
+    now = _time.monotonic()
+    hit = _UE_CACHE.get(exam.id)
+    if hit and hit[1] > now:
+        return hit[0]
     ec = exam.subject.ec if exam.subject else None
-    return ec.ue_id if ec else None
+    v = ec.ue_id if ec else None
+    if len(_UE_CACHE) > 5000:
+        _UE_CACHE.clear()
+    _UE_CACHE[exam.id] = (v, now + _UE_TTL_S)
+    return v
 
 
 def student_may_access(session, exam, student_id) -> bool:

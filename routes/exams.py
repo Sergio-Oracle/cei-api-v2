@@ -91,11 +91,14 @@ def get_online_exams():
     try:
         user_id = get_current_user_id()
         session = get_session()
-        user = session.query(User).filter_by(id=user_id).first()
+        # Colonnes utiles seulement (19/11/2026) : cette liste est chargée par CHAQUE étudiant à l'ouverture et toutes les 30 s. Charger la ligne complète du sujet (tout son texte), du
+        # créateur (dont le mot de passe haché) et de l'EC pour afficher un titre et un nom était, mesuré en production, la requête la plus coûteuse de la base pendant la montée.
+        from sqlalchemy.orm import load_only as _lo
+        user = session.query(User).options(_lo(User.id, User.role)).filter_by(id=user_id).first()
         
         query = session.query(OnlineExam).options(
-            joinedload(OnlineExam.subject),
-            joinedload(OnlineExam.creator)
+            joinedload(OnlineExam.subject).load_only(Subject.id, Subject.title, Subject.ec_id),
+            joinedload(OnlineExam.creator).load_only(User.id, User.full_name)
         )
         
         if user.role == UserRole.STUDENT:
@@ -149,6 +152,7 @@ def get_online_exams():
         # relisait toutes les copies en cours puis posait 2 requêtes par copie : 12 000 requêtes, 12 s (≈ 40 s à 10 000). Désormais : un EXISTS à chaque chargement,
         # et le balayage groupé (2 requêtes légères + 1 UPDATE) seulement s'il y a réellement une copie échue. La tâche de fond exam_closer fait le reste toutes les 30 s.
         from services.exam_closer import submit_expired_bulk as _bulk, wave_expiry_possible as _wave_due
+        from cache import cache_set_nx as _nx
         for exam in exams:
             if exam.status == ExamStatus.ACTIVE and exam.end_time and exam.end_time < now_utc:
                 exam.status = ExamStatus.CLOSED
@@ -157,7 +161,10 @@ def get_online_exams():
                 print(f"Auto-close examen #{exam.id} '{exam.title}' (end_time dépassé)")
             elif exam.status == ExamStatus.ACTIVE and _W.exam_has_waves(session, exam.id):
                 # Examen par vagues encore ouvert : les tentatives d'une vague terminée sont soumises à l'échéance de LEUR vague, sans attendre la dernière.
-                if _wave_due(session, exam, now_utc) and _bulk(session, exam, now_utc):
+                # Au plus UN contrôle toutes les 5 s par examen pour l'ensemble des utilisateurs (verrou Redis) : à 200 chargements de liste par seconde, même un EXISTS
+                # parcourant toutes les copies en cours saturait les processeurs de la base (mesuré en production, 19/11/2026). Les sauvegardes/battements/remises
+                # soumettent d'eux-mêmes une copie échue, et la tâche de fond le fait toutes les 30 s : l'échéance n'est donc retardée que de quelques secondes.
+                if _nx(f'cei:wave_due:{exam.id}', 5) and _wave_due(session, exam, now_utc) and _bulk(session, exam, now_utc):
                     needs_commit = True
         if needs_commit:
             session.commit()
@@ -864,11 +871,12 @@ def get_online_exam_details(exam_id):
         user_id = get_current_user_id()
         session = get_session()
         
-        user = session.query(User).filter_by(id=user_id).first()
+        from sqlalchemy.orm import load_only as _lo
+        user = session.query(User).options(_lo(User.id, User.role)).filter_by(id=user_id).first()
         
         exam = session.query(OnlineExam).options(
             joinedload(OnlineExam.subject),
-            joinedload(OnlineExam.creator)
+            joinedload(OnlineExam.creator).load_only(User.id, User.full_name)
         ).filter_by(id=exam_id).first()
         
         if not exam:
@@ -989,7 +997,8 @@ def start_exam_attempt(exam_id):
         user_id = get_current_user_id()
         session = get_session()
         
-        user = session.query(User).filter_by(id=user_id).first()
+        from sqlalchemy.orm import load_only as _lo          # colonnes utiles seulement (19/11/2026) : rôle et e-mail suffisent ici
+        user = session.query(User).options(_lo(User.id, User.role, User.email)).filter_by(id=user_id).first()
         if user.role != UserRole.STUDENT:
             session.close()
             return jsonify({'error': 'Accès réservé aux étudiants'}), 403

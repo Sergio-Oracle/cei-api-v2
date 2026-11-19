@@ -83,21 +83,64 @@ def present_proctor_ids(exam, proctor_ids) -> list:
 
 def _open_population(session, exam_id):
     """Affectations à répartir : étudiants en cours d'examen (clé 'run') et pas
-    encore entrés (clé = rang de vague). Les copies rendues/exclues ne bougent jamais."""
+    encore entrés (clé = rang de vague). Les copies rendues/exclues ne bougent jamais.
+    Renvoie (groupes, ensemble des étudiants ayant déjà une affectation).
+    19/11/2026 : on ne lit que les COLONNES utiles (id, étudiant, statut) — avant, chaque copie était chargée en entier (réponses comprises) et les affectations
+    l'étaient deux fois : plusieurs secondes de blocage pour le surveillant dont le battement déclenchait le rééquilibrage, avec 3 000 étudiants."""
     from models import AttemptStatus
     attempts = {}
-    for a in session.query(ExamAttempt).filter_by(exam_id=exam_id).all():
-        attempts[a.student_id] = a
+    for row in session.query(ExamAttempt.id, ExamAttempt.student_id, ExamAttempt.status).filter(ExamAttempt.exam_id == exam_id).all():
+        attempts[row.student_id] = row
     wave_pos = _wave_positions(session, exam_id)
     groups = {}
+    assigned = set()
     for pa in session.query(ProctorAssignment).filter_by(exam_id=exam_id).order_by(ProctorAssignment.id).all():
+        assigned.add(pa.student_id)
         a = attempts.get(pa.student_id)
         if a is None:
             groups.setdefault(('wait', wave_pos.get(pa.student_id, 0)), []).append((pa, None))
         elif a.status == AttemptStatus.IN_PROGRESS:
             groups.setdefault(('run', 0), []).append((pa, a))
         # sinon : copie rendue, exclue... on n'y touche pas
-    return groups
+    return groups, assigned
+
+
+def plan_balance(owners, present):
+    """Calcul PUR du rééquilibrage d'un groupe : `owners` = surveillant actuel de chaque étudiant (dans l'ordre), `present` = surveillants présents.
+    Renvoie (nouveaux propriétaires, nombre d'orphelins repris, nombre de déplacements).
+    1. un étudiant dont le surveillant n'est pas présent passe au présent le moins chargé ;
+    2. tant que l'écart entre le plus et le moins chargé dépasse 1, le DERNIER étudiant du plus chargé passe au moins chargé.
+    19/11/2026 : réécrit en O(n log n) — l'ancienne version rebalayait toute la liste à chaque déplacement (n² : 23 secondes pour 5 000 étudiants,
+    pendant lesquelles le battement du surveillant qui l'avait déclenché restait bloqué). Mêmes choix, mêmes résultats."""
+    import bisect
+    owners = list(owners)
+    load = {pid: 0 for pid in present}
+    for o in owners:
+        if o in load:
+            load[o] += 1
+    orphans = moved = 0
+    for i, o in enumerate(owners):                        # 1. orphelins
+        if o not in load:
+            target = min(load, key=load.get)
+            owners[i] = target
+            load[target] += 1
+            orphans += 1
+            moved += 1
+    by = {pid: [] for pid in load}                        # indices triés de chaque surveillant (le dernier = le plus tardif)
+    for i, o in enumerate(owners):
+        by[o].append(i)
+    for _ in range(len(owners)):                          # 2. équilibrage
+        hi = max(load, key=load.get)
+        lo = min(load, key=load.get)
+        if load[hi] - load[lo] < 2 or not by[hi]:
+            break
+        i = by[hi].pop()
+        owners[i] = lo
+        bisect.insort(by[lo], i)
+        load[hi] -= 1
+        load[lo] += 1
+        moved += 1
+    return owners, orphans, moved
 
 
 def rebalance_exam_proctors(session, exam, present_ids) -> dict:
@@ -115,13 +158,11 @@ def rebalance_exam_proctors(session, exam, present_ids) -> dict:
     if not present:
         return {}
     now = datetime.utcnow()
-    groups = _open_population(session, exam.id)
+    groups, have = _open_population(session, exam.id)
 
     # étudiants en cours sans aucune ligne d'affectation : on leur en donne une
     from models import AttemptStatus
-    have = {pa.student_id for items in groups.values() for pa, _ in items}
-    have |= {pa.student_id for pa in session.query(ProctorAssignment).filter_by(exam_id=exam.id).all()}
-    for a in session.query(ExamAttempt).filter_by(exam_id=exam.id, status=AttemptStatus.IN_PROGRESS).all():
+    for a in session.query(ExamAttempt.id, ExamAttempt.student_id).filter(ExamAttempt.exam_id == exam.id, ExamAttempt.status == AttemptStatus.IN_PROGRESS).all():
         if a.student_id not in have:
             pa = ProctorAssignment(exam_id=exam.id, proctor_id=present[0], student_id=a.student_id, attempt_id=a.id)
             session.add(pa)
@@ -129,36 +170,16 @@ def rebalance_exam_proctors(session, exam, present_ids) -> dict:
 
     moved = orphans = 0
     for items in groups.values():
-        load = {pid: 0 for pid in present}
-        for pa, _a in items:
-            if pa.proctor_id in load:
-                load[pa.proctor_id] += 1
-
-        def move(pa, a, target):
-            pa.proctor_id = target
-            pa.assigned_at = now
-            if a is not None and not pa.attempt_id:
-                pa.attempt_id = a.id
-
-        for pa, a in items:                        # 1. orphelins
-            if pa.proctor_id not in load:
-                target = min(load, key=load.get)
-                move(pa, a, target)
-                load[target] += 1
-                orphans += 1
-                moved += 1
-        for _ in range(len(items)):                # 2. équilibrage
-            hi = max(load, key=load.get)
-            lo = min(load, key=load.get)
-            if load[hi] - load[lo] < 2:
-                break
-            pa, a = next(((p, x) for p, x in reversed(items) if p.proctor_id == hi), (None, None))
-            if pa is None:
-                break
-            move(pa, a, lo)
-            load[hi] -= 1
-            load[lo] += 1
-            moved += 1
+        owners = [pa.proctor_id for pa, _a in items]
+        new_owners, n_orph, n_moved = plan_balance(owners, present)
+        orphans += n_orph
+        moved += n_moved
+        for (pa, a), owner in zip(items, new_owners):
+            if owner != pa.proctor_id:
+                pa.proctor_id = owner
+                pa.assigned_at = now
+                if a is not None and not pa.attempt_id:
+                    pa.attempt_id = a.id
     if moved:
         session.commit()
     loads = {}

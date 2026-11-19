@@ -31,7 +31,7 @@ except Exception:
 # Permet de démarrer une seconde instance (notifications) sur un bind séparé
 # sans dupliquer ce fichier — cf. GUNICORN_BIND dans l'unit systemd dédiée.
 bind    = os.getenv('GUNICORN_BIND', "unix:/run/cei-api-v2.sock")
-backlog = 2048
+backlog = 4096
 
 # ── Workers ───────────────────────────────────────────────────────────────────
 _default_workers = (multiprocessing.cpu_count() * 2) + 1

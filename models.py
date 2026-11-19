@@ -2066,8 +2066,32 @@ def init_db():
             # Charge 10 000 étudiants (2026-11-19) : interrogations des messages/appels de l'étudiant (copie + type d'événement) ; voir scripts/ajouter_index_charge.py
             'CREATE INDEX IF NOT EXISTS ix_exam_activity_logs_attempt_type_ts ON exam_activity_logs (attempt_id, event_type, "timestamp")',
         ]
+        # 19/11/2026 — une migration « idempotente » (ALTER TABLE …, DROP CONSTRAINT IF EXISTS, CREATE INDEX IF NOT EXISTS) PREND quand même son verrou sur la table, même quand
+        # il n'y a rien à changer : ALTER TABLE = verrou EXCLUSIF, qui attend la fin de toutes les transactions en cours et met en file d'attente TOUTES les lectures et écritures
+        # suivantes. Chaque `import app` (démarrage, script, outil de contrôle) l'exécutait : mesuré en production à 10 000 étudiants, 72 requêtes bloquées derrière un ALTER TABLE
+        # proctor_assignments. On vérifie donc d'abord (lecture seule, sans verrou gênant) si l'opération est nécessaire.
+        import re as _re
+
+        def _migration_needed(_sql):
+            try:
+                m = _re.search(r'CREATE INDEX IF NOT EXISTS (\w+)', _sql)
+                if m:
+                    return _conn.execute(_text("SELECT 1 FROM pg_indexes WHERE indexname = :n"), {'n': m.group(1)}).fetchone() is None
+                m = _re.search(r'DROP CONSTRAINT IF EXISTS (\w+)', _sql)
+                if m:
+                    return _conn.execute(_text("SELECT 1 FROM pg_constraint WHERE conname = :n"), {'n': m.group(1)}).fetchone() is not None
+                m = _re.search(r'ALTER TABLE (\w+) ALTER COLUMN (\w+) DROP NOT NULL', _sql)
+                if m:
+                    return _conn.execute(_text("SELECT 1 FROM information_schema.columns WHERE table_name = :t AND column_name = :c AND is_nullable = 'NO'"),
+                                         {'t': m.group(1), 'c': m.group(2)}).fetchone() is not None
+            except Exception:
+                _conn.rollback()
+            return True
+
         for _sql in _safe_migrations:
             try:
+                if not _migration_needed(_sql):
+                    continue
                 _conn.execute(_text(_sql))
                 _conn.commit()
             except Exception:
@@ -2076,7 +2100,9 @@ def init_db():
     # jamais un type existant). ADD VALUE hors transaction, idempotent.
     try:
         with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as _ac:
-            _ac.execute(_text("ALTER TYPE userrole ADD VALUE IF NOT EXISTS 'RESPONSABLE_EXAMEN'"))
+            _deja = _ac.execute(_text("SELECT 1 FROM pg_enum e JOIN pg_type t ON t.oid = e.enumtypid WHERE t.typname = 'userrole' AND e.enumlabel = 'RESPONSABLE_EXAMEN'")).fetchone()
+            if not _deja:                       # 19/11/2026 : ne rien émettre quand la valeur existe déjà (voir _migration_needed)
+                _ac.execute(_text("ALTER TYPE userrole ADD VALUE IF NOT EXISTS 'RESPONSABLE_EXAMEN'"))
     except Exception as _e:
         print(f"[migration rôle] RESPONSABLE_EXAMEN : {_e}")
     print("Base de données initialisée avec examens en ligne et relevés de notes")

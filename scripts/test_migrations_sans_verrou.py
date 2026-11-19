@@ -23,6 +23,7 @@ check("base à jour : 3 appels de init_db() n'émettent aucune instruction de sc
 _g = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'scripts/charge_prod/guard.py')
 if os.path.exists(_g):                             # absent quand le test est lancé depuis un dossier temporaire sur un serveur
     src = open(_g, encoding='utf-8').read()
+    check("le garde-fou ne règle AUCUNE option de session (readonly=True fuit dans le pool PgBouncer et rend les écritures impossibles)", 'readonly=True' not in re.sub(r'#.*', '', src.split('"""')[2] if src.count('"""') >= 2 else src) and 'set_session' not in re.sub(r'#.*', '', ''.join(l for l in src.split('\n') if not l.lstrip().startswith(('"""', '#')))))
     check("le garde-fou du test de charge n'importe pas l'application (pas de init_db toutes les 10 s)", not re.search(r'^\s*(from app import|import app\b)', src, re.M))
 bad = [n for n, ok in RESULTS if not ok]
 print(f"\n{len(RESULTS) - len(bad)}/{len(RESULTS)} vérifications réussies" + (f" — ÉCHECS : {bad}" if bad else ''))

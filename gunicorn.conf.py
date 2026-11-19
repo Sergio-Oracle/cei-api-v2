@@ -39,12 +39,18 @@ _default_workers = (multiprocessing.cpu_count() * 2) + 1
 workers = int(os.getenv('GUNICORN_WORKERS', str(_default_workers)))
 worker_class    = "gthread"
 threads         = int(os.getenv('GUNICORN_THREADS', '4'))
-worker_connections = 1000
+# 19/11/2026 — NOMBRE DE CONNEXIONS GARDÉES PAR WORKER. Avec 1 000, chaque worker acceptait tout ce qui arrivait et le gardait en file pour ses 4 fils, pendant que d'autres workers avaient
+# des fils libres : mesuré à 10 000 étudiants, jusqu'à 800 connexions sur UN worker (moyenne 146), soit ≈ 8 s d'attente alors que le traitement d'une requête dure 40 ms.
+# Un worker qui atteint cette limite cesse d'accepter ; la connexion suivante reste dans la file du noyau (backlog) et revient au premier worker libre (équitable, premier arrivé premier servi).
+# Pour le service principal (4 fils) : 2 × fils = 8 (4 en cours + 4 d'avance) ; le service de notifications (100 fils, connexions longues) garde 1 000. Surcharge : GUNICORN_WORKER_CONNECTIONS.
+worker_connections = int(os.getenv('GUNICORN_WORKER_CONNECTIONS', '0')) or (1000 if threads >= 50 else max(8, threads * 2))
 
 # ── Timeouts ──────────────────────────────────────────────────────────────────
 # 600 s pour les routes IA (analyse PDF jusqu'à 50 Mo + appel LLM)
 timeout           = 600
-keepalive         = 5
+# Pas de connexion persistante pour le service principal : une connexion inactive garderait un des emplacements ci-dessus (et la requête suivante resterait attachée à CE worker, occupé ou non).
+# Une connexion locale (nginx → API, boucle locale) coûte quelques dizaines de microsecondes. Le service de notifications (threads ≥ 50) garde 5 s. Surcharge : GUNICORN_KEEPALIVE.
+keepalive         = int(os.getenv('GUNICORN_KEEPALIVE', '5' if threads >= 50 else '0'))
 graceful_timeout  = 30
 
 # ── Logging ───────────────────────────────────────────────────────────────────

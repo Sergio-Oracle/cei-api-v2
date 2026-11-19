@@ -25,7 +25,9 @@ def _get_client() -> Optional[redis.Redis]:
     global _client
     if _client is None:
         try:
-            _client = redis.from_url(_REDIS_URL, decode_responses=True, socket_connect_timeout=1)
+            # socket_timeout (19/11/2026) : sans lui, un Redis qui répond lentement (pause, grosse opération) bloquait TOUS les fils de l'API jusqu'à l'arrêt forcé (600 s) ; avec 2 s, l'appel échoue
+            # et les fonctions de ce module, conçues pour continuer sans cache, dégradent proprement au lieu de figer la plateforme.
+            _client = redis.from_url(_REDIS_URL, decode_responses=True, socket_connect_timeout=1, socket_timeout=2, health_check_interval=30)
             _client.ping()
         except Exception as e:
             print(f'[cache] Redis unavailable ({e}) — running without cache')

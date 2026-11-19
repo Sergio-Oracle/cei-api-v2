@@ -563,9 +563,10 @@ def log_proctoring_event(attempt_id):
             from services import risk_score as _risk
             _new_score = _risk.apply_event(_rc_get(), attempt_id, event_type, risk_increment) if risk_increment is not None else None
             if _new_score is not None:
-                session.execute(
-                    _sa_update(ExamAttempt).where(ExamAttempt.id == attempt_id).values(risk_score=_new_score)
-                )
+                if _new_score != (attempt.risk_score or 0):         # pas d'écriture en base quand le score ne change pas (la majorité des événements : points déjà plafonnés ou poids nul)
+                    session.execute(
+                        _sa_update(ExamAttempt).where(ExamAttempt.id == attempt_id).values(risk_score=_new_score)
+                    )
             else:
                 session.execute(
                     _sa_update(ExamAttempt)
@@ -1063,7 +1064,9 @@ def get_active_proctoring(exam_id):
         # correctif, ce GET recalculait et écrivait les affectations à chaque
         # appel — répété à chaque rafraîchissement de chaque surveillant
         # connecté, un coût inutile et un anti-pattern (écriture sur un GET).
-        all_exam_proctors = session.query(ExamProctor).filter_by(exam_id=exam_id).all()
+        # joinedload : sans lui, CHAQUE rappel de la liste (toutes les 8 s, par chaque surveillant) chargeait les surveillants un par un (une requête chacun : 36 requêtes pour 30 surveillants,
+        # 66 pour 60) — coût qui croît avec leur nombre. Profil du 19/11/2026 (scripts/profil_requetes.py).
+        all_exam_proctors = session.query(ExamProctor).options(joinedload(ExamProctor.proctor)).filter_by(exam_id=exam_id).all()
 
         all_pa = session.query(ProctorAssignment).filter_by(exam_id=exam_id).all()
         by_attempt_id = {pa.attempt_id: pa.proctor_id for pa in all_pa if pa.attempt_id}
@@ -1078,7 +1081,9 @@ def get_active_proctoring(exam_id):
         try:
             from cache import _get_client as _rc_get
             from services import risk_score as _risk
-            _bd = _risk.read_breakdowns(_rc_get(), [a.id for a in attempts])
+            # Détail du score uniquement pour les étudiants dont le score est notable (≥ 30) et au plus 400 par appel : la liste est rappelée toutes les 8 s par chaque surveillant,
+            # lire 5 000 compteurs à chaque fois serait un coût inutile pour des infobulles que personne n'ouvre sur un score bas.
+            _bd = _risk.read_breakdowns(_rc_get(), [a.id for a in attempts if (a.risk_score or 0) >= 30][:400])
         except Exception:
             _bd = {}
         result = []
@@ -3522,7 +3527,7 @@ _REDIS_URL   = _os_mod.getenv('REDIS_URL', 'redis://127.0.0.1:6379/0')
 def _redis_alerts():
     """Connexion Redis dédiée aux alertes agent (courte durée)."""
     return _redis_alerts_lib.from_url(
-        _REDIS_URL, decode_responses=True, socket_connect_timeout=1)
+        _REDIS_URL, decode_responses=True, socket_connect_timeout=1, socket_timeout=2)
 
 
 def _agent_auth():

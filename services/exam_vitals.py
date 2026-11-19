@@ -26,6 +26,7 @@ VIDEO_LINK_PCT_ATTENTION = 20.0
 HIGH_RISK_PCT_ATTENTION = 30.0
 CALLS_30MIN_ATTENTION = 5
 CRASH_PCT_ATTENTION = 5.0
+CACHE_S = 45                    # durée de partage du résultat entre toutes les pages ouvertes
 WATCH_COOLDOWN_S = 600          # une même alerte critique n'est renvoyée à l'administrateur qu'une fois toutes les 10 minutes
 
 LEVEL_ORDER = {'ok': 0, 'attention': 1, 'critique': 2}
@@ -38,6 +39,12 @@ def _scalar(s, sql, **p):
 def compute(session, exam_id, now=None):
     """Indicateurs + verdict d'un examen. `now` injectable pour les tests."""
     now = now or datetime.utcnow()
+    try:
+        # Délai maximal de 4 s pour chaque requête de CE contrôle : si la base est chargée, il s'interrompt au lieu de s'empiler avec le reste (un outil de surveillance ne doit
+        # jamais aggraver une surcharge). La transaction est celle du contrôle seul ; elle se termine avec la session.
+        session.execute(text("SET LOCAL statement_timeout = 4000"))
+    except Exception:
+        pass
     p = {'e': exam_id, 'now': now}
     base = "FROM exam_attempts a WHERE a.exam_id = :e"
     started = _scalar(session, f"SELECT count(*) {base}", **p)
@@ -119,6 +126,11 @@ def watch_once(now=None):
         for ex in exams:
             try:
                 h = compute(s, ex.id, now)
+                try:
+                    from cache import cache_set
+                    cache_set(f'cei:vitals:cache:{ex.id}', h, CACHE_S)       # amorce le cache lu par les pages (un seul calcul par minute, quel que soit le nombre de personnes qui regardent)
+                except Exception:
+                    pass
             except Exception as e:                           # un examen en défaut ne doit pas empêcher de surveiller les autres
                 log.warning('santé examen %s : %s', ex.id, e); s.rollback(); continue
             for pb in h['problems']:

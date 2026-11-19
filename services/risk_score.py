@@ -76,6 +76,24 @@ def _key(attempt_id):
     return f'cei:risk:{int(attempt_id)}'
 
 
+# Un SEUL aller-retour Redis, atomique : ajoute les points à la catégorie, plafonne, prolonge la durée de vie et renvoie toutes les catégories.
+# (Avant : 4 appels Redis par événement ; avec des milliers d'étudiants émettant plusieurs événements par minute, c'était la part la plus bavarde du chemin chaud.)
+_LUA = """
+local cur = tonumber(redis.call('HINCRBYFLOAT', KEYS[1], ARGV[1], ARGV[2]))
+if cur > tonumber(ARGV[3]) then redis.call('HSET', KEYS[1], ARGV[1], ARGV[3]) end
+redis.call('EXPIRE', KEYS[1], ARGV[4])
+return redis.call('HGETALL', KEYS[1])
+"""
+
+
+def _decode(flat):
+    out = {}
+    it = iter(flat or [])
+    for k, v in zip(it, it):
+        out[(k.decode() if isinstance(k, bytes) else k)] = float(v)
+    return out
+
+
 def apply_event(client, attempt_id, event_type, weight):
     """Ajoute `weight` points à la catégorie de l'événement (plafonnée) et renvoie le nouveau score 0-100,
     ou None si Redis est indisponible (l'appelant retombe alors sur l'ancien calcul cumulatif)."""
@@ -85,14 +103,11 @@ def apply_event(client, attempt_id, event_type, weight):
         key = _key(attempt_id)
         cat = category_of(event_type)
         if weight and weight > 0:
-            cap = CATEGORIES[cat][1]
-            pts = float(client.hincrbyfloat(key, cat, float(weight)))
-            if pts > cap:
-                client.hset(key, cat, cap)          # on ne laisse pas dériver au-delà du plafond
-            client.expire(key, KEY_TTL)
-        raw = client.hgetall(key) or {}
-        points = {(k.decode() if isinstance(k, bytes) else k): float(v) for k, v in raw.items()}
-        return total_of(points)
+            flat = client.eval(_LUA, 1, key, cat, float(weight), CATEGORIES[cat][1], KEY_TTL)
+        else:
+            flat = client.hgetall(key)            # poids nul : rien à ajouter, simple lecture
+            return total_of(_decode(flat if isinstance(flat, (list, tuple)) else [x for kv in (flat or {}).items() for x in kv]))
+        return total_of(_decode(flat))
     except Exception as e:
         log.warning('risk apply_event: %s', e)
         return None

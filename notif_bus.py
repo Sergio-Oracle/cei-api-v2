@@ -231,9 +231,13 @@ def _exam_staff_ids(exam_id: int, attempt_id: int | None = None) -> set:
                 from models import ProctorAssignment, ExamAttempt
                 att = session.query(ExamAttempt).get(attempt_id)
                 if att is not None:
-                    for pa in session.query(ProctorAssignment).filter(ProctorAssignment.exam_id == exam_id):
-                        if pa.proctor_id and (pa.attempt_id == attempt_id or (pa.student_id and pa.student_id == att.student_id)):
-                            assigned.add(pa.proctor_id)
+                    from sqlalchemy import or_
+                    # filtré par la base : avant, TOUTES les affectations de l'examen (jusqu'à 5 000 lignes) étaient lues puis triées en Python à chaque notification
+                    for (pid,) in session.query(ProctorAssignment.proctor_id).filter(
+                            ProctorAssignment.exam_id == exam_id,
+                            or_(ProctorAssignment.attempt_id == attempt_id, ProctorAssignment.student_id == att.student_id)):
+                        if pid:
+                            assigned.add(pid)
             if assigned:
                 ids |= assigned
             else:

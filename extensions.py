@@ -46,4 +46,5 @@ limiter = Limiter(
     default_limits=[f"{_LIMIT_PER_HOUR} per hour", f"{_LIMIT_PER_MINUTE} per minute"],
     headers_enabled=True,               # X-RateLimit-* dans les réponses
     swallow_errors=True,                # si Redis tombe, ne pas bloquer les requêtes
+    storage_options={'socket_connect_timeout': 1, 'socket_timeout': 2},    # et ne pas attendre un Redis qui répond lentement
 )

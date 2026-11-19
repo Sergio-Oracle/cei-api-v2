@@ -25,6 +25,22 @@ tech_test_bp = Blueprint('tech_test', __name__)
 STAFF = ('professor', 'admin', 'responsable_examen', 'surveillant', 'superviseur')
 
 
+def _cache_get(key):
+    from cache import cache_get
+    try:
+        return cache_get(key)
+    except Exception:
+        return None
+
+
+def _cache_set(key, value, ttl):
+    from cache import cache_set
+    try:
+        cache_set(key, value, ttl)
+    except Exception:
+        pass
+
+
 def _lk():
     import os
     from proctoring_routes import get_livekit_config
@@ -162,37 +178,45 @@ def exam_readiness(exam_id):
         ec = exam.subject.ec if exam.subject else None
         if not ec or not ec.ue_id:
             return jsonify({'counts': {}, 'students': [], 'total': 0})
-        q = (s.query(User.id, User.full_name, User.email).join(StudentUEEnrollment, StudentUEEnrollment.student_id == User.id)
-             .filter(StudentUEEnrollment.ue_id == ec.ue_id, User.is_active == True, User.role == UserRole.STUDENT))   # noqa: E712
+        mine_set = set()
         if role == 'surveillant':
-            mine = {a.student_id for a in s.query(ProctorAssignment).filter_by(exam_id=exam_id, proctor_id=user_id).all() if a.student_id}
-            if mine:
-                q = q.filter(User.id.in_(mine))
-        rows = q.all()
-        c = _get_client()
-        recs = {}
-        if c is not None and rows:
-            try:
-                pipe = c.pipeline()
-                for r in rows:
-                    pipe.get(_rec_key(r.id))
-                for r, raw in zip(rows, pipe.execute()):
-                    if raw:
-                        recs[r.id] = json.loads(raw)
-            except Exception:
-                recs = {}
+            mine_set = {r[0] for r in s.query(ProctorAssignment.student_id).filter(ProctorAssignment.exam_id == exam_id, ProctorAssignment.proctor_id == user_id, ProctorAssignment.student_id.isnot(None))}
+        cache_key = f'cei:readiness:{exam_id}:{"all" if not (role == "surveillant" and mine_set) else "scoped"}'
+        # Liste de TOUS les inscrits avec leur statut : calculée une fois par minute et partagée (jusqu'à 5 000 lignes + autant de lectures Redis, rappelées par chaque personne
+        # ayant la page ouverte, toutes les minutes). Chaque surveillant n'en prend que sa part, en mémoire.
+        full = _cache_get(f'cei:readiness:{exam_id}:full')
+        if full is None:
+            rows = (s.query(User.id, User.full_name, User.email).join(StudentUEEnrollment, StudentUEEnrollment.student_id == User.id)
+                    .filter(StudentUEEnrollment.ue_id == ec.ue_id, User.is_active == True, User.role == UserRole.STUDENT).all())   # noqa: E712
+            c = _get_client()
+            recs = {}
+            if c is not None and rows:
+                try:
+                    pipe = c.pipeline()
+                    for r in rows:
+                        pipe.get(_rec_key(r.id))
+                    for r, raw in zip(rows, pipe.execute()):
+                        if raw:
+                            recs[r.id] = json.loads(raw)
+                except Exception:
+                    recs = {}
+            full = []
+            for r in rows:
+                rec = recs.get(r.id) or {}
+                full.append({'student_id': r.id, 'name': r.full_name, 'email': r.email, 'status': TT.status_of_record(recs.get(r.id)),
+                             'tested_at': rec.get('ts'), 'problems': [p.get('staff') or p['message'] for p in (rec.get('problems') or [])][:3]})
+            _cache_set(f'cei:readiness:{exam_id}:full', full, 60)
+        if role == 'surveillant' and mine_set:
+            full = [x for x in full if x['student_id'] in mine_set]
         counts = {'ready': 0, 'warn': 0, 'not_ready': 0, 'stale': 0, 'never': 0}
         out = []
-        for r in rows:
-            st = TT.status_of_record(recs.get(r.id))
-            counts[st] = counts.get(st, 0) + 1
-            if st != 'ready':
-                rec = recs.get(r.id) or {}
-                out.append({'student_id': r.id, 'name': r.full_name, 'email': r.email, 'status': st,
-                            'tested_at': rec.get('ts'), 'problems': [p.get('staff') or p['message'] for p in (rec.get('problems') or [])][:3]})   # texte destiné au surveillant (3e personne, langage simple)
+        for x in full:
+            counts[x['status']] = counts.get(x['status'], 0) + 1
+            if x['status'] != 'ready':
+                out.append(x)
         order = {'not_ready': 0, 'warn': 1, 'stale': 2, 'never': 3}
         out.sort(key=lambda x: (order.get(x['status'], 9), x['name'] or ''))
-        return jsonify({'total': len(rows), 'counts': counts, 'students': out[:400], 'truncated': len(out) > 400})
+        return jsonify({'total': len(full), 'counts': counts, 'students': out[:400], 'truncated': len(out) > 400})
     finally:
         s.close()
 
@@ -213,6 +237,15 @@ def exam_vitals(exam_id):
         if role == 'professor' and not can_view_exam(s, exam, user_id):
             return jsonify({'error': 'Accès refusé'}), 403
         from services import exam_vitals as EV
-        return jsonify(EV.compute(s, exam_id))
+        from cache import cache_get, cache_set
+        key = f'cei:vitals:cache:{exam_id}'
+        h = cache_get(key)                                   # résultat partagé : N personnes qui regardent = UN seul calcul par 45 s
+        if not h:
+            try:
+                h = EV.compute(s, exam_id)
+                cache_set(key, h, EV.CACHE_S)
+            except Exception:
+                return jsonify({'error': 'Santé momentanément indisponible'}), 503
+        return jsonify(h)
     finally:
         s.close()

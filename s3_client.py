@@ -57,7 +57,9 @@ def _client():
         endpoint_url=_ENDPOINT,
         aws_access_key_id=_KEY_ID,
         aws_secret_access_key=_SECRET,
-        config=Config(signature_version='s3v4'),
+        # Délais maximaux (19/11/2026) : sans eux, boto3 attend jusqu'à 60 s (et réessaie) quand le stockage ralentit ; chaque capture d'un étudiant immobilisait alors un fil de l'API
+        # pendant des minutes, et quelques instants suffisaient pour qu'aucune requête ne passe plus (utilisateurs déconnectés sous charge).
+        config=Config(signature_version='s3v4', connect_timeout=2, read_timeout=6, retries={'max_attempts': 1, 'mode': 'standard'}),
         region_name=_REGION,
     )
 
@@ -70,7 +72,7 @@ def _public_client():
         endpoint_url=_PUBLIC_ENDPOINT,
         aws_access_key_id=_KEY_ID,
         aws_secret_access_key=_SECRET,
-        config=Config(signature_version='s3v4'),
+        config=Config(signature_version='s3v4', connect_timeout=2, read_timeout=6, retries={'max_attempts': 1, 'mode': 'standard'}),
         region_name=_REGION,
     )
 
@@ -78,7 +80,7 @@ def _public_client():
 @lru_cache(maxsize=1)
 def _redis_client():
     import redis
-    return redis.Redis.from_url(_REDIS_URL, decode_responses=True, socket_connect_timeout=1)
+    return redis.Redis.from_url(_REDIS_URL, decode_responses=True, socket_connect_timeout=1, socket_timeout=2)
 
 
 def _alert_admins_s3_down(exc: Exception) -> None:
@@ -141,6 +143,22 @@ def _save_snapshot_locally(exam_id: int, attempt_id: int, raw: bytes, ts: str) -
         return None
 
 
+# Disjoncteur : après un échec du stockage, on n'essaie plus pendant 30 s (repli disque immédiat) au lieu de faire attendre CHAQUE requête d'étudiant son propre délai maximal.
+_S3_DOWN_UNTIL = 0.0
+_S3_PAUSE_S = 30.0
+
+
+def _s3_usable() -> bool:
+    import time as _t
+    return _t.time() >= _S3_DOWN_UNTIL
+
+
+def _s3_trip() -> None:
+    global _S3_DOWN_UNTIL
+    import time as _t
+    _S3_DOWN_UNTIL = _t.time() + _S3_PAUSE_S
+
+
 def upload_snapshot(exam_id: int, attempt_id: int, image_b64: str) -> Optional[str]:
     """
     Décode le base64, uploade vers MinIO et retourne la clé S3.
@@ -165,6 +183,8 @@ def upload_snapshot(exam_id: int, attempt_id: int, image_b64: str) -> Optional[s
     ts  = datetime.utcnow().strftime('%Y%m%dT%H%M%S')
     key = f'snapshots/{exam_id}/{attempt_id}/{ts}.jpg'
 
+    if not _s3_usable():                       # stockage en panne il y a moins de 30 s : repli disque tout de suite
+        return _save_snapshot_locally(exam_id, attempt_id, raw, ts)
     try:
         _client().put_object(
             Bucket=_SNAP_BUCKET,
@@ -179,6 +199,7 @@ def upload_snapshot(exam_id: int, attempt_id: int, image_b64: str) -> Optional[s
         # connexion (EndpointConnectionError, timeout...) qui n'héritent PAS de
         # ClientError et remonteraient sinon jusqu'à la route Flask (500, snapshot perdu).
         _log.warning('S3 upload failed key=%s: %s — fallback disque local', key, exc)
+        _s3_trip()
         _alert_admins_s3_down(exc)
         return _save_snapshot_locally(exam_id, attempt_id, raw, ts)
 
@@ -220,6 +241,8 @@ def upload_biometric_photo(user_id: int, image_b64: str) -> Optional[str]:
     ts  = datetime.utcnow().strftime('%Y%m%dT%H%M%S')
     key = f'biometric/{user_id}/{ts}.jpg'
 
+    if not _s3_usable():
+        return _save_biometric_locally(user_id, raw, ts)
     try:
         _client().put_object(
             Bucket=_SNAP_BUCKET,
@@ -231,6 +254,7 @@ def upload_biometric_photo(user_id: int, image_b64: str) -> Optional[str]:
         return key
     except Exception as exc:
         _log.warning('S3 biometric upload failed key=%s: %s — fallback disque local', key, exc)
+        _s3_trip()
         _alert_admins_s3_down(exc)
         return _save_biometric_locally(user_id, raw, ts)
 

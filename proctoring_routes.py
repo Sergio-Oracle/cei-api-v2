@@ -1008,6 +1008,22 @@ def get_active_proctoring(exam_id):
     if role not in ['professor', 'admin', 'responsable_examen', 'surveillant']:
         return jsonify({'error': 'Accès réservé aux enseignants et surveillants'}), 403
 
+    # Vue COMPLÈTE (enseignant, admin, responsable) : la même pour tous, recalculée au plus une fois toutes les 3 s pour l'ensemble des appelants (19/11/2026).
+    # Avec 5 000 étudiants elle pèse plusieurs Mo et ~230 ms de calcul ; chaque personne qui garde la page ouverte la redemande toutes les 8 s. Le délai est volontairement
+    # inférieur à l'intervalle d'interrogation : la page n'a jamais plus d'un cycle de retard. Redis indisponible : calcul direct, comme avant.
+    _full_key = f'cei:ap_full:{exam_id}'
+    _my_identity = f'proctor-{user_id}' if role == 'surveillant' else f'teacher-{user_id}'
+    if role != 'surveillant':
+        try:
+            from cache import _get_client as _rc
+            _c = _rc()
+            _hit = _c.get(_full_key) if _c is not None else None
+        except Exception:
+            _hit = None
+        if _hit:
+            _tail = current_app.json.dumps({'my_role': role, 'my_identity': _my_identity})
+            return current_app.response_class(_hit[:-1] + ',' + _tail[1:], mimetype='application/json')
+
     session = get_session()
     try:
         exam = session.query(OnlineExam).filter_by(id=exam_id).first()
@@ -1066,9 +1082,20 @@ def get_active_proctoring(exam_id):
         # connecté, un coût inutile et un anti-pattern (écriture sur un GET).
         # joinedload : sans lui, CHAQUE rappel de la liste (toutes les 8 s, par chaque surveillant) chargeait les surveillants un par un (une requête chacun : 36 requêtes pour 30 surveillants,
         # 66 pour 60) — coût qui croît avec leur nombre. Profil du 19/11/2026 (scripts/profil_requetes.py).
-        all_exam_proctors = session.query(ExamProctor).options(joinedload(ExamProctor.proctor)).filter_by(exam_id=exam_id).all()
-
-        all_pa = session.query(ProctorAssignment).filter_by(exam_id=exam_id).all()
+        # Surveillant (19/11/2026) : il ne voit que son groupe ; ni la liste de tous les surveillants ni les affectations de tout l'examen ne lui servent (avec 5 000
+        # étudiants : 5 000 lignes relues toutes les 8 s par chacun des ~40 surveillants pour n'en garder que ~135).
+        if role == 'surveillant':
+            all_exam_proctors = session.query(ExamProctor).options(joinedload(ExamProctor.proctor)).filter_by(exam_id=exam_id, proctor_id=user_id).all()
+            from sqlalchemy import or_ as _or
+            _aids = [a.id for a in attempts]; _sids = [a.student_id for a in attempts]
+            all_pa = session.query(ProctorAssignment).filter(
+                ProctorAssignment.exam_id == exam_id,
+                _or(ProctorAssignment.proctor_id == user_id,
+                    ProctorAssignment.attempt_id.in_(_aids) if _aids else False,
+                    ProctorAssignment.student_id.in_(_sids) if _sids else False)).all()
+        else:
+            all_exam_proctors = session.query(ExamProctor).options(joinedload(ExamProctor.proctor)).filter_by(exam_id=exam_id).all()
+            all_pa = session.query(ProctorAssignment).filter_by(exam_id=exam_id).all()
         by_attempt_id = {pa.attempt_id: pa.proctor_id for pa in all_pa if pa.attempt_id}
         by_student_id = {pa.student_id: pa.proctor_id for pa in all_pa if pa.student_id}
 
@@ -1150,9 +1177,9 @@ def get_active_proctoring(exam_id):
                     'group_names': group_names_by_proctor.get(ep.proctor_id, []),
                 })
 
-        my_identity = f'proctor-{user_id}' if role == 'surveillant' else f'teacher-{user_id}'
+        my_identity = _my_identity
 
-        return jsonify({
+        core = {
             'success': True,
             'exam_title': exam.title,
             'exam_status': exam.status.value,
@@ -1160,9 +1187,18 @@ def get_active_proctoring(exam_id):
             'attempts': result,
             'total': len(result),
             'proctors': proctors_info,
-            'my_role': role,
-            'my_identity': my_identity,
-        })
+        }
+        if role != 'surveillant':
+            try:
+                from cache import _get_client as _rc2
+                _c2 = _rc2()
+                if _c2 is not None:
+                    _c2.set(_full_key, current_app.json.dumps(core), ex=3)
+            except Exception:
+                pass
+        core['my_role'] = role
+        core['my_identity'] = my_identity
+        return jsonify(core)
     finally:
         session.close()
 

@@ -59,6 +59,23 @@ def cache_get(key: str) -> Optional[Any]:
         return None
 
 
+def cache_exists_many(keys) -> list:
+    """[bool] : pour chaque clé, True si elle existe (valeur non vide). UN SEUL aller-retour Redis, quel que soit le nombre de clés
+    (19/11/2026 : l'attribution d'un surveillant faisait 2 appels Redis par surveillant à chaque démarrage d'étudiant ;
+    avec 100 surveillants et des milliers d'entrées simultanées, c'était la part la plus lourde de l'entrée en examen).
+    Redis indisponible : tout est « absent », comme cache_get."""
+    keys = list(keys)
+    if not keys:
+        return []
+    client = _get_client()
+    if client is None:
+        return [False] * len(keys)
+    try:
+        return [bool(v) for v in client.mget(keys)]
+    except Exception:
+        return [False] * len(keys)
+
+
 def cache_set(key: str, value: Any, ttl: int = _DEFAULT_TTL) -> None:
     """Serialise and store value; silently skip on error."""
     client = _get_client()

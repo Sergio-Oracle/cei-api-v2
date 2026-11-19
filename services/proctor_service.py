@@ -63,14 +63,20 @@ PRESENCE_GRACE_SECONDS = 300
 
 
 def present_proctor_ids(exam, proctor_ids) -> list:
-    """Parmi `proctor_ids`, ceux considérés présents sur cet examen."""
+    """Parmi `proctor_ids`, ceux considérés présents sur cet examen. Un seul aller-retour Redis pour tous les surveillants (cache_exists_many)."""
+    from cache import cache_exists_many
+    proctor_ids = list(proctor_ids)
+    if not proctor_ids:
+        return []
     now = datetime.utcnow()
     started_long_enough = bool(exam.start_time and (now - exam.start_time).total_seconds() > PRESENCE_GRACE_SECONDS)
+    flags = cache_exists_many([f'cei:proctor_present:{exam.id}:{pid}' for pid in proctor_ids] + [f'cei:proctor_seen:{exam.id}:{pid}' for pid in proctor_ids])
+    n = len(proctor_ids)
     out = []
-    for pid in proctor_ids:
-        if cache_get(f'cei:proctor_present:{exam.id}:{pid}'):
+    for i, pid in enumerate(proctor_ids):
+        if flags[i]:
             out.append(pid)
-        elif not cache_get(f'cei:proctor_seen:{exam.id}:{pid}') and not started_long_enough:
+        elif not flags[n + i] and not started_long_enough:
             out.append(pid)
     return out
 
@@ -409,6 +415,21 @@ def _redistribute_students(session, exam, proctor_ids):
     session.commit()
 
 
+def _loads_by_proctor(session, exam_id, same_wave_as=None) -> dict:
+    """{proctor_id: nombre d'affectations} calculé par la base. Avec `same_wave_as` (id d'étudiant) : seules comptent les affectations des étudiants de
+    la MÊME vague que lui (rang 0 = sans vague) si l'examen est par vagues ; sinon toutes."""
+    from sqlalchemy import func
+    from models import ExamWave, ExamWaveStudent
+    q = session.query(ProctorAssignment.proctor_id, func.count(ProctorAssignment.id)).filter(ProctorAssignment.exam_id == exam_id)
+    if same_wave_as is not None and session.query(ExamWaveStudent.id).filter_by(exam_id=exam_id).first() is not None:
+        mine = (session.query(ExamWave.position).join(ExamWaveStudent, ExamWaveStudent.wave_id == ExamWave.id)
+                .filter(ExamWaveStudent.exam_id == exam_id, ExamWaveStudent.student_id == same_wave_as).scalar()) or 0
+        q = (q.outerjoin(ExamWaveStudent, (ExamWaveStudent.exam_id == ProctorAssignment.exam_id) & (ExamWaveStudent.student_id == ProctorAssignment.student_id))
+              .outerjoin(ExamWave, ExamWave.id == ExamWaveStudent.wave_id)
+              .filter(func.coalesce(ExamWave.position, 0) == mine))
+    return {pid: n for pid, n in q.group_by(ProctorAssignment.proctor_id).all()}
+
+
 def assign_single_attempt(session, exam_id, student_id, attempt_id):
     """Affecte une tentative unique au surveillant le moins chargé de l'examen.
 
@@ -426,34 +447,36 @@ def assign_single_attempt(session, exam_id, student_id, attempt_id):
     if already:
         if not already.attempt_id:
             already.attempt_id = attempt_id
-        # Pré-affecté à un surveillant qui n'est pas là : l'étudiant va à un présent.
         exam = session.get(OnlineExam, exam_id)
-        all_ids = [ep.proctor_id for ep in session.query(ExamProctor).filter_by(exam_id=exam_id).all()]
+        # Cas courant (19/11/2026) : le surveillant pré-affecté est lui-même sur l'examen et présent → rien d'autre à faire. On ne charge plus
+        # ni la liste des surveillants ni toutes les affectations de l'examen (coût qui croissait avec le nombre d'étudiants, à CHAQUE entrée).
+        if exam and session.query(ExamProctor.id).filter_by(exam_id=exam_id, proctor_id=already.proctor_id).first() \
+                and present_proctor_ids(exam, [already.proctor_id]):
+            return
+        # Pré-affecté à un surveillant qui n'est pas là : l'étudiant va à un présent.
+        all_ids = [r[0] for r in session.query(ExamProctor.proctor_id).filter_by(exam_id=exam_id).all()]
         present = present_proctor_ids(exam, all_ids) if exam else []
         if present and already.proctor_id not in present:
             load = {pid: 0 for pid in present}
-            for pa in session.query(ProctorAssignment).filter_by(exam_id=exam_id).all():
-                if pa.proctor_id in load:
-                    load[pa.proctor_id] += 1
+            for pid, n in _loads_by_proctor(session, exam_id).items():
+                if pid in load:
+                    load[pid] += n
             already.proctor_id = min(load, key=load.get)
             already.assigned_at = datetime.utcnow()
         return
 
-    proctor_ids = [ep.proctor_id for ep in session.query(ExamProctor).filter_by(exam_id=exam_id).all()]
+    proctor_ids = [r[0] for r in session.query(ExamProctor.proctor_id).filter_by(exam_id=exam_id).all()]
     if not proctor_ids:
         return
     exam = session.get(OnlineExam, exam_id)
     proctor_ids = (present_proctor_ids(exam, proctor_ids) if exam else []) or proctor_ids
 
     counts = {pid: 0 for pid in proctor_ids}
-    wave_pos = _wave_positions(session, exam_id)
-    mine = wave_pos.get(student_id, 0)
-    for pa in session.query(ProctorAssignment).filter_by(exam_id=exam_id).all():
-        # par vagues : on ne compte que la charge de la MÊME vague (celle qui compose en ce moment)
-        if wave_pos and wave_pos.get(pa.student_id, 0) != mine:
-            continue
-        if pa.proctor_id in counts:
-            counts[pa.proctor_id] += 1
+    # Par vagues : on ne compte que la charge de la MÊME vague (celle qui compose en ce moment). Comptage fait par la base (GROUP BY),
+    # plus de chargement de toutes les affectations ni de toutes les vagues-étudiants en mémoire.
+    for pid, n in _loads_by_proctor(session, exam_id, same_wave_as=student_id).items():
+        if pid in counts:
+            counts[pid] += n
 
     min_pid = min(counts, key=counts.get)
     # Le "already" verifie plus haut n'est pas atomique avec cette insertion :
@@ -472,6 +495,7 @@ def assign_single_attempt(session, exam_id, student_id, attempt_id):
             ))
     except IntegrityError:
         pass
+
 
 
 def backfill_unassigned_attempts(session, exam_id=None):

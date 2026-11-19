@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import app as A
 from sqlalchemy import event, text
-from models import (get_session, engine, User, UserRole, Subject, OnlineExam, ExamStatus, EC, StudentUEEnrollment, ExamAttempt, AttemptStatus, ExamActivityLog, ExamProctor, ProctorAssignment)
+from models import (get_session, engine, User, UserRole, Subject, OnlineExam, ExamStatus, EC, StudentUEEnrollment, ExamAttempt, AttemptStatus, ExamActivityLog, ExamProctor, ProctorAssignment, ExamAccessCode)
 from auth_paseto import create_access_token
 from cache import cache_delete
 N = int(sys.argv[1]) if len(sys.argv) > 1 else 300; P = int(sys.argv[2]) if len(sys.argv) > 2 else 30
@@ -26,15 +26,16 @@ def mk(role, i):
     u = User(email=f'prof.{tag}.{i}@test.invalid', full_name=f'Prof {i}', role=role, is_active=True, email_verified=True, has_email=True, password_hash='x'); return u
 try:
     adm = mk(UserRole.ADMIN, 'adm'); svs = [mk(UserRole.SURVEILLANT, f'sv{i}') for i in range(P)]; stu = [mk(UserRole.STUDENT, f'e{i}') for i in range(N)]
-    s.add_all([adm, *svs, *stu]); s.commit(); made['users'] = [u.id for u in [adm, *svs, *stu]]
+    NF = 12; fresh_free = [mk(UserRole.STUDENT, f'ff{i}') for i in range(NF)]; fresh_pre = [mk(UserRole.STUDENT, f'fp{i}') for i in range(NF)]
+    s.add_all([adm, *svs, *stu, *fresh_free, *fresh_pre]); s.commit(); made['users'] = [u.id for u in [adm, *svs, *stu, *fresh_free, *fresh_pre]]
     ec = s.query(EC).filter(EC.ue_id.isnot(None)).first()
     sub = Subject(title='profil', content='1. Q ? [QCM]\nA. a\nB. b\n', rubric='Question 1 (1 pt) : A', creator_id=adm.id, ec_id=ec.id); s.add(sub); s.commit(); made['sub'] = sub.id
     ex = OnlineExam(subject_id=sub.id, title='profil', duration_minutes=60, start_time=now - timedelta(minutes=30), end_time=now + timedelta(hours=1), status=ExamStatus.ACTIVE, created_by_id=adm.id)
     s.add(ex); s.commit(); made['ex'] = ex.id
-    s.add_all([StudentUEEnrollment(student_id=u.id, ue_id=ec.ue_id) for u in stu]); s.add_all([ExamProctor(exam_id=ex.id, proctor_id=v.id, assigned_by_id=adm.id) for v in svs]); s.commit()
+    s.add_all([StudentUEEnrollment(student_id=u.id, ue_id=ec.ue_id) for u in [*stu, *fresh_free, *fresh_pre]]); s.add_all([ExamProctor(exam_id=ex.id, proctor_id=v.id, assigned_by_id=adm.id) for v in svs]); s.commit()
     atts = [ExamAttempt(exam_id=ex.id, student_id=u.id, status=AttemptStatus.IN_PROGRESS, started_at=now - timedelta(minutes=20), exam_seen_at=now - timedelta(minutes=19), last_seen_at=now, risk_score=(i % 70), answers='{"r":"x"}') for i, u in enumerate(stu)]
     s.add_all(atts); s.commit()
-    s.add_all([ProctorAssignment(exam_id=ex.id, proctor_id=svs[i % P].id, attempt_id=a.id, student_id=a.student_id) for i, a in enumerate(atts)]); s.commit()
+    s.add_all([ProctorAssignment(exam_id=ex.id, proctor_id=svs[i % P].id, attempt_id=a.id, student_id=a.student_id) for i, a in enumerate(atts)]); s.add_all([ProctorAssignment(exam_id=ex.id, proctor_id=svs[i % P].id, student_id=u.id) for i, u in enumerate(fresh_pre)]); s.commit()
     logs = []
     for i, a in enumerate(atts):                                         # 20 événements par étudiant : de quoi rendre les journaux réalistes
         for k in range(20): logs.append(ExamActivityLog(attempt_id=a.id, event_type=['window_blur', 'no_face_detected', 'sustained_audio_detected', 'whisper_detected'][k % 4], event_data='x', timestamp=now - timedelta(minutes=k)))
@@ -68,7 +69,27 @@ try:
         ('ADMIN  readiness (60 s)',                  'GET',  f'/api/online_exams/{ex.id}/readiness', adm, None),
         ('ADMIN  vitals (60 s)',                     'GET',  f'/api/online_exams/{ex.id}/vitals', adm, None),
     ]
+    def prof_chacun(nom, users, body=None):
+        qs, ts, qms, code = [], [], [], 0
+        for u in users:
+            cnt['n'] = 0; cnt['ms'] = 0.0; t = time.time()
+            r = c.open(f'/api/online_exams/{ex.id}/start', method='POST', headers=H(u), json=body); code = r.status_code
+            ts.append((time.time() - t) * 1000); qs.append(cnt['n']); qms.append(cnt['ms'])
+        return (nom, code, statistics.median(qs), statistics.median(ts), statistics.median(qms))
+    for a in atts[2:2 + NF]: a.exam_seen_at = None; a.answers = '{}'
+    s.commit()
+    if os.environ.get('CPROF'):
+        import cProfile, pstats
+        pr = cProfile.Profile(); pr.enable(); prof_chacun('x', fresh_free); pr.disable()
+        pstats.Stats(pr).sort_stats('cumulative').print_stats(35)
+    start_rows = [
+        prof_chacun('ETUDIANT  /start 1re entree, NON pre-affecte', fresh_free),
+        prof_chacun('ETUDIANT  /start 1re entree, pre-affecte', fresh_pre),
+        prof_chacun('ETUDIANT  /start reprise (copie jamais vue)', stu[2:2 + NF]),
+        prof_chacun('ETUDIANT  /start reprise (copie vue, code demande)', stu[2 + NF:2 + 2 * NF]),
+    ]
     print(f"\nProfil avec {N} étudiants, {P} surveillants, {len(logs)} événements en base\n{'appel':46s} {'code':>4s} {'requêtes SQL':>13s} {'temps total':>12s} {'dont SQL':>9s}")
+    for r in start_rows: print(f"{r[0]:46s} {r[1]:4d} {r[2]:13.0f} {r[3]:9.0f} ms {r[4]:7.0f} ms")
     for nom, m, u, who, b in rows:
         r = prof(nom, m, u, who, b); print(f"{r[0]:46s} {r[1]:4d} {r[2]:13.0f} {r[3]:9.0f} ms {r[4]:7.0f} ms")
 finally:
@@ -77,6 +98,7 @@ finally:
         if made['ex']:
             ids = [a.id for a in s.query(ExamAttempt).filter_by(exam_id=made['ex'])]
             if ids:
+                s.query(ExamAccessCode).filter(ExamAccessCode.attempt_id.in_(ids)).delete(synchronize_session=False)
                 s.query(ExamActivityLog).filter(ExamActivityLog.attempt_id.in_(ids)).delete(synchronize_session=False)
             s.query(ProctorAssignment).filter_by(exam_id=made['ex']).delete(); s.query(ExamAttempt).filter_by(exam_id=made['ex']).delete()
             s.query(ExamProctor).filter_by(exam_id=made['ex']).delete(); s.query(OnlineExam).filter_by(id=made['ex']).delete()

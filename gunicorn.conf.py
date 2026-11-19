@@ -14,6 +14,18 @@ GUNICORN_BIND ci-dessous.
 """
 import multiprocessing
 import os
+import resource
+
+# 19/11/2026 — Limite de descripteurs de fichiers : la limite SOUPLE du service était de 1 024 alors que la limite maximale autorisée est de 524 288. Chaque connexion ouverte, chaque
+# connexion à la base et chaque attente de données consomment un descripteur : au test de charge de 5 000 étudiants, « OSError: [Errno 24] Too many open files » a produit des erreurs 500
+# et 502. On relève la limite souple jusqu'à 65 535 (sans droits administrateur : elle ne dépasse jamais la limite maximale), avant la création des workers qui l'héritent.
+try:
+    _soft, _hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    _want = 65535 if _hard == resource.RLIM_INFINITY else min(65535, _hard)
+    if _soft < _want:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (_want, _hard))
+except Exception:
+    pass
 
 # ── Binding ───────────────────────────────────────────────────────────────────
 # Permet de démarrer une seconde instance (notifications) sur un bind séparé

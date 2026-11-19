@@ -54,6 +54,46 @@ def _deadlines(session, exam, attempts) -> dict:
     return {a.id: ends.get(a.student_id, exam.end_time) + timedelta(minutes=deadline_extra_minutes(a)) for a in attempts}
 
 
+def expired_attempt_ids(session, exam, now=None, grace=0):
+    """([id des copies EN COURS dont l'échéance + `grace` secondes est dépassée], nombre de copies en cours) — en 2 requêtes LÉGÈRES (colonnes utiles seulement),
+    quel que soit le nombre d'étudiants. 19/11/2026 : l'ancienne façon (une copie entière + 2 requêtes par copie pour son échéance) coûtait 12 000 requêtes et 12 s
+    à chaque ouverture du tableau de bord pendant un examen par vagues de 3 000 copies (≈ 40 s à 10 000)."""
+    now = now or _now()
+    rows = (session.query(ExamAttempt.id, ExamAttempt.student_id, ExamAttempt.extra_minutes, ExamAttempt.pause_used)
+            .filter(ExamAttempt.exam_id == exam.id, ExamAttempt.status == AttemptStatus.IN_PROGRESS).all())
+    if not rows:
+        return [], 0
+    due = _deadlines(session, exam, rows)
+    limit = timedelta(seconds=grace)
+    return [r.id for r in rows if now > due[r.id] + limit], len(rows)
+
+
+def wave_expiry_possible(session, exam, now=None, grace=0) -> bool:
+    """Une copie en cours d'un examen PAR VAGUES a-t-elle dépassé l'échéance de sa vague (+ temps accordé) ? Un seul EXISTS en SQL, sans rien rapatrier :
+    c'est le contrôle bon marché fait à CHAQUE ouverture du tableau de bord ; le balayage groupé ne tourne que s'il répond oui."""
+    from sqlalchemy import func, case, and_, exists
+    from models import ExamWave, ExamWaveStudent
+    from services.deadline_cap import PAUSE_CREDIT_MINUTES
+    now = now or _now()
+    extra = func.greatest(func.coalesce(ExamAttempt.extra_minutes, 0) - case((ExamAttempt.pause_used == True, PAUSE_CREDIT_MINUTES), else_=0), 0)
+    q = (session.query(ExamAttempt.id)
+         .join(ExamWaveStudent, and_(ExamWaveStudent.exam_id == ExamAttempt.exam_id, ExamWaveStudent.student_id == ExamAttempt.student_id))
+         .join(ExamWave, ExamWave.id == ExamWaveStudent.wave_id)
+         .filter(ExamAttempt.exam_id == exam.id, ExamAttempt.status == AttemptStatus.IN_PROGRESS,
+                 ExamWave.end_time + func.make_interval(0, 0, 0, 0, 0, extra) < now - timedelta(seconds=grace)))
+    return session.query(q.exists()).scalar() is True
+
+
+def submit_expired_bulk(session, exam, now=None, grace=0) -> int:
+    """Soumet d'un seul UPDATE les copies en cours dont l'échéance est dépassée ; renvoie leur nombre. Ne valide pas la transaction."""
+    now = now or _now()
+    ids, _n = expired_attempt_ids(session, exam, now, grace)
+    if ids:
+        session.query(ExamAttempt).filter(ExamAttempt.id.in_(ids), ExamAttempt.status == AttemptStatus.IN_PROGRESS).update(
+            {'status': AttemptStatus.AUTO_SUBMITTED, 'submitted_at': now}, synchronize_session=False)
+    return len(ids)
+
+
 def autosubmit_if_expired(session, attempt, exam=None, grace=ROUTE_GRACE_SECONDS) -> bool:
     """Soumet la tentative si son échéance (+ marge) est dépassée. Renvoie True si elle vient d'être soumise.
     Ne valide pas elle-même la transaction : l'appelant s'en charge."""
@@ -134,9 +174,11 @@ def close_expired(grace=LOOP_GRACE_SECONDS) -> dict:
             OnlineExam.status == ExamStatus.ACTIVE, OnlineExam.end_time >= now).all()
         exams += [e for e in waves if _W.exam_has_waves(session, e.id)]
         for exam in exams:
-            running = session.query(ExamAttempt).filter_by(exam_id=exam.id, status=AttemptStatus.IN_PROGRESS).all()
-            due = _deadlines(session, exam, running) if running else {}
-            expired = [a for a in running if now > due[a.id] + timedelta(seconds=grace)]
+            # Colonnes utiles d'abord (19/11/2026) : charger toutes les copies EN ENTIER (réponses comprises) toutes les 30 s pour 5 000 copies n'a pas de sens ;
+            # seules les copies réellement échues sont lues en entier.
+            expired_ids, n_running = expired_attempt_ids(session, exam, now, grace)
+            expired = session.query(ExamAttempt).filter(ExamAttempt.id.in_(expired_ids)).all() if expired_ids else []
+            running = range(n_running)
             from routes.exams import _never_seen
             for a in expired:
                 a.status = AttemptStatus.AUTO_SUBMITTED

@@ -31,6 +31,10 @@ ex = OnlineExam(subject_id=sub.id, title='[TEST DE CHARGE — IGNORER]', duratio
 s.add(ex); s.commit()
 for b in range(0, N, 1000): s.add_all([StudentUEEnrollment(student_id=u.id, ue_id=ec.ue_id) for u in stu[b:b + 1000]]); s.commit()
 s.add_all([ExamProctor(exam_id=ex.id, proctor_id=v.id, assigned_by_id=adm.id) for v in svs]); s.commit()
+# Examen PAR VAGUES (comme en production) : deux vagues déjà ouvertes, étudiants répartis une sur deux — exerce le chemin « vagues » du tableau de bord (balayage des échéances)
+w1 = ExamWave(exam_id=ex.id, position=1, name='V1', start_time=now - timedelta(minutes=10), end_time=now + timedelta(minutes=100))
+w2 = ExamWave(exam_id=ex.id, position=2, name='V2', start_time=now - timedelta(minutes=8), end_time=now + timedelta(minutes=100)); s.add_all([w1, w2]); s.commit()
+for b in range(0, N, 1000): s.add_all([ExamWaveStudent(wave_id=(w1 if (b + i) % 2 == 0 else w2).id, exam_id=ex.id, student_id=u.id) for i, u in enumerate(stu[b:b + 1000])]); s.commit()
 for b in range(0, N, 1000): s.add_all([ProctorAssignment(exam_id=ex.id, proctor_id=svs[(b + i) % P].id, student_id=u.id) for i, u in enumerate(stu[b:b + 1000])]); s.commit()
 rc = _get_client()
 for code in ('entree_bloquee', 'entree_lente', 'hors_ligne', 'liaison_video', 'trop_d_alertes', 'application_instable', 'appels_attente'):

@@ -2063,6 +2063,8 @@ def init_db():
             # Audit de performance (2026-09-08) : comptage d'inscrits par UE
             # (routes/exams.py, routes/formations.py) filtrait sans index utile
             "CREATE INDEX IF NOT EXISTS ix_student_ue_enrollments_ue_id ON student_ue_enrollments (ue_id)",
+            # Charge 10 000 étudiants (2026-11-19) : interrogations des messages/appels de l'étudiant (copie + type d'événement) ; voir scripts/ajouter_index_charge.py
+            'CREATE INDEX IF NOT EXISTS ix_exam_activity_logs_attempt_type_ts ON exam_activity_logs (attempt_id, event_type, "timestamp")',
         ]
         for _sql in _safe_migrations:
             try:

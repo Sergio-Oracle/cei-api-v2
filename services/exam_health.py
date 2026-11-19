@@ -44,17 +44,18 @@ def collect_anomalies(session) -> list:
                     'title': 'Copies non corrigées',
                     'message': f"{n} copie(s) de « {title} » restent sans note malgré la correction automatique. Ouvrez l'examen et utilisez « Corriger »."})
 
-    # 2. tentatives en cours bien après l'échéance
+    # 2. tentatives en cours bien après l'échéance (en 2 requêtes légères par examen : voir exam_closer.expired_attempt_ids)
     from models import ExamWave
-    from services.exam_waves import attempt_deadline
-    stuck = (session.query(ExamAttempt, OnlineExam)
-             .join(OnlineExam, OnlineExam.id == ExamAttempt.exam_id)
-             .filter(ExamAttempt.status == AttemptStatus.IN_PROGRESS,
-                     (OnlineExam.end_time < now - timedelta(minutes=20)) | OnlineExam.id.in_(session.query(ExamWave.exam_id))).all())
+    from services.exam_closer import expired_attempt_ids
+    ids = [r[0] for r in (session.query(ExamAttempt.exam_id)
+                          .join(OnlineExam, OnlineExam.id == ExamAttempt.exam_id)
+                          .filter(ExamAttempt.status == AttemptStatus.IN_PROGRESS,
+                                  (OnlineExam.end_time < now - timedelta(minutes=20)) | OnlineExam.id.in_(session.query(ExamWave.exam_id))).distinct().all())]
     seen = {}
-    for att, ex in stuck:
-        if now > attempt_deadline(session, ex, att) + timedelta(minutes=20):
-            seen.setdefault(ex.id, [ex.title, ex.created_by_id, 0])[2] += 1
+    for ex in (session.query(OnlineExam).filter(OnlineExam.id.in_(ids)).all() if ids else []):
+        late, _n = expired_attempt_ids(session, ex, now, grace=20 * 60)
+        if late:
+            seen[ex.id] = [ex.title, ex.created_by_id, len(late)]
     for eid, (title, creator, n) in seen.items():
         out.append({'key': f'stuck:{eid}', 'exam_id': eid, 'creator_id': creator,
                     'title': 'Tentatives bloquées',

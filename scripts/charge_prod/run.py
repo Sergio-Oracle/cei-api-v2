@@ -37,15 +37,21 @@ async def call(sess, label, method, path, tok, body=None, timeout=30):
 async def student(sess, i, t_submit_at):
     tok = STU[i]
     await asyncio.sleep(random.random() * A.ramp)
+    for _ in range(2): await call(sess, 'dashboard (liste examens)', 'GET', '/api/online_exams', tok)       # écran d'attente : liste des examens (rafraîchie toutes les 30 s en vrai)
+    await call(sess, 'details', 'GET', f'/api/online_exams/{EX}/details', tok)
+    await call(sess, 'tech_test/me', 'GET', '/api/tech_test/me', tok)
     st, d = await call(sess, 'start', 'POST', f'/api/online_exams/{EX}/start', tok, {})
     if st not in (200, 201): return
     aid = d['attempt']['id']
+    await call(sess, 'paginated (copie)', 'GET', f'/api/exam_attempts/{aid}/paginated', tok)
+    await call(sess, 'livekit_token', 'GET', f'/api/exam_attempts/{aid}/livekit_token', tok)
     for _ in range(2): await call(sess, 'reprise', 'POST', f'/api/online_exams/{EX}/start', tok, {})
     await call(sess, 'seen', 'POST', f'/api/exam_attempts/{aid}/seen', tok, {})
     await call(sess, 'subject', 'GET', f'/api/exam_attempts/{aid}/subject', tok)
     PH['phase'] = PH['phase'] if PH['phase'] != 'ruée' else PH['phase']
-    nxt = {'hb': random.random() * 20, 'save': random.random() * 30, 'msg': random.random() * 30, 'subj': random.random() * 30, 'log': random.random() * 60, 'ev': random.random() * 120}
-    every = {'hb': 20, 'save': 30, 'msg': 30, 'subj': 30, 'log': 60, 'ev': 120}
+    nxt = {'hb': random.random() * 20, 'save': random.random() * 30, 'msg': random.random() * 30, 'subj': random.random() * 30, 'log': random.random() * 60, 'ev': random.random() * 120, 'lock': random.random() * 20, 'snap': random.random() * 30}
+    every = {'hb': 20, 'save': 30, 'msg': 30, 'subj': 30, 'log': 60, 'ev': 120, 'lock': 20, 'snap': 30}
+    IMG = 'data:image/jpeg;base64,' + 'A' * 12000                                  # ~9 Ko : une capture 320x240 réelle
     base = time.perf_counter()
     while not abort.is_set():
         now = time.perf_counter() - base
@@ -58,6 +64,8 @@ async def student(sess, i, t_submit_at):
         elif due == 'msg': await call(sess, 'pending_messages', 'GET', f'/api/exam_attempts/{aid}/pending_messages', tok)
         elif due == 'subj': await call(sess, 'subject (relève)', 'GET', f'/api/exam_attempts/{aid}/subject', tok)
         elif due == 'log': await call(sess, 'log_activity', 'POST', f'/api/exam_attempts/{aid}/log_activity', tok, {'event_type': 'window_blur', 'event_data': 'charge'})
+        elif due == 'lock': await call(sess, 'post_submit_lock', 'GET', '/api/student/post_submit_lock', tok)
+        elif due == 'snap': await call(sess, 'camera_snapshot', 'POST', f'/api/exam_attempts/{aid}/camera_snapshot', tok, {'event_type': 'periodic', 'image_data': IMG, 'face_detected': True, 'faces_count': 1})
         else: await call(sess, 'proctoring_event', 'POST', f'/api/exam_attempts/{aid}/proctoring_event', tok, {'event_type': 'gaze_away', 'event_data': 'charge'})
     if abort.is_set(): return
     await asyncio.sleep(max(0, t_submit_at - (time.perf_counter() - T0)) + random.random() * A.submit)

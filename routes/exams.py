@@ -145,29 +145,20 @@ def get_online_exams():
         now_utc = datetime.now(timezone.utc).replace(tzinfo=None)
         needs_commit = False
         from services import exam_waves as _W
+        # Balayage des copies échues : PLUS de boucle par copie ici (19/11/2026). Pendant un examen par vagues de 3 000 copies, chaque ouverture du tableau de bord
+        # relisait toutes les copies en cours puis posait 2 requêtes par copie : 12 000 requêtes, 12 s (≈ 40 s à 10 000). Désormais : un EXISTS à chaque chargement,
+        # et le balayage groupé (2 requêtes légères + 1 UPDATE) seulement s'il y a réellement une copie échue. La tâche de fond exam_closer fait le reste toutes les 30 s.
+        from services.exam_closer import submit_expired_bulk as _bulk, wave_expiry_possible as _wave_due
         for exam in exams:
             if exam.status == ExamStatus.ACTIVE and exam.end_time and exam.end_time < now_utc:
                 exam.status = ExamStatus.CLOSED
-                in_progress = session.query(ExamAttempt).filter_by(
-                    exam_id=exam.id, status=AttemptStatus.IN_PROGRESS
-                ).all()
-                for att in in_progress:
-                    own_deadline = _W.attempt_deadline(session, exam, att)
-                    if now_utc <= own_deadline:
-                        continue  # temps supplémentaire encore valide — ne pas soumettre
-                    att.status = AttemptStatus.AUTO_SUBMITTED
-                    att.submitted_at = now_utc
+                _bulk(session, exam, now_utc)                  # temps supplémentaire encore valide : la copie reste en cours (échéance individuelle)
                 needs_commit = True
                 print(f"Auto-close examen #{exam.id} '{exam.title}' (end_time dépassé)")
             elif exam.status == ExamStatus.ACTIVE and _W.exam_has_waves(session, exam.id):
-                # Examen par vagues encore ouvert : les tentatives d'une vague terminée
-                # sont soumises à l'échéance de LEUR vague, sans attendre la dernière.
-                for att in session.query(ExamAttempt).filter_by(
-                        exam_id=exam.id, status=AttemptStatus.IN_PROGRESS).all():
-                    if now_utc > _W.attempt_deadline(session, exam, att):
-                        att.status = AttemptStatus.AUTO_SUBMITTED
-                        att.submitted_at = now_utc
-                        needs_commit = True
+                # Examen par vagues encore ouvert : les tentatives d'une vague terminée sont soumises à l'échéance de LEUR vague, sans attendre la dernière.
+                if _wave_due(session, exam, now_utc) and _bulk(session, exam, now_utc):
+                    needs_commit = True
         if needs_commit:
             session.commit()
             # Recharger les tentatives après commit
@@ -2857,17 +2848,14 @@ def _sweep_uncorrected(limit: int = 15):
         now = datetime.now(timezone.utc).replace(tzinfo=None)
         from models import ExamWave as _EW
         from services.exam_waves import attempt_deadline as _deadline
-        stuck = (session.query(ExamAttempt)
-                 .join(OnlineExam, OnlineExam.id == ExamAttempt.exam_id)
-                 .filter(ExamAttempt.status == AttemptStatus.IN_PROGRESS,
-                         (OnlineExam.end_time < now) | OnlineExam.id.in_(session.query(_EW.exam_id))).all())
+        from services.exam_closer import submit_expired_bulk as _bulk
+        ids = [r[0] for r in (session.query(ExamAttempt.exam_id)
+                              .join(OnlineExam, OnlineExam.id == ExamAttempt.exam_id)
+                              .filter(ExamAttempt.status == AttemptStatus.IN_PROGRESS,
+                                      (OnlineExam.end_time < now) | OnlineExam.id.in_(session.query(_EW.exam_id))).distinct().all())]
         closed = 0
-        for att in stuck:
-            ex = att.exam
-            if now > _deadline(session, ex, att) + timedelta(minutes=1):
-                att.status = AttemptStatus.AUTO_SUBMITTED
-                att.submitted_at = now
-                closed += 1
+        for ex in (session.query(OnlineExam).filter(OnlineExam.id.in_(ids)).all() if ids else []):
+            closed += _bulk(session, ex, now, grace=60)
         if closed:
             session.commit()
             print(f"Filet correction : {closed} tentative(s) restée(s) en cours clôturée(s)")
@@ -3304,7 +3292,10 @@ def get_post_submit_lock():
         ).filter(
             ExamAttempt.student_id == user_id,
             ExamAttempt.status == AttemptStatus.SUBMITTED,
-            ExamAttempt.submitted_at.isnot(None),
+            # Seule une copie soumise dans les POST_SUBMIT_LOCK_MINUTES dernières minutes peut encore verrouiller (19/11/2026) : avant, les 5 dernières copies de
+            # l'étudiant étaient relues AVEC leur examen et leur vague à chaque appel (≈ 12 requêtes, toutes les 20 s, pour chaque étudiant connecté — 6 000 requêtes/s à
+            # 10 000 étudiants) alors que presque aucun n'est verrouillé. Maintenant : une requête, presque toujours vide.
+            ExamAttempt.submitted_at >= datetime.utcnow() - timedelta(minutes=POST_SUBMIT_LOCK_MINUTES),
         ).order_by(ExamAttempt.submitted_at.desc()).limit(5).all()
 
         for attempt in recent:
@@ -4423,9 +4414,10 @@ def get_exam_stats(exam_id):
         if user.role == UserRole.PROFESSOR and not can_view_exam(session, exam, user_id):
             session.close()
             return jsonify({'error': 'Accès non autorisé'}), 403
-        attempts = session.query(ExamAttempt).filter_by(exam_id=exam_id).all()
+        # Colonnes utiles seulement (19/11/2026) : charger chaque copie EN ENTIER (réponses de plusieurs Ko) pour en tirer des compteurs coûtait 180 ms à 3 000 copies
+        attempts = (session.query(ExamAttempt.status, ExamAttempt.score, ExamAttempt.exam_seen_at, ExamAttempt.submitted_at, ExamAttempt.started_at, ExamAttempt.risk_score)
+                    .filter(ExamAttempt.exam_id == exam_id, ExamAttempt.exam_seen_at.isnot(None)).all())
         # Participant = étudiant qui a eu sa copie sous les yeux ; une tentative créée puis bloquée (caméra, réseau…) n'en est pas un
-        attempts = [a for a in attempts if a.exam_seen_at is not None]
         done = [a for a in attempts if a.status.value in ('submitted', 'auto_submitted')]
         scores = [a.score for a in done if a.score is not None]
         distribution = [0] * 5  # [0-4, 5-9, 10-13, 14-16, 17-20]
@@ -5015,14 +5007,26 @@ def plagiarism_check(exam_id):
             except Exception:
                 return str(answers_raw).lower().strip()
         suspicious = []
-        for i in range(len(attempts)):
-            for j in range(i+1, len(attempts)):
-                a1, a2 = attempts[i], attempts[j]
-                t1 = extract_text(a1.answers)
-                t2 = extract_text(a2.answers)
-                if not t1 or not t2 or len(t1) < 30 or len(t2) < 30:
+        # 19/11/2026 : texte de chaque copie extrait UNE fois (avant : à chaque paire), filtres rapides (borne haute du ratio) avant le calcul exact, et BUDGET DE TEMPS.
+        # La comparaison de toutes les paires est quadratique : à 10 000 copies (50 millions de paires) elle aurait occupé un fil et un processeur de l'API pendant des heures.
+        import time as _time
+        texts = [(a, extract_text(a.answers)) for a in attempts]
+        texts = [(a, t) for a, t in texts if t and len(t) >= 30]
+        budget_s = float(os.getenv('PLAGIARISM_BUDGET_S', '40'))
+        t_start = _time.time(); partial = False
+        sm = SequenceMatcher(None)
+        for i in range(len(texts)):
+            if _time.time() - t_start > budget_s:
+                partial = True
+                break
+            a1, t1 = texts[i]
+            sm.set_seq1(t1)                                   # même orientation qu'avant (a = copie i, b = copie j) : mêmes ratios exactement
+            for j in range(i + 1, len(texts)):
+                a2, t2 = texts[j]
+                sm.set_seq2(t2)
+                if sm.real_quick_ratio() < threshold or sm.quick_ratio() < threshold:
                     continue
-                ratio = SequenceMatcher(None, t1, t2).ratio()
+                ratio = sm.ratio()
                 if ratio >= threshold:
                     suspicious.append({
                         'student1_id':   a1.student_id,
@@ -5042,6 +5046,7 @@ def plagiarism_check(exam_id):
             'threshold_pct': round(threshold * 100),
             'suspicious':    suspicious,
             'total_pairs':   len(suspicious),
+            'partial':       partial,           # True : temps imparti épuisé (très nombreuses copies) — la liste ci-dessus est incomplète
         })
     except Exception as e:
         import traceback

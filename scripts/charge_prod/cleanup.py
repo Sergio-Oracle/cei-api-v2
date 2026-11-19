@@ -33,6 +33,17 @@ if rc is not None:
     for u in uids: rc.delete(f'cei:notif:user:{u}', f'cei:session:active:{u}')
     for a in att_ids: rc.delete(f'cei:risk:{a}', f'cei:riskalert:{a}')
     for code in ('entree_bloquee', 'entree_lente', 'hors_ligne', 'liaison_video', 'trop_d_alertes', 'application_instable', 'appels_attente'): rc.delete(f'cei:vitals:alert:{ex}:{code}')
-    for k in (f'cei:vitals:cache:{ex}', f'cei:readiness:{ex}:full', f'cei:exam_seen_count:{ex}'): rc.delete(k)
+    for k in (f'cei:vitals:cache:{ex}', f'cei:readiness:{ex}:full', f'cei:exam_seen_count:{ex}', f'cei:ap_full:{ex}'): rc.delete(k)
+# Captures caméra du test (stockage objet + repli disque) : supprimées elles aussi, rien ne reste en production
+nb_snap = 0
+try:
+    import s3_client as S3, shutil
+    cl = S3._client(); pref = f'snapshots/{ex}/'
+    for page in cl.get_paginator('list_objects_v2').paginate(Bucket=S3._SNAP_BUCKET, Prefix=pref):
+        objs = [{'Key': o['Key']} for o in page.get('Contents', [])]
+        if objs: cl.delete_objects(Bucket=S3._SNAP_BUCKET, Delete={'Objects': objs}); nb_snap += len(objs)
+    shutil.rmtree(os.path.join(S3._UPLOAD_FOLDER, S3._FALLBACK_DIR, str(ex)), ignore_errors=True)
+except Exception as e:
+    print('captures : nettoyage incomplet :', e)
 left = s.execute(text("select count(*) from users where email like :p"), {'p': f'zz_charge_{tag}_%'}).scalar() + s.execute(text('select count(*) from online_exams where id=:e'), {'e': ex}).scalar()
-print(json.dumps({'nettoyé': True, 'restant': left}))
+print(json.dumps({'nettoyé': True, 'restant': left, 'captures_supprimées': nb_snap}))

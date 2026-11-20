@@ -59,6 +59,7 @@ try:
         ('ÉTUDIANT  log_activity (événement)',       'POST', f'/api/exam_attempts/{a0.id}/log_activity', st0, {'event_type': 'window_blur', 'event_data': 'x'}),
         ('ÉTUDIANT  proctoring_event (événement)',   'POST', f'/api/exam_attempts/{a0.id}/proctoring_event', st0, {'event_type': 'no_face_detected', 'event_data': 'x'}),
         ('ÉTUDIANT  tech_test/me (1 fois)',          'GET',  '/api/tech_test/me', st0, None),
+        ('SURVEILLANT  accueil surveillant/exams (30 s)', 'GET',  '/api/surveillant/exams', sv0, None),
         ('SURVEILLANT  active_proctoring (8 s)',     'GET',  f'/api/online_exams/{ex.id}/active_proctoring', sv0, None),
         ('SURVEILLANT  student_messages (20 s)',     'GET',  f'/api/online_exams/{ex.id}/student_messages', sv0, None),
         ('SURVEILLANT  agent/alerts (15 s)',         'GET',  f'/api/agent/alerts?exam_id={ex.id}', sv0, None),

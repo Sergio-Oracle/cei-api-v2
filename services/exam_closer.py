@@ -253,6 +253,50 @@ def rebalance_active_exams() -> None:
         pass
 
 
+def purge_expired_tokens(batch: int = 20000, max_batches: int = 25) -> int:
+    """Supprime les jetons de renouvellement révoqués DONT L'ÉCHÉANCE EST PASSÉE depuis plus d'un jour. 19/11/2026 : la table `token_blocklist` reçoit une ligne à CHAQUE renouvellement de
+    session (176 000 lignes, 46 Mo, jamais purgée) — à 10 000 étudiants, ≈ 120 000 lignes par examen. Un jeton échu est de toute façon refusé (échéance) : sa ligne ne sert plus à rien.
+    Par lots (jamais de long verrou). Renvoie le nombre de lignes supprimées."""
+    from datetime import timezone
+    from sqlalchemy import text as _text
+    cut = datetime.now(timezone.utc) - timedelta(days=1)
+    total = 0
+    session = get_session()
+    try:
+        for _ in range(max_batches):
+            n = session.execute(_text("DELETE FROM token_blocklist WHERE id IN (SELECT id FROM token_blocklist WHERE expires_at < :cut LIMIT :n)"), {'cut': cut, 'n': batch}).rowcount
+            session.commit()
+            total += n or 0
+            if not n or n < batch:
+                break
+    except Exception as e:
+        session.rollback()
+        print(f"[exam_closer] purge des jetons : {e}")
+    finally:
+        session.close()
+    return total
+
+
+def check_backup_fresh() -> bool:
+    """Prévient les administrateurs si la dernière sauvegarde VALIDE de la base a plus de 36 h (ou n'existe pas). 20/11/2026 : il n'y avait aucune sauvegarde automatique ; maintenant
+    scripts/sauvegarde_base.sh (cron quotidien) pose un fichier LAST_OK après une sauvegarde vérifiée, et ce contrôle quotidien rend tout échec VISIBLE au lieu de silencieux.
+    Inactif sauf CEI_BACKUP_WATCH=1 (réglé en production seulement : un poste de développement n'a pas de sauvegarde à surveiller). Renvoie True si une alerte a été émise."""
+    if os.getenv('CEI_BACKUP_WATCH', '').strip().lower() not in ('1', 'true', 'yes'):
+        return False
+    path = os.path.join(os.getenv('BACKUP_DIR', '/home/serge/backups/db'), 'LAST_OK')
+    try:
+        age_h = (time.time() - os.path.getmtime(path)) / 3600.0
+    except OSError:
+        age_h = None
+    if age_h is not None and age_h <= 36:
+        return False
+    from notif_bus import notify_admins
+    detail = "aucune sauvegarde valide trouvée" if age_h is None else f"la dernière date de {age_h:.0f} h"
+    notify_admins('backup', 'Sauvegarde de la base manquante', f"La sauvegarde quotidienne de la base n'a pas abouti : {detail}. Vérifiez le journal /home/serge/backups/db/sauvegarde.log.")
+    print(f"[exam_closer] sauvegarde de la base : {detail}")
+    return True
+
+
 def tick() -> None:
     """Un seul serveur à la fois : le premier à poser le verrou travaille, les autres passent leur tour."""
     if not cache_set_nx('cei:exam_closer:tick', TICK_SECONDS - 5):
@@ -273,6 +317,18 @@ def tick() -> None:
         exam_preflight.run_once()
     except Exception as e:
         print(f"[exam_closer] contrôle avant examen : {e}")
+    if cache_set_nx('cei:backupwatch:daily', 24 * 3600):
+        try:
+            check_backup_fresh()
+        except Exception as e:
+            print(f"[exam_closer] contrôle de la sauvegarde : {e}")
+    if cache_set_nx('cei:tokenpurge:daily', 24 * 3600):         # une fois par jour (verrou Redis)
+        try:
+            n = purge_expired_tokens()
+            if n:
+                print(f"[exam_closer] {n} jeton(s) de renouvellement expiré(s) purgé(s)")
+        except Exception as e:
+            print(f"[exam_closer] purge des jetons : {e}")
     if cache_set_nx('cei:certwatch:daily', 24 * 3600):
         try:
             from services import cert_watch

@@ -2148,17 +2148,27 @@ def get_surveillant_exams():
 
     session = get_session()
     try:
-        exam_proctors = session.query(ExamProctor).filter_by(proctor_id=user_id).all()
+        # 19/11/2026 : chargement GROUPÉ. Avant, pour chaque étudiant du groupe : son nom, sa copie et son statut étaient lus un par un (281 requêtes, 268 ms pour 135 étudiants,
+        # relancés toutes les 30 s par chaque surveillant) ; maintenant 4 requêtes quel que soit le nombre d'étudiants.
+        from routes.exams import _never_seen
+        from types import SimpleNamespace as _NS
+        exam_proctors = session.query(ExamProctor).options(joinedload(ExamProctor.exam)).filter_by(proctor_id=user_id).all()
         exams = []
         for ep in exam_proctors:
             if not ep.exam:
                 continue
             d = ep.exam.to_dict()
 
-            # Récupérer les affectations de cet examen pour ce surveillant
-            assignments = session.query(ProctorAssignment).filter_by(
-                exam_id=ep.exam_id, proctor_id=user_id
-            ).all()
+            assignments = (session.query(ProctorAssignment)
+                           .options(joinedload(ProctorAssignment.student).load_only(User.id, User.full_name, User.email))
+                           .filter_by(exam_id=ep.exam_id, proctor_id=user_id).order_by(ProctorAssignment.id).all())
+            sids = {pa.student_id for pa in assignments if pa.student_id}
+            rows = (session.query(ExamAttempt.id, ExamAttempt.student_id, ExamAttempt.status, ExamAttempt.risk_score, ExamAttempt.exam_seen_at)
+                    .filter(ExamAttempt.exam_id == ep.exam_id, ExamAttempt.student_id.in_(sids)).all()) if sids else []
+            by_student = {r.student_id: r for r in rows}
+            # Les réponses ne servent qu'aux copies dont l'affichage n'a pas été signalé (rares) : jamais lues pour les autres
+            unseen = [r.id for r in rows if r.exam_seen_at is None]
+            answers = dict(session.query(ExamAttempt.id, ExamAttempt.answers).filter(ExamAttempt.id.in_(unseen)).all()) if unseen else {}
 
             students = []
             for pa in assignments:
@@ -2170,15 +2180,11 @@ def get_surveillant_exams():
                     'status':        'not_started',
                     'risk_score':    0,
                 }
-                from routes.exams import _never_seen
-                _att = pa.attempt
-                if _att is None and pa.student_id:
-                    _att = session.query(ExamAttempt).filter_by(
-                        exam_id=ep.exam_id, student_id=pa.student_id).first()
-                if _att is not None and not _never_seen(_att):      # copie jamais affichée = pas encore commencé
-                    s_info['attempt_id'] = _att.id
-                    s_info['status']     = _att.status.value
-                    s_info['risk_score'] = _att.risk_score or 0
+                r = by_student.get(pa.student_id) if pa.student_id else None
+                if r is not None and not _never_seen(_NS(exam_seen_at=r.exam_seen_at, answers=answers.get(r.id))):      # copie jamais affichée = pas encore commencé
+                    s_info['attempt_id'] = r.id
+                    s_info['status']     = r.status.value
+                    s_info['risk_score'] = r.risk_score or 0
                 students.append(s_info)
 
             d['my_students']      = students

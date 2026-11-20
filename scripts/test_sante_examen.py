@@ -77,6 +77,7 @@ try:
     check("moins de 10 étudiants : aucun pourcentage commenté (pas de verdict sur un si petit effectif)", EV.compute(s, e7.id, now)['niveau'] == 'ok')
 
     print('\n== Accès ==')
+    cache_delete(f'cei:vitals:cache:{e1.id}')          # la vue lit un résultat PARTAGÉ 45 s (amorcé par watch_once) : on le vide pour mesurer l'état présent, pas un résultat antérieur
     r = c.get(f'/api/online_exams/{e1.id}/vitals', headers=H(adm)); check("l'administrateur lit la santé de l'examen", r.status_code == 200 and r.get_json()['niveau'] == 'critique', r.status_code)
     r = c.get(f'/api/online_exams/{e1.id}/vitals', headers=H(sv)); check("un surveillant n'y a pas accès (403)", r.status_code == 403)
     r = c.get(f'/api/online_exams/{e1.id}/vitals', headers=H(stu)); check("un étudiant non plus (403)", r.status_code == 403)

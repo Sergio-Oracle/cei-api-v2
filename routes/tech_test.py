@@ -2,12 +2,16 @@
 
   POST /api/tech_test/livekit_token         jeton pour une salle PRIVÉE de test (jamais la salle d'examen)
   POST /api/tech_test/verify                vérifie CÔTÉ SERVEUR ce que le serveur vidéo reçoit de l'étudiant (caméra, micro, écran)
+  POST /api/tech_test/public/livekit_token  SANS connexion : jeton pour une salle de test ISOLÉE et éphémère (voir plus bas pour les protections)
+  POST /api/tech_test/public/verify         SANS connexion : vérifie côté serveur ce que reçoit CETTE salle de test (rien n'est enregistré)
   POST /api/tech_test/result                enregistre le résultat (statut recalculé par le serveur)
   GET  /api/tech_test/me                    dernier résultat de l'étudiant connecté
   GET  /api/online_exams/<id>/readiness     surveillant / enseignant : prêts, à surveiller, non prêts, jamais testés
   GET  /api/online_exams/<id>/vitals        administrateur / responsable / enseignant : santé de l'examen en cours (voir services/exam_vitals.py)
 """
 import json
+import re
+import secrets
 import time
 import urllib.request as urlreq
 
@@ -109,6 +113,71 @@ def tech_test_verify():
             c.setex(_verify_key(uid), TT.VERIFY_TTL, json.dumps(live))
         except Exception:
             pass
+    return jsonify({'reachable': True, **live})
+
+
+# ── Test du poste SANS connexion (20/11/2026) ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+# Un étudiant doit pouvoir vérifier que sa caméra, son micro et son écran ARRIVENT au serveur vidéo avant même d'avoir (ou de retrouver) son compte, y compris depuis l'application
+# CEI Examen. Seul l'enregistrement du résultat pour le surveillant reste réservé à l'étudiant connecté. Cette voie n'authentifie personne : elle est donc strictement bornée.
+#   - une salle PROPRE à chaque test (techtest-anon-<16 hexa aléatoires>), jamais une salle d'examen ni celle d'un autre test ;
+#   - jeton de 3 minutes, publication seule (aucun droit d'écoute : on ne peut rien recevoir des autres) ;
+#   - le serveur n'accepte de VÉRIFIER qu'une salle qu'il a lui-même émise (clé Redis temporaire) : impossible de sonder une salle quelconque ;
+#   - limite par adresse (120/min) ET plafond global (300/min pour toute la plateforme) : un abus ne peut pas saturer le serveur vidéo ;
+#   - rien n'est enregistré, aucune donnée de compte n'intervient.
+ANON_TTL_S = 180
+ANON_PER_MINUTE = 300
+_ANON_ID = re.compile(r'^[0-9a-f]{16}$')
+
+
+def _anon_key(tid):
+    return f'cei:techtest:anon:{tid}'
+
+
+@tech_test_bp.route('/api/tech_test/public/livekit_token', methods=['POST'])
+@limiter.limit('120 per minute')
+def tech_test_public_token():
+    cfg = _lk()
+    if not all([cfg['url'], cfg['api_key'], cfg['api_secret']]):
+        return jsonify({'error': "Le test de transmission n'est pas disponible pour le moment."}), 503
+    c = _get_client()
+    if c is None:                                   # sans compteur global fiable, on n'ouvre pas une voie non authentifiée
+        return jsonify({'error': "Le test de transmission n'est pas disponible pour le moment."}), 503
+    try:
+        k = f'cei:techtest:anon:rate:{int(time.time() // 60)}'
+        n = c.incr(k)
+        c.expire(k, 120)
+        if n > ANON_PER_MINUTE:
+            return jsonify({'error': 'Beaucoup de tests en même temps. Réessayez dans une minute.'}), 429
+        tid = secrets.token_hex(8)
+        c.setex(_anon_key(tid), ANON_TTL_S + 120, '1')
+    except Exception:
+        return jsonify({'error': "Le test de transmission n'est pas disponible pour le moment."}), 503
+    from proctoring_routes import generate_livekit_token
+    room = f'techtest-anon-{tid}'
+    tok = generate_livekit_token(cfg['api_key'], cfg['api_secret'], room, room, can_publish=True, can_subscribe=False, ttl=ANON_TTL_S)
+    return jsonify({'ws_url': cfg['url'], 'token': tok, 'id': tid})
+
+
+@tech_test_bp.route('/api/tech_test/public/verify', methods=['POST'])
+@limiter.limit('120 per minute')
+def tech_test_public_verify():
+    tid = str((request.get_json(silent=True) or {}).get('id') or '')
+    if not _ANON_ID.match(tid):
+        return jsonify({'error': 'Test inconnu'}), 400
+    c = _get_client()
+    try:
+        known = c is not None and bool(c.get(_anon_key(tid)))
+    except Exception:
+        known = False
+    if not known:
+        return jsonify({'error': 'Ce test a expiré. Relancez-le.'}), 404
+    room = f'techtest-anon-{tid}'
+    parts = list_participants(room)
+    if parts is None:
+        return jsonify({'error': 'Serveur vidéo injoignable', 'reachable': False}), 503
+    mine = next((p for p in parts if p.get('identity') == room), None)
+    live = TT.summarize_participant(mine)
+    live['connected'] = mine is not None
     return jsonify({'reachable': True, **live})
 
 

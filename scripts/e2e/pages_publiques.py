@@ -68,9 +68,22 @@ with sync_playwright() as p:
             final = pg.url.replace(BASE, '').split('?')[0]
             texte = pg.inner_text('body')
             nb = len(re.findall(r'Caméra|Micro|Connexion|Partage|Application|Système|Visioconférence', texte))
-            parcours = (final.rstrip('/') == '/test-poste' and nb >= 3, final, nb)
+            parcours = [final.rstrip('/') == '/test-poste' and nb >= 3, final, nb, None]
+            # Suite (20/11/2026) : le test de partage d'écran puis la transmission réelle doivent aussi marcher SANS connexion. Règle stricte : jamais « Non testé : connectez-vous ».
+            # Un échec de transmission dû au RÉSEAU de la machine qui lance ce contrôle n'est qu'un avertissement (la page a bien tenté et dit pourquoi).
+            try:
+                pg.get_by_role('button', name=re.compile('Tester le partage')).click(timeout=15000)
+                for _ in range(25):
+                    pg.wait_for_timeout(2000)
+                    t2 = pg.inner_text('body')
+                    if 'bien transmis' in t2 or 'pas transmis' in t2 or 'pas pu démarrer' in t2 or 'Non testé' in t2: break
+                live = 'ok' if 'bien transmis' in t2 else ('refus' if 'Non testé' in t2 else ('reseau' if ('pas transmis' in t2 or 'pas pu démarrer' in t2) else 'rien'))
+                parcours[3] = live
+                if live in ('refus', 'rien') or '/login' in pg.url: parcours[0] = False
+            except Exception as e:
+                parcours[3] = 'rien'; parcours[0] = False
         except Exception as e:
-            parcours = (False, f'ERREUR {str(e)[:70]}', 0)
+            parcours = [False, f'ERREUR {str(e)[:70]}', 0, None]
         ctx.close(); ok_all &= parcours[0]
     b.close()
 print(f'Pages publiques sur {BASE} (visiteur non connecté)')
@@ -78,6 +91,8 @@ for ok, path, final, n401, errs in rows:
     print(f"  ✔ {path:30s} → reste sur la page" if ok else (f"  ✘ {path:30s} → RENVOYÉE VERS {final}" if final != path and path != '/' else f"  ✘ {path:30s} → page vide ou en erreur"))
     if n401 and ok: print(f"       (appels d'API répondant 401 sans conséquence : {n401})")
     if errs: print(f"       erreur de page : {errs[0]}")
-if parcours: print(f"  {'✔' if parcours[0] else '✘'} /test-poste, parcours complet (clic sur « Lancer le test », sans connexion) → " + (f"{parcours[2]} contrôles affichés, reste sur la page" if parcours[0] else f"ÉCHEC ({parcours[1]}, {parcours[2]} contrôles)"))
+if parcours:
+    print(f"  {'✔' if parcours[0] else '✘'} /test-poste, parcours complet sans connexion (test, partage d'écran, transmission) → " + (f"{parcours[2]} contrôles affichés, reste sur la page" if parcours[0] else f"ÉCHEC ({parcours[1]}, {parcours[2]} contrôles, transmission : {parcours[3]})"))
+    if parcours[0]: print({'ok': "       transmission réelle vérifiée sans compte : « bien transmis »", 'reseau': "       ⚠ transmission non aboutie depuis cette machine (réseau vers le serveur vidéo) : la page l'a signalé correctement, à surveiller", None: ''}.get(parcours[3], ''))
 print('RÉSULTAT :', 'TOUTES LES PAGES PUBLIQUES RESTENT ACCESSIBLES' if ok_all else 'ÉCHEC — une page publique renvoie vers la connexion')
 sys.exit(0 if ok_all else 1)

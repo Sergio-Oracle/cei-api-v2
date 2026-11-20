@@ -124,6 +124,25 @@ def s3_test_technique(br):
     check("… sans terme technique non plus", not any(b in tm.lower().split('non prêt', 1)[-1][:400] for b in BAN))
     for x in (p1, p2, pm): x.context.close()
 
+def s5_test_poste_sans_connexion(br):
+    print("\n== 5. Test du poste SANS connexion (la transmission réelle se vérifie sans compte ; rien n'est enregistré) ==")
+    BAN = ('serveur vidéo', 'pare-feu', 'mbit', 'livekit', 'latence', 'techtest')
+    pg = new_ctx(br, perms=('camera', 'microphone', 'notifications'))            # AUCUNE connexion : contexte neuf, aucun cookie
+    pg.goto(BASE + '/test-poste'); pg.wait_for_timeout(3000)
+    check("la page reste accessible sans connexion (aucun renvoi vers /login)", '/login' not in pg.url and '/test-poste' in pg.url, pg.url)
+    pg.click('button:has-text("Lancer le test")')
+    pg.wait_for_selector('button:has-text("Tester le partage")', timeout=60000); pg.click('button:has-text("Tester le partage")')
+    for _ in range(30):
+        pg.wait_for_timeout(2000)
+        if pg.locator('text=bien transmis').count() or pg.locator('text=pas transmis').count() or pg.locator('text=pas pu démarrer').count(): break
+    t = pg.inner_text('main')
+    check("partage d'écran accepté sans connexion", "Écran entier partagé" in t, t[-260:])
+    check("la transmission réelle est vérifiée SANS compte : « bien transmis »", 'bien transmis' in t and 'Non testé' not in t, t[-300:])
+    check("l'étudiant est prévenu que le résultat n'est pas enregistré pour son surveillant", "n'est pas enregistré" in t and 'Se connecter' in t, t[-300:])
+    check("aucun terme technique à l'écran", not any(b in t.lower() for b in BAN), [b for b in BAN if b in t.lower()])
+    check("on est toujours sur la page (aucun renvoi vers la connexion en cours de test)", '/login' not in pg.url, pg.url)
+    pg.context.close()
+
 def s4_remise_et_autorisations(br):
     print('\n== 4. Remise de la copie sur réseau instable, et autorisations refusées ==')
     pg = new_ctx(br); login(pg, ctx['students']['remise']); start_exam(pg); pg.wait_for_timeout(6000)
@@ -159,7 +178,7 @@ if __name__ == '__main__':
     with sync_playwright() as p:
         PWH.append(p)
         br = p.chromium.launch(executable_path=CHROME, headless=True, args=['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream', f'--host-resolver-rules=MAP {HOST} 127.0.0.1', '--ignore-certificate-errors'])
-        for name, fn in (('1', s1_entree_et_reprise), ('2', s2_camera_et_abonnements), ('3', s3_test_technique), ('4', s4_remise_et_autorisations)):
+        for name, fn in (('1', s1_entree_et_reprise), ('2', s2_camera_et_abonnements), ('3', s3_test_technique), ('5', s5_test_poste_sans_connexion), ('4', s4_remise_et_autorisations)):
             if only and name not in only: continue
             try: fn(br)
             except Exception as e: check(f'scénario {name} : exécution sans erreur', False, repr(e))

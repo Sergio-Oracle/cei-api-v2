@@ -14,7 +14,6 @@ RESULTS = []
 def check(nom, ok, detail=''):
     RESULTS.append((nom, bool(ok))); print(('  ✔ ' if ok else '  ✘ ') + nom + (f'  — {detail}' if detail and not ok else ''))
 c = A.app.test_client(); rc = _get_client()
-for k in rc.scan_iter('cei:techtest:anon:rate:*'): rc.delete(k)      # compteur propre pour ce test
 
 print('\n== Jeton anonyme ==')
 r = c.post('/api/tech_test/public/livekit_token'); j = r.get_json() or {}
@@ -53,13 +52,10 @@ for bad in ('../../etc', 'techtest-5', '', 'A' * 16, 'g' * 16, 'a' * 15):
 r = c.post('/api/tech_test/public/verify', data='pas du json', content_type='text/plain'); check("requête invalide : 400, pas de 500", r.status_code == 400, r.status_code)
 rc.delete(RT._anon_key(tid)); r = c.post('/api/tech_test/public/verify', json={'id': tid}); check("test expiré : 404 « relancez-le »", r.status_code == 404 and 'expiré' in (r.get_json() or {}).get('error', ''), r.status_code)
 
-print('\n== Bornes contre l\'abus ==')
-k = f'cei:techtest:anon:rate:{int(time.time() // 60)}'
-rc.set(k, RT.ANON_PER_MINUTE); rc.expire(k, 120)
-r = c.post('/api/tech_test/public/livekit_token'); check("plafond GLOBAL atteint (toute la plateforme) : 429 avec un message simple", r.status_code == 429 and 'minute' in (r.get_json() or {}).get('error', ''), (r.status_code, r.get_json()))
-rc.delete(k)
-check("le plafond global est modeste (≤ 300 tests par minute)", RT.ANON_PER_MINUTE <= 300)
-check("la durée de vie du jeton est courte (≤ 3 min)", RT.ANON_TTL_S <= 180)
+print('\n== Aucune limite de débit ajoutée sans décision du propriétaire ==')
+for _ in range(40): last = c.post('/api/tech_test/public/livekit_token').status_code
+check("40 tests d'affilée : aucun refus de débit (aucun plafond par adresse ni global)", last == 200, last)
+check("la durée de vie du jeton reste courte (≤ 3 min)", RT.ANON_TTL_S <= 180)
 bad = [n for n, ok in RESULTS if not ok]
 print(f"\n{len(RESULTS) - len(bad)}/{len(RESULTS)} vérifications réussies" + (f" — ÉCHECS : {bad}" if bad else ''))
 sys.exit(1 if bad else 0)

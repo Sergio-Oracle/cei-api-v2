@@ -122,10 +122,8 @@ def tech_test_verify():
 #   - une salle PROPRE à chaque test (techtest-anon-<16 hexa aléatoires>), jamais une salle d'examen ni celle d'un autre test ;
 #   - jeton de 3 minutes, publication seule (aucun droit d'écoute : on ne peut rien recevoir des autres) ;
 #   - le serveur n'accepte de VÉRIFIER qu'une salle qu'il a lui-même émise (clé Redis temporaire) : impossible de sonder une salle quelconque ;
-#   - limite par adresse (120/min) ET plafond global (300/min pour toute la plateforme) : un abus ne peut pas saturer le serveur vidéo ;
 #   - rien n'est enregistré, aucune donnée de compte n'intervient.
 ANON_TTL_S = 180
-ANON_PER_MINUTE = 300
 _ANON_ID = re.compile(r'^[0-9a-f]{16}$')
 
 
@@ -134,22 +132,17 @@ def _anon_key(tid):
 
 
 @tech_test_bp.route('/api/tech_test/public/livekit_token', methods=['POST'])
-@limiter.limit('120 per minute')
+@limiter.exempt
 def tech_test_public_token():
     cfg = _lk()
     if not all([cfg['url'], cfg['api_key'], cfg['api_secret']]):
         return jsonify({'error': "Le test de transmission n'est pas disponible pour le moment."}), 503
     c = _get_client()
-    if c is None:                                   # sans compteur global fiable, on n'ouvre pas une voie non authentifiée
+    if c is None:                                   # sans Redis on ne peut pas mémoriser les tests émis (donc pas les vérifier)
         return jsonify({'error': "Le test de transmission n'est pas disponible pour le moment."}), 503
     try:
-        k = f'cei:techtest:anon:rate:{int(time.time() // 60)}'
-        n = c.incr(k)
-        c.expire(k, 120)
-        if n > ANON_PER_MINUTE:
-            return jsonify({'error': 'Beaucoup de tests en même temps. Réessayez dans une minute.'}), 429
         tid = secrets.token_hex(8)
-        c.setex(_anon_key(tid), ANON_TTL_S + 120, '1')
+        c.setex(_anon_key(tid), ANON_TTL_S + 120, '1')           # mémorise l'identifiant émis : seule une salle émise par le serveur peut ensuite être vérifiée
     except Exception:
         return jsonify({'error': "Le test de transmission n'est pas disponible pour le moment."}), 503
     from proctoring_routes import generate_livekit_token
@@ -159,7 +152,7 @@ def tech_test_public_token():
 
 
 @tech_test_bp.route('/api/tech_test/public/verify', methods=['POST'])
-@limiter.limit('120 per minute')
+@limiter.exempt
 def tech_test_public_verify():
     tid = str((request.get_json(silent=True) or {}).get('id') or '')
     if not _ANON_ID.match(tid):

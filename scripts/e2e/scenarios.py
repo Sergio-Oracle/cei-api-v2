@@ -143,6 +143,41 @@ def s5_test_poste_sans_connexion(br):
     check("on est toujours sur la page (aucun renvoi vers la connexion en cours de test)", '/login' not in pg.url, pg.url)
     pg.context.close()
 
+# Faux pont de l'application CEI Examen : enregistre chaque appel dans window.__ceiCalls ; WhatsApp (logiciel interdit) et le Bloc-notes (autre application) sont « ouverts » tant qu'on ne les ferme pas.
+def fake_cei(stubborn=False):
+    return """(() => { window.__ceiCalls = []; let wa = true, np = true; const rec = n => window.__ceiCalls.push(n);
+  window.ceiClient = { isCEIClient: true,
+    info: async () => ({ client: 'CEI', version: '1.9.0', platform: 'win32', vm: false }),
+    status: async () => ({ examMode: false, displays: 1, focused: true, kiosk: false, shortcuts: [], vm: false }),
+    sign: async () => ({ sig: 'x', version: '1.9.0', platform: 'win32', vm: false }),
+    listApps: async () => { rec('listApps'); return { apps: np ? [{ name: 'Notepad' }] : [] } },
+    closeApps: async () => { rec('closeApps'); if (%s) return { closed: 0, remaining: [{ name: 'Notepad' }] }; np = false; return { closed: 1, remaining: [] } },
+    forbidden: async () => { rec('forbidden'); return { names: wa ? ['WhatsApp'] : [] } },
+    stopForbidden: async () => { rec('stopForbidden'); wa = false; return { remaining: [], tried: ['WhatsApp'], helper: true } },
+    enterExamMode: async () => { rec('enterExamMode'); return { ok: true } }, leaveExamMode: async () => ({ ok: true }),
+    configure: async () => ({ ok: true }), ports: async () => ({ displays: 1, displayNames: [], usb: [] }) }; })();""" % ('true' if stubborn else 'false')
+
+def s6_fermeture_au_clic(br):
+    print("\n== 6. L'application CEI Examen ne ferme RIEN avant que l'étudiant veuille composer ==")
+    pg = new_ctx(br, (fake_cei(),)); login(pg, ctx['students']['apps1'])
+    pg.goto(f"{BASE}/exam/{ctx['exam']}"); pg.wait_for_timeout(11000)          # largement plus que l'ancien intervalle de 3 s : l'ancien code aurait déjà tout fermé
+    calls = pg.evaluate('window.__ceiCalls')
+    check("écran d'instructions : AUCUN arrêt de logiciel interdit ni fermeture d'application (WhatsApp reste utilisable)", not any(c in calls for c in ('stopForbidden', 'closeApps')), calls)
+    check("… et aucune interrogation en boucle de l'application", not any(c in calls for c in ('forbidden', 'listApps', 'enterExamMode')), calls)
+    b = pg.locator('button:has-text("J\'accepte et je démarre")')
+    check("le bouton « Démarrer » n'est pas bloqué par les applications ouvertes", b.count() and b.first.is_enabled(), text(pg)[:200])
+    b.first.click(); pg.wait_for_timeout(9000)
+    calls = pg.evaluate('window.__ceiCalls')
+    check("AU CLIC sur « Démarrer » : le logiciel interdit est arrêté puis les autres applications sont fermées", 'stopForbidden' in calls and 'closeApps' in calls and calls.index('stopForbidden') < calls.index('closeApps'), calls)
+    check("… avant d'entrer en mode examen", 'enterExamMode' in calls and calls.index('closeApps') < calls.index('enterExamMode'), calls)
+    pg.context.close()
+    pg2 = new_ctx(br, (fake_cei(stubborn=True),)); login(pg2, ctx['students']['apps2'])
+    pg2.goto(f"{BASE}/exam/{ctx['exam']}"); pg2.wait_for_timeout(6000)
+    pg2.locator('button:has-text("J\'accepte et je démarre")').first.click(); pg2.wait_for_timeout(8000)
+    t = text(pg2); calls = pg2.evaluate('window.__ceiCalls')
+    check("une application qui refuse de se fermer : l'étudiant le voit et décide (l'examen n'entre pas en mode examen tout seul)", 'Notepad' in t and 'enterExamMode' not in calls, (t[:200], calls))
+    pg2.context.close()
+
 def s4_remise_et_autorisations(br):
     print('\n== 4. Remise de la copie sur réseau instable, et autorisations refusées ==')
     pg = new_ctx(br); login(pg, ctx['students']['remise']); start_exam(pg); pg.wait_for_timeout(6000)
@@ -178,7 +213,7 @@ if __name__ == '__main__':
     with sync_playwright() as p:
         PWH.append(p)
         br = p.chromium.launch(executable_path=CHROME, headless=True, args=['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream', f'--host-resolver-rules=MAP {HOST} 127.0.0.1', '--ignore-certificate-errors'])
-        for name, fn in (('1', s1_entree_et_reprise), ('2', s2_camera_et_abonnements), ('3', s3_test_technique), ('5', s5_test_poste_sans_connexion), ('4', s4_remise_et_autorisations)):
+        for name, fn in (('1', s1_entree_et_reprise), ('2', s2_camera_et_abonnements), ('3', s3_test_technique), ('5', s5_test_poste_sans_connexion), ('6', s6_fermeture_au_clic), ('4', s4_remise_et_autorisations)):
             if only and name not in only: continue
             try: fn(br)
             except Exception as e: check(f'scénario {name} : exécution sans erreur', False, repr(e))

@@ -2832,16 +2832,19 @@ OPENAPI_SPEC = {
             "tags": ["Surveillant"], "summary": "Envoyer un message (étudiant ↔ surveillant)",
             "parameters": [{"name": "attempt_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
             "requestBody": {"required": True, "content": {"application/json": {"schema": {
-                "type": "object", "required": ["content"],
-                "properties": {"content": {"type": "string", "example": "J'ai une question sur l'énoncé."}}
+                "type": "object", "required": ["message"],
+                "properties": {
+                    "message": {"type": "string", "example": "J'ai une question sur l'énoncé."},
+                    "eid": {"type": "string", "description": "Identifiant d'événement (8 à 40 caractères A-Z a-z 0-9 _ -) : le navigateur renvoie seul un message dont la réponse s'est perdue ; un même identifiant n'est jamais enregistré deux fois (réponse « duplicate »: true). Facultatif.", "example": "k3j9x0aq7m2p"}
+                }
             }}}},
-            "responses": {"200": {"description": "Message envoyé"}}
+            "responses": {"200": {"description": "Message envoyé (ou doublon ignoré : « duplicate »: true)"}}
         }},
         "/api/online_exams/{exam_id}/student_messages": {"get": {
             "tags": ["Surveillant"], "summary": "Messages des étudiants — vue surveillant/prof",
             "parameters": [
                 {"name": "exam_id", "in": "path", "required": True, "schema": {"type": "integer"}},
-                {"name": "since", "in": "query", "schema": {"type": "string", "format": "date-time"}, "description": "Retourne uniquement les messages après cette date"}
+                {"name": "since", "in": "query", "schema": {"type": "string", "format": "date-time"}, "description": "Retourne uniquement les messages après cette date (reculée de 15 s : aucun message validé juste après un relevé n'est perdu ; le client écarte les messages déjà vus par log_id)"}
             ],
             "responses": {"200": {"description": "Messages", "content": {"application/json": {"schema": {
                 "type": "object",

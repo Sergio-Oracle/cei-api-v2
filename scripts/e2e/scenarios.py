@@ -182,6 +182,32 @@ def s6_fermeture_au_clic(br):
 CLICK_IN_CARD = """([name, title]) => { const els = [...document.querySelectorAll('*')].filter(e => e.children.length === 0 && e.textContent.includes(name));
   for (const el of els) { let p = el; for (let i = 0; i < 10 && p; i++) { const b = p.querySelector('button[title="' + title + '"]'); if (b) { b.click(); return true } p = p.parentElement } } return false }"""
 
+def s8_etudiant_ne_commande_pas_les_autres(br):
+    print("\n== 8. Un étudiant ne peut pas commander les autres (message, appel et EXCLUSION diffusés dans la salle d'examen) ==")
+    vic = new_ctx(br); login(vic, ctx['students']['dup1']); start_exam(vic); vic.wait_for_timeout(5000)
+    atk = new_ctx(br); tok = {}
+    def _cap(r):
+        if '/livekit_token' in r.url and r.status == 200 and 'token' not in tok:
+            try: tok.update(r.json())
+            except Exception: pass
+    atk.on('response', _cap); errs8 = []
+    vic.on('pageerror', lambda e: errs8.append(str(e)[:160]))
+    login(atk, ctx['students']['atk1']); start_exam(atk); atk.wait_for_timeout(6000)
+    check("l'attaquant (un autre étudiant, même salle) dispose de son jeton de salle", bool(tok.get('token')), tok)
+    if not tok.get('token'): return
+    atk.evaluate("""async ([ws, tk]) => { const LK = window.LivekitClient; const room = new LK.Room(); await room.connect(ws, tk, {autoSubscribe: false});
+        const enc = new TextEncoder();
+        for (const m of [{type: 'message', message: 'FAUX MESSAGE ETUDIANT'}, {type: 'warning', message: 'FAUX AVERTISSEMENT'}, {type: 'private_call'}, {type: 'ban'}])
+            await room.localParticipant.publishData(enc.encode(JSON.stringify(m)), {reliable: true});
+        await new Promise(r => setTimeout(r, 1500)); room.disconnect() }""", [tok['ws_url'], tok['token']])
+    vic.wait_for_timeout(8000)
+    body = vic.inner_text('body')
+    check("la victime ne reçoit pas le faux message", "FAUX MESSAGE" not in body and vic.locator("text=Message de l'Enseignant").count() == 0)
+    check("… ni le faux avertissement", "FAUX AVERTISSEMENT" not in body)
+    check("… n'est PAS exclue de son examen (« Session terminée »)", vic.locator("text=Session terminée").count() == 0 and 'Vous avez été exclu' not in body)
+    check("… et son examen reste utilisable (la copie est toujours affichée)", vic.locator('button:has-text("Soumettre"), button:has-text("Terminer")').count() > 0 or 'Question' in body, body[:120])
+    check("aucune exception de page chez la victime", not errs8, errs8[:2])
+
 def s7_evenements_une_fois(br):
     print("\n== 7. Message et appel du surveillant : chaque événement n'arrive qu'UNE fois chez l'étudiant (relève de 30 s comprise) ==")
     name = 'ZZ RG dup1'; MSG = 'Merci de rester face à la caméra (essai automatique)'
@@ -251,7 +277,7 @@ if __name__ == '__main__':
     with sync_playwright() as p:
         PWH.append(p)
         br = p.chromium.launch(executable_path=CHROME, headless=True, args=['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream', f'--host-resolver-rules=MAP {HOST} 127.0.0.1', '--ignore-certificate-errors'])
-        for name, fn in (('1', s1_entree_et_reprise), ('2', s2_camera_et_abonnements), ('3', s3_test_technique), ('5', s5_test_poste_sans_connexion), ('6', s6_fermeture_au_clic), ('7', s7_evenements_une_fois), ('4', s4_remise_et_autorisations)):
+        for name, fn in (('1', s1_entree_et_reprise), ('2', s2_camera_et_abonnements), ('3', s3_test_technique), ('5', s5_test_poste_sans_connexion), ('6', s6_fermeture_au_clic), ('7', s7_evenements_une_fois), ('8', s8_etudiant_ne_commande_pas_les_autres), ('4', s4_remise_et_autorisations)):
             if only and name not in only: continue
             try: fn(br)
             except Exception as e: check(f'scénario {name} : exécution sans erreur', False, repr(e))

@@ -1333,11 +1333,21 @@ def send_student_message(attempt_id):
         if not message:
             return jsonify({'error': 'Message vide'}), 400
 
+        # Identifiant d'événement (21/11/2026), comme pour les messages du surveillant : le navigateur de l'étudiant renvoie
+        # automatiquement un message dont la réponse s'est perdue ; un même identifiant n'est jamais enregistré deux fois.
+        eid = str(data.get('eid') or '')
+        eid = eid if re.fullmatch(r'[A-Za-z0-9_-]{8,40}', eid) else ''
+        if eid:
+            from cache import cache_set_nx_value
+            if cache_set_nx_value(f'cei:smsg:eid:{attempt_id}:{eid}', 1, 600) is False:
+                return jsonify({'success': True, 'duplicate': True})
+
         log = ExamActivityLog(
             attempt_id=attempt_id,
             event_type='student_message',
             event_data=json.dumps({
                 'message': message,
+                'eid': eid or None,
                 'student_name': attempt.student.full_name if attempt.student else '?',
                 'timestamp': datetime.utcnow().isoformat()
             })
@@ -1347,6 +1357,22 @@ def send_student_message(attempt_id):
         return jsonify({'success': True})
     finally:
         session.close()
+
+
+# Marqueurs que la page de l'étudiant place dans ses messages d'appel : jamais montrés tels quels au personnel (21/11/2026).
+_STUDENT_MSG_MARKERS = (
+    ('[DEMANDE_APPEL]', 'call_request', 'voice', "Demande un appel vocal pour poser une question."),
+    ('[FIN_APPEL]',     'call_ended',   None,    "A terminé l'appel privé."),
+)
+
+
+def _student_message_view(raw):
+    """(texte lisible, type, motif) d'un message d'étudiant."""
+    raw = raw or ''
+    for marker, kind, reason, text in _STUDENT_MSG_MARKERS:
+        if raw.lstrip().startswith(marker):
+            return text, kind, reason
+    return raw, 'message', None
 
 
 @proctoring_bp.route('/api/online_exams/<int:exam_id>/student_messages', methods=['GET'])
@@ -1392,6 +1418,10 @@ def get_student_messages(exam_id):
 
         since = _parse_since(since_str)
         if since is not None:
+            # Recouvrement (21/11/2026) : l'horodatage d'un message est pris à l'insertion, pas à la validation ; sous forte charge
+            # une ligne validée juste après une relève pouvait porter une heure DÉJÀ passée et n'être jamais renvoyée au surveillant.
+            # Le navigateur écarte les messages déjà vus par leur identifiant (log_id), le recouvrement est donc sans effet visible.
+            since = since - timedelta(seconds=15)
             recent = []
             if role == 'surveillant':
                 # Étudiants qui viennent de lui être confiés (surveillant absent, ajouté ou revenu) :
@@ -1413,13 +1443,17 @@ def get_student_messages(exam_id):
         for log in logs:
             try:
                 d = json.loads(log.event_data)
+                text, kind, reason = _student_message_view(d.get('message', ''))
+                if log.event_type == 'student_call_request':
+                    kind, reason = 'call_request', 'resume'
                 messages.append({
                     'attempt_id': log.attempt_id,
                     'student_name': d.get('student_name', '?'),
-                    'message': d.get('message', ''),
+                    'message': text,
                     'timestamp': log.timestamp.isoformat() if log.timestamp else None,
                     'log_id': log.id,
-                    'type': 'call_request' if log.event_type == 'student_call_request' else 'message',
+                    'type': kind,
+                    'reason': reason,
                 })
             except Exception:
                 pass
@@ -3715,6 +3749,13 @@ def agent_push_alert():
         return jsonify({'error': 'Données incomplètes'}), 400
     data['read'] = False
     _push_alert(data)
+    # Une NOUVELLE alerte est toujours visible (21/11/2026). L'état « lue » est rattaché à l'étudiant et n'était jamais effacé : dès qu'un surveillant avait
+    # marqué un étudiant comme lu (ou que sa tentative avait été close), toutes ses alertes suivantes naissaient « lues » et n'apparaissaient plus nulle part
+    # (4 612 étudiants dans cet ensemble en production). L'agent n'émet qu'une alerte par étudiant et par 10 minutes : pas de rafale.
+    try:
+        _r = _redis_alerts(); _r.srem(_READ_KEY, str(int(data['attempt_id']))); _r.close()
+    except Exception as _se:
+        _alerts_log.warning('Redis srem lue: %s', _se)
 
     # Compteurs d'alertes PERSISTANTS par examen (Redis) : l'ancien compteur vivait dans la mémoire de l'agent — remis à zéro à chaque redémarrage et
     # comptant chaque rappel (2 154 en séance contre 487 à la clôture le 17/11). On compte désormais les alertes envoyées ET les étudiants distincts alertés.
@@ -3796,7 +3837,10 @@ def agent_get_alerts():
         unread = [a for a in unread if a.get('exam_id') == exam_q]
     visible = _visible_alert_attempts({a.get('attempt_id') for a in unread}, role, get_current_user_id())
     unread = [a for a in unread if a.get('attempt_id') in visible]
-    return jsonify({'alerts': unread[-50:], 'total_unread': len(unread)})
+    # Les 50 plus RÉCENTES (la liste Redis est rangée du plus récent au plus ancien : l'ancien « [-50:] » renvoyait les 50 plus anciennes,
+    # donc, au-delà de 50 alertes non lues, le surveillant ne voyait plus les dernières).
+    unread.sort(key=lambda a: a.get('timestamp') or '', reverse=True)
+    return jsonify({'alerts': unread[:50], 'total_unread': len(unread)})
 
 
 @proctoring_bp.route('/api/agent/alerts/read', methods=['POST'])

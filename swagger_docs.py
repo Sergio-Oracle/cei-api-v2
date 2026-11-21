@@ -2780,10 +2780,11 @@ OPENAPI_SPEC = {
                 "type": "object",
                 "properties": {
                     "message": {"type": "string", "example": "Votre visage n'est plus visible."},
-                    "type":    {"type": "string", "enum": ["warning","message","private_call","end_call"], "default": "warning"}
+                    "type":    {"type": "string", "enum": ["warning","message","private_call","end_call"], "default": "warning"},
+                    "eid":     {"type": "string", "description": "Identifiant d'événement (8 à 40 caractères A-Z a-z 0-9 _ -), commun au canal direct et à cet appel : le même identifiant n'est jamais enregistré deux fois pour une tentative (réponse « duplicate »: true). Facultatif.", "example": "k3j9x0aq7m2p"}
                 }
             }}}},
-            "responses": {"200": {"description": "Avertissement envoyé"}}
+            "responses": {"200": {"description": "Avertissement envoyé (ou doublon ignoré : « duplicate »: true)"}}
         }},
         "/api/exam_attempts/{attempt_id}/proctor_ban": {"post": {
             "tags": ["Surveillant"], "summary": "Exclure définitivement un étudiant (surveillant/prof)",

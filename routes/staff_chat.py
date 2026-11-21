@@ -25,7 +25,7 @@ def _ctx(session, exam_id):
 
 @staff_chat_bp.route('/api/online_exams/<int:exam_id>/staff_chat', methods=['GET'])
 @paseto_required
-@limiter.limit('120 per minute')
+@limiter.exempt   # 21/11/2026 : relève périodique d'un panneau ouvert en permanence ; derrière une même adresse (salle d'examen), la limite par IP renvoyait des 429 (42 le 17/11) → erreurs et « discrédit ». L'envoi (POST) reste limité.
 def staff_chat_list(exam_id):
     session = get_session()
     try:

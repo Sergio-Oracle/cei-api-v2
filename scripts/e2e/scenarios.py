@@ -178,6 +178,44 @@ def s6_fermeture_au_clic(br):
     check("une application qui refuse de se fermer : l'étudiant le voit et décide (l'examen n'entre pas en mode examen tout seul)", 'Notepad' in t and 'enterExamMode' not in calls, (t[:200], calls))
     pg2.context.close()
 
+# clique, dans la page de surveillance, le bouton `title` de la carte de l'étudiant `name`
+CLICK_IN_CARD = """([name, title]) => { const els = [...document.querySelectorAll('*')].filter(e => e.children.length === 0 && e.textContent.includes(name));
+  for (const el of els) { let p = el; for (let i = 0; i < 10 && p; i++) { const b = p.querySelector('button[title="' + title + '"]'); if (b) { b.click(); return true } p = p.parentElement } } return false }"""
+
+def s7_evenements_une_fois(br):
+    print("\n== 7. Message et appel du surveillant : chaque événement n'arrive qu'UNE fois chez l'étudiant (relève de 30 s comprise) ==")
+    name = 'ZZ RG dup1'; MSG = 'Merci de rester face à la caméra (essai automatique)'
+    st = new_ctx(br, perms=('camera', 'microphone', 'notifications')); login(st, ctx['students']['dup1']); start_exam(st); st.wait_for_timeout(5000)
+    sv = new_ctx(br); errs7 = []
+    for pg_ in (st, sv): pg_.on('pageerror', lambda e: errs7.append(str(e)[:160]))        # une exception de page (ex. erreur React 310 : page blanche) doit faire échouer le scénario
+    login(sv, ctx['adm']); sv.goto(f"{BASE}/proctor/monitor/{ctx['exam']}"); sv.wait_for_timeout(12000)
+    check("la page de surveillance et la copie de l'étudiant s'ouvrent sans exception", not errs7, errs7[:2])
+    # DEUX messages décalés : la relève du serveur a lieu toutes les 30 s à une phase inconnue ; l'ancienne protection ne tenait que 10 s, donc au moins l'un des deux tombait hors de sa portée
+    for k, txt in enumerate(('Merci de rester face à la caméra (essai 1)', 'Gardez votre écran visible (essai 2)'), 1):
+        ok = sv.evaluate(CLICK_IN_CARD, [name, 'Message'])
+        check(f"message {k} : le surveillant trouve l'étudiant dans sa liste et ouvre « Message »", ok)
+        if not ok: continue
+        sv.fill('textarea', txt); sv.locator('button:has-text("Envoyer")').last.click()
+        try: st.wait_for_selector("text=Message de l'Enseignant", timeout=20000); recu = True
+        except Exception: recu = False
+        check(f"message {k} : l'étudiant le reçoit", recu)
+        if recu:
+            st.locator('button:has-text("J\'ai compris")').first.click(); st.wait_for_timeout(500)
+            st.wait_for_timeout(42000)                       # plus que la relève du serveur (30 s)
+            check(f"message {k} : l'étudiant ne le revoit PAS après la relève du serveur", st.locator("text=Message de l'Enseignant").count() == 0)
+    ok = sv.evaluate(CLICK_IN_CARD, [name, 'Appel privé'])
+    check("le surveillant lance un appel privé", ok)
+    if ok:
+        try: st.wait_for_selector('text=Appel du Surveillant', timeout=20000); recu = True
+        except Exception: recu = False
+        check("l'étudiant voit la fenêtre d'appel", recu)
+        if recu:
+            st.locator('button:has-text("Refuser")').first.click(); st.wait_for_timeout(500)
+            st.wait_for_timeout(42000)
+            check("… et elle NE réapparaît PAS après la relève du serveur (30 s)", st.locator('text=Appel du Surveillant').count() == 0)
+    check("aucune exception de page pendant tout le scénario", not errs7, errs7[:2])
+    for x in (st, sv): x.context.close()
+
 def s4_remise_et_autorisations(br):
     print('\n== 4. Remise de la copie sur réseau instable, et autorisations refusées ==')
     pg = new_ctx(br); login(pg, ctx['students']['remise']); start_exam(pg); pg.wait_for_timeout(6000)
@@ -213,7 +251,7 @@ if __name__ == '__main__':
     with sync_playwright() as p:
         PWH.append(p)
         br = p.chromium.launch(executable_path=CHROME, headless=True, args=['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream', f'--host-resolver-rules=MAP {HOST} 127.0.0.1', '--ignore-certificate-errors'])
-        for name, fn in (('1', s1_entree_et_reprise), ('2', s2_camera_et_abonnements), ('3', s3_test_technique), ('5', s5_test_poste_sans_connexion), ('6', s6_fermeture_au_clic), ('4', s4_remise_et_autorisations)):
+        for name, fn in (('1', s1_entree_et_reprise), ('2', s2_camera_et_abonnements), ('3', s3_test_technique), ('5', s5_test_poste_sans_connexion), ('6', s6_fermeture_au_clic), ('7', s7_evenements_une_fois), ('4', s4_remise_et_autorisations)):
             if only and name not in only: continue
             try: fn(br)
             except Exception as e: check(f'scénario {name} : exécution sans erreur', False, repr(e))

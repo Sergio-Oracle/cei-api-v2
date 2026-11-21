@@ -8,6 +8,7 @@ from extensions import limiter
 import jwt as pyjwt
 import time
 import json
+import re
 import os
 import urllib.request as urlreq
 import urllib.error
@@ -778,10 +779,20 @@ def send_proctoring_warning(attempt_id):
         message = data.get('message', 'Avertissement du surveillant')
         warning_type = data.get('type', 'warning')  # 'warning', 'message', 'private_call', 'end_call'
 
+        # Identifiant d'événement (20/11/2026). Un message ou un appel part par DEUX voies voulues : le canal direct (instantané) et cet appel (enregistrement + filet de sécurité). L'étudiant
+        # reçoit donc le même événement deux fois ; l'identifiant, commun aux deux voies, lui permet de le reconnaître (la protection précédente, 10 secondes, était plus courte que la relève de 30 s).
+        # Ici, le même identifiant n'est JAMAIS enregistré deux fois pour une tentative : un clic répété ou un nouvel essai réseau du navigateur ne crée plus de second événement.
+        eid = str(data.get('eid') or '')
+        eid = eid if re.fullmatch(r'[A-Za-z0-9_-]{8,40}', eid) else ''
+        if eid:
+            from cache import cache_set_nx_value
+            if cache_set_nx_value(f'cei:warn:eid:{attempt_id}:{eid}', 1, 600) is False:
+                return jsonify({'success': True, 'message': 'Avertissement envoyé', 'duplicate': True})
+
         log = ExamActivityLog(
             attempt_id=attempt_id,
             event_type=f'teacher_{warning_type}',
-            event_data=json.dumps({'message': message, 'from_teacher': True,
+            event_data=json.dumps({'message': message, 'from_teacher': True, 'eid': eid or None,
                                    'timestamp': datetime.utcnow().isoformat()})
         )
         session.add(log)
@@ -1281,6 +1292,7 @@ def get_pending_messages(attempt_id):
                     'id': log.id,
                     'type': log.event_type.replace('teacher_', ''),
                     'message': data.get('message', ''),
+                    'eid': data.get('eid'),
                     'timestamp': log.timestamp.isoformat() if log.timestamp else None
                 })
             except Exception:

@@ -8,5 +8,7 @@ for t in test_enonces test_corpus_reel test_docx_structure test_phonecam_et_code
   if $PY scripts/$t.py > /tmp/verif_$t.log 2>&1; then echo "OK   $t  ($(grep -o '[0-9]*/[0-9]* vérifications réussies' /tmp/verif_$t.log | tail -1))"
   else echo "ÉCHEC $t  → /tmp/verif_$t.log"; tail -5 /tmp/verif_$t.log; ko=1; fi
 done
+if bash scripts/controle_noms_indefinis.sh > /tmp/verif_noms_indefinis.log 2>&1; then echo "OK   noms_indefinis  ($(tail -1 /tmp/verif_noms_indefinis.log))"
+else echo "ÉCHEC noms_indefinis  → /tmp/verif_noms_indefinis.log"; tail -6 /tmp/verif_noms_indefinis.log; ko=1; fi
 [ $ko -eq 0 ] && echo "== Tout est bon : déploiement autorisé ==" || echo "== DÉPLOIEMENT REFUSÉ =="
 exit $ko

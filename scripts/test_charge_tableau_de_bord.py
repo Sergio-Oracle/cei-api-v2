@@ -100,12 +100,17 @@ try:
 
     print('\n== Verrou après soumission ==')
     ex1 = made['ex'][0]
-    u_lock, u_old, u_auto = stA[1], stA[3], stA[5]          # vague OUVERTE : le verrou ne dépasse jamais la fin de la vague de l'étudiant
-    for u, mins, stt in ((u_lock, 1, AttemptStatus.SUBMITTED), (u_old, 10, AttemptStatus.SUBMITTED), (u_auto, 1, AttemptStatus.AUTO_SUBMITTED)):
-        a = s.query(ExamAttempt).filter_by(exam_id=ex1, student_id=u.id).one(); a.status = stt; a.submitted_at = datetime.utcnow() - timedelta(minutes=mins)
+    u_lock, u_old, u_auto, u_90 = stA[1], stA[3], stA[5], stA[7]          # vague OUVERTE : le verrou ne dépasse jamais la fin de la vague de l'étudiant
+    for u, secs, stt in ((u_lock, 20, AttemptStatus.SUBMITTED), (u_old, 600, AttemptStatus.SUBMITTED), (u_auto, 20, AttemptStatus.AUTO_SUBMITTED), (u_90, 90, AttemptStatus.SUBMITTED)):
+        a = s.query(ExamAttempt).filter_by(exam_id=ex1, student_id=u.id).one(); a.status = stt; a.submitted_at = datetime.utcnow() - timedelta(seconds=secs)
     s.commit()
-    # l'examen « petit » finit dans 1 h : le verrou de 3 min s'applique
-    r = c.get('/api/student/post_submit_lock', headers=H(u_lock)); check("soumise il y a 1 min : verrouillé", r.status_code == 200 and r.get_json()['locked'] is True, r.get_json())
+    # l'examen « petit » finit dans 1 h : le verrou d'UNE minute s'applique (réduit à 1 min le 23/11/2026)
+    r = c.get('/api/student/post_submit_lock', headers=H(u_lock)); j = r.get_json(); check("soumise il y a 20 s : verrouillé", r.status_code == 200 and j['locked'] is True, j)
+    if j.get('locked'):
+        from datetime import timezone as _tz
+        left = (datetime.fromisoformat(j['unlock_at']).astimezone(_tz.utc).replace(tzinfo=None) - datetime.utcnow()).total_seconds()
+        check(f"… pour 40 s environ (1 min au total : il reste {left:.0f} s, jamais plus de 60 s)", 25 <= left <= 60, left)
+    r = c.get('/api/student/post_submit_lock', headers=H(u_90)); check("soumise il y a 90 s : libre (le verrou ne dure qu'une minute)", r.get_json()['locked'] is False, r.get_json())
     r = c.get('/api/student/post_submit_lock', headers=H(u_old)); check("soumise il y a 10 min : libre", r.get_json()['locked'] is False, r.get_json())
     r = c.get('/api/student/post_submit_lock', headers=H(u_auto)); check("soumise automatiquement : pas de verrou (comportement conservé)", r.get_json()['locked'] is False, r.get_json())
     cnt['n'] = 0; c.get('/api/student/post_submit_lock', headers=H(u_old)); check(f"un étudiant libre coûte peu de requêtes ({cnt['n']} ≤ 4)", cnt['n'] <= 4, cnt['n'])

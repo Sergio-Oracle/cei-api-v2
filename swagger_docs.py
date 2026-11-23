@@ -4206,7 +4206,7 @@ OPENAPI_SPEC = {
         "/api/student/post_submit_lock": {"get": {
             "tags": ["Tableaux de bord"],
             "summary": "Verrou anti-retour rapide après soumission d'un examen",
-            "description": "Empêche de rouvrir l'examen quelques minutes après l'avoir soumis (ex. pour retenter avec un autre appareil) — le verrou expire au plus tard à la fin réelle de l'examen, s'il survient avant les 15 minutes.",
+            "description": "Empêche de rouvrir l'examen quelques minutes après l'avoir soumis (ex. pour retenter avec un autre appareil) — le verrou dure UNE minute après la soumission (réduit de 15 à 3 min le 13/10, puis à 1 min le 23/11/2026) et expire au plus tard à la fin réelle de l'examen.",
             "responses": {"200": {"description": "État du verrou", "content": {"application/json": {"schema": {
                 "type": "object",
                 "properties": {

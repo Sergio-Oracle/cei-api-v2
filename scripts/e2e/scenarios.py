@@ -14,7 +14,7 @@ UID = dict(zip(['adm'] + list(ctx['students']), ctx['uids']))
 RES = []
 PWH = []                      # objet Playwright (pour lancer un second navigateur dans un scénario)
 def check(nom, ok, detail=''):
-    RES.append((nom, bool(ok))); print(('  ✔ ' if ok else '  ✘ ') + nom + (f'  — {str(detail)[:200]}' if detail and not ok else ''), flush=True)
+    RES.append((nom, bool(ok))); print(('  ✔ ' if ok else '  ✘ ') + nom + (f'  — {str(detail)[:1200]}' if detail and not ok else ''), flush=True)
 
 def lk_tracks(room=ROOM):
     """Pistes réellement publiées, vues par le serveur vidéo (API d'administration) : {identité: [TYPE/SOURCE]}."""
@@ -208,6 +208,53 @@ def s8_etudiant_ne_commande_pas_les_autres(br):
     check("… et son examen reste utilisable (la copie est toujours affichée)", vic.locator('button:has-text("Soumettre"), button:has-text("Terminer")').count() > 0 or 'Question' in body, body[:120])
     check("aucune exception de page chez la victime", not errs8, errs8[:2])
 
+def _events(uid, types):
+    """Nombre d'événements du journal de surveillance de l'étudiant, par type (lecture directe de la base locale, via le Python du projet)."""
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    code = ("import os,json,sys; from dotenv import dotenv_values; import psycopg2; v=dotenv_values('.env'); c=psycopg2.connect(v['DATABASE_URL']); k=c.cursor(); "
+            "k.execute('select l.event_type, count(*) from exam_activity_logs l join exam_attempts a on a.id=l.attempt_id where a.student_id=%s and a.exam_id=%s and l.event_type=any(%s) group by 1', (int(sys.argv[1]), int(sys.argv[2]), sys.argv[3].split(','))); print(json.dumps(dict(k.fetchall())))")
+    out = subprocess.run([os.path.join(root, '.venv-base/bin/python'), '-c', code, str(uid), str(ctx['exam']), ','.join(types)], cwd=root, capture_output=True, text=True, timeout=60)
+    return json.loads(out.stdout.strip().splitlines()[-1])
+
+def s9_interruption_breve_du_focus(br):
+    print("\n== 9. « Masquer » dans la barre de partage d'écran : une interruption brève du focus n'est plus prise pour une fuite ==")
+    st = new_ctx(br); errs9 = []; st.on('pageerror', lambda e: errs9.append(str(e)[:160]))
+    login(st, ctx['students']['blip1']); start_exam(st); st.wait_for_timeout(7000)
+    OVER = "text=Vous avez quitté l'examen"; SOFT = "text=Reprendre le plein écran"; uid = UID['blip1']
+    def revenir():
+        if st.locator(OVER).count():
+            st.locator("button:has-text(\"Revenir à l'examen\")").first.click(); st.wait_for_timeout(1500)
+    revenir(); st.wait_for_timeout(5000)
+    check("point de départ : la copie est affichée, sans écran « Vous avez quitté l'examen »", st.locator(OVER).count() == 0)
+    base = _events(uid, ('window_blur', 'focus_blip', 'fullscreen_exit'))
+    BLIP = "async (ms) => { document.hasFocus = () => false; window.dispatchEvent(new Event('blur')); await new Promise(r => setTimeout(r, ms)); document.hasFocus = () => true; window.dispatchEvent(new Event('focus')) }"
+    # a) clic sur « Masquer » : le focus quitte la page moins d'une seconde
+    st.evaluate(BLIP, 900); st.wait_for_timeout(6000)
+    check("interruption de 0,9 s (barre de partage d'écran) : AUCUN écran « Vous avez quitté l'examen »", st.locator(OVER).count() == 0)
+    ev = _events(uid, ('window_blur', 'focus_blip', 'fullscreen_exit'))
+    check("… elle est tracée (focus_blip) mais ne compte PAS comme perte de focus", ev.get('focus_blip', 0) == base.get('focus_blip', 0) + 1 and ev.get('window_blur', 0) == base.get('window_blur', 0), (base, ev))
+    # b) l'étudiant quitte VRAIMENT la page : le focus ne revient pas
+    st.evaluate("() => { document.hasFocus = () => false; window.dispatchEvent(new Event('blur')) }"); st.wait_for_timeout(2000)
+    check("focus perdu depuis 2 s : pas encore d'écran bloquant (tolérance de 3 s)", st.locator(OVER).count() == 0)
+    st.wait_for_timeout(3500)
+    check("focus perdu depuis plus de 3 s : écran « Vous avez quitté l'examen » comme avant", st.locator(OVER).count() == 1)
+    ev = _events(uid, ('window_blur',)); check("… et la perte de focus est comptée (window_blur)", ev.get('window_blur', 0) > base.get('window_blur', 0), ev)
+    st.evaluate("() => { document.hasFocus = () => true; window.dispatchEvent(new Event('focus')) }"); revenir(); st.wait_for_timeout(1500)
+    check("« Revenir à l'examen » referme aussitôt l'écran", st.locator(OVER).count() == 0)
+    # c) la barre de partage fait AUSSI sortir du plein écran, au même instant que le blur
+    st.evaluate("""async () => { Object.defineProperty(document, 'fullscreenElement', {configurable: true, get: () => null});
+        document.hasFocus = () => false; window.dispatchEvent(new Event('blur')); document.dispatchEvent(new Event('fullscreenchange'));
+        await new Promise(r => setTimeout(r, 700)); document.hasFocus = () => true; window.dispatchEvent(new Event('focus')) }""")
+    st.wait_for_timeout(6000)
+    check("sortie du plein écran + interruption brève : invitation discrète « Reprendre le plein écran »", st.locator(SOFT).count() == 1)
+    check("… et AUCUN écran « Vous avez quitté l'examen » (4 s de sondage plus tard)", st.locator(OVER).count() == 0)
+    ev = _events(uid, ('fullscreen_exit',)); check("… la sortie du plein écran n'est pas comptée comme violation", ev.get('fullscreen_exit', 0) == base.get('fullscreen_exit', 0), ev)
+    # d) sortie du plein écran SANS interruption du focus (touche Échap, bouton du navigateur) : violation comme avant
+    st.locator(SOFT).first.click(); st.wait_for_timeout(5500)
+    check("sortie du plein écran seule (sans interruption) : écran « Vous avez quitté l'examen » comme avant", st.locator(OVER).count() == 1)
+    ev = _events(uid, ('fullscreen_exit',)); check("… et comptée (fullscreen_exit)", ev.get('fullscreen_exit', 0) >= base.get('fullscreen_exit', 0) + 1, ev)
+    check("aucune exception de page", not errs9, errs9[:2])
+
 def s7_evenements_une_fois(br):
     print("\n== 7. Message et appel du surveillant : chaque événement n'arrive qu'UNE fois chez l'étudiant (relève de 30 s comprise) ==")
     name = 'ZZ RG dup1'; MSG = 'Merci de rester face à la caméra (essai automatique)'
@@ -277,10 +324,10 @@ if __name__ == '__main__':
     with sync_playwright() as p:
         PWH.append(p)
         br = p.chromium.launch(executable_path=CHROME, headless=True, args=['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream', f'--host-resolver-rules=MAP {HOST} 127.0.0.1', '--ignore-certificate-errors'])
-        for name, fn in (('1', s1_entree_et_reprise), ('2', s2_camera_et_abonnements), ('3', s3_test_technique), ('5', s5_test_poste_sans_connexion), ('6', s6_fermeture_au_clic), ('7', s7_evenements_une_fois), ('8', s8_etudiant_ne_commande_pas_les_autres), ('4', s4_remise_et_autorisations)):
+        for name, fn in (('1', s1_entree_et_reprise), ('2', s2_camera_et_abonnements), ('3', s3_test_technique), ('5', s5_test_poste_sans_connexion), ('6', s6_fermeture_au_clic), ('7', s7_evenements_une_fois), ('8', s8_etudiant_ne_commande_pas_les_autres), ('9', s9_interruption_breve_du_focus), ('4', s4_remise_et_autorisations)):
             if only and name not in only: continue
             try: fn(br)
-            except Exception as e: check(f'scénario {name} : exécution sans erreur', False, repr(e))
+            except Exception as e: check(f'scénario {name} : exécution sans erreur', False, repr(e)[:900])
         br.close()
     bad = [n for n, ok in RES if not ok]
     print(f"\n{len(RES) - len(bad)}/{len(RES)} vérifications réussies" + (f" — ÉCHECS : {bad}" if bad else ''))

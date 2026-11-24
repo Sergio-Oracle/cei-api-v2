@@ -10,5 +10,13 @@ for t in test_enonces test_corpus_reel test_docx_structure test_phonecam_et_code
 done
 if bash scripts/controle_noms_indefinis.sh > /tmp/verif_noms_indefinis.log 2>&1; then echo "OK   noms_indefinis  ($(tail -1 /tmp/verif_noms_indefinis.log))"
 else echo "ÉCHEC noms_indefinis  → /tmp/verif_noms_indefinis.log"; tail -6 /tmp/verif_noms_indefinis.log; ko=1; fi
+# Tests du site (cei-next/scripts/test_*.js) : formules, reconnexion LiveKit, abonnements, santé des médias… (21/11/2026 : jusque-là lancés à la main)
+if [ -d ../cei-next/scripts ]; then
+  for f in ../cei-next/scripts/test_*.js; do
+    n=$(basename "$f" .js)
+    if (cd ../cei-next && node "scripts/$n.js" > /tmp/verif_front_$n.log 2>&1); then echo "OK   front/$n  ($(grep -oE '[0-9]+(/[0-9]+)? vérifications réussies' /tmp/verif_front_$n.log | tail -1))"
+    else echo "ÉCHEC front/$n  → /tmp/verif_front_$n.log"; tail -5 /tmp/verif_front_$n.log; ko=1; fi
+  done
+fi
 [ $ko -eq 0 ] && echo "== Tout est bon : déploiement autorisé ==" || echo "== DÉPLOIEMENT REFUSÉ =="
 exit $ko

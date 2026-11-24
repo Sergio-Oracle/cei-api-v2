@@ -47,9 +47,9 @@ def login(pg, email):
     pg.goto(BASE + '/login'); pg.wait_for_timeout(4500)
     pg.fill('input[type=email]', email); pg.fill('input[type=password]', PW); pg.click('button[type=submit]')
     pg.wait_for_url(lambda u: '/login' not in u, timeout=25000)
-def start_exam(pg, wait=4000, full=True):
+def start_exam(pg, wait=4000, full=True, exam=None):
     """Ouvre l'examen et clique « Démarrer ». full=True : franchit aussi l'étape d'autorisations (copie affichée) ; full=False : s'arrête avant l'affichage de la copie."""
-    pg.goto(f"{BASE}/exam/{ctx['exam']}"); pg.wait_for_timeout(6000)
+    pg.goto(f"{BASE}/exam/{exam or ctx['exam']}"); pg.wait_for_timeout(6000)
     labels = ("J'accepte et je démarre", "Autoriser et commencer", "Commencer l'examen", "Continuer", "Commencer")
     for step in range(5 if full else 1):
         clicked = False
@@ -255,6 +255,55 @@ def s9_interruption_breve_du_focus(br):
     ev = _events(uid, ('fullscreen_exit',)); check("… et comptée (fullscreen_exit)", ev.get('fullscreen_exit', 0) >= base.get('fullscreen_exit', 0) + 1, ev)
     check("aucune exception de page", not errs9, errs9[:2])
 
+def s10_formules_et_maths(br):
+    print("\n== 10. Maths / Programmation et Calcul à variables : formules rendues, saisie standard (capture du 24/11/2026) ==")
+    st = new_ctx(br); errs10 = []; st.on('pageerror', lambda e: errs10.append(str(e)[:160]))
+    login(st, ctx['students']['math1']); start_exam(st, exam=ctx['exam2']); st.wait_for_timeout(5000)
+    if st.locator("button:has-text(\"Revenir à l'examen\")").count(): st.locator("button:has-text(\"Revenir à l'examen\")").first.click(); st.wait_for_timeout(1500)
+    body = st.inner_text('body')
+    check("calcul à variables : l'énoncé s'affiche (variables remplacées par des valeurs)", 'Calculez l' in body and '{a}' not in body, body[:200])
+    check("aucune formule LaTeX brute visible (\\( \\) \\displaystyle \\frac)", not any(t in body for t in ('\\(', '\\displaystyle', '\\frac', '\\infty')), [t for t in ('\\(', '\\displaystyle', '\\frac', '\\infty') if t in body])
+    n_math = st.locator('.katex').count()
+    check(f"les formules sont rendues (KaTeX) : énoncé du calcul + limite + 3 choix = au moins 6 formules ({n_math})", n_math >= 6, n_math)
+    # Calcul à variables : valeur lue (partie 1)
+    inp = st.locator('input[inputmode="decimal"]').first
+    inp.fill('1,5'); st.wait_for_timeout(300)
+    check("calcul à variables : « 1,5 » → « Valeur lue : 1,5 »", st.locator('text=Valeur lue').count() == 1 and '1,5' in st.locator('text=Valeur lue').first.inner_text())
+    inp.fill('abc'); st.wait_for_timeout(300)
+    check("« abc » → invitation à entrer un nombre (sans terme technique)", st.locator('text=Entrez un nombre').count() == 1)
+    inp.fill('1,5'); st.locator('label:has(.katex)').first.click(); st.wait_for_timeout(800)
+    if os.environ.get('CEI_E2E_SHOTS'): st.screenshot(path=os.environ['CEI_E2E_SHOTS'] + '/maths_partie1.png')
+    # Maths / Programmation : partie rédaction (après la partie 1)
+    CODE_TA = 'textarea[placeholder*="code / démonstration"]'
+    for _ in range(3):
+        if st.locator(CODE_TA).count(): break
+        part2 = st.locator('button:has-text("Passer aux questions ouvertes")')
+        if part2.count() and part2.first.is_enabled(): part2.first.click(); st.wait_for_timeout(2500); continue
+        nxt = st.locator('button:has-text("Suiv.")')
+        if nxt.count() and nxt.first.is_enabled(): nxt.first.click(); st.wait_for_timeout(1500)
+        else: break
+    if not st.locator(CODE_TA).count(): print('   (boutons :', [t.strip()[:30] for t in st.locator('button').all_inner_texts() if t.strip()][:25], ')')
+    check("Maths / Programmation : la zone de réponse est affichée", st.locator(CODE_TA).count() == 1)
+    body = st.inner_text('body')
+    check("énoncé du Maths / Programmation : formules rendues, plus de « \\begin{cases} » brut", '\\begin' not in body and '\\mathbb' not in body and '\\(' not in body, [t for t in ('\\begin', '\\mathbb', '\\(') if t in body])
+    check("puces : « • définit… » et non « * définit… »", '• définit' in body and '* définit' not in body)
+    check("barre de symboles mathématiques présente (Fraction, Racine, Intégrale…)", st.locator('button[title="Fraction"]').count() == 1 and st.locator('button[title="Intégrale"]').count() == 1)
+    ta = st.locator(CODE_TA).first; ta.click()
+    st.locator('button[title="Fraction"]').click(); st.wait_for_timeout(400)
+    v = ta.input_value()
+    check("« Fraction » insère \\(\\frac{}{}\\) à l'endroit du curseur", '\\(\\frac{' in v, v)
+    ta.press_sequentially('1', delay=30); ta.press('ArrowRight'); ta.press('ArrowRight'); ta.press_sequentially('x', delay=30); st.wait_for_timeout(600)
+    check("l'aperçu « Aperçu de votre réponse » apparaît dès qu'il y a une formule", st.locator('text=Aperçu de votre réponse').count() == 1)
+    check("… et la formule y est rendue", st.locator('text=Aperçu de votre réponse >> xpath=../..').locator('.katex').count() >= 1)
+    ta.press('End'); ta.press('Enter'); ta.press('Tab'); ta.press_sequentially('code', delay=20); st.wait_for_timeout(300)
+    v = ta.input_value()
+    check("Tab indente de 4 espaces (au lieu de quitter la zone)", '\n    code' in v, repr(v[-20:]))
+    ta.press('Enter'); ta.press_sequentially('suite', delay=20); v = ta.input_value()
+    check("Entrée conserve l'indentation de la ligne précédente", '\n    suite' in v, repr(v[-24:]))
+    if os.environ.get('CEI_E2E_SHOTS'): st.screenshot(path=os.environ['CEI_E2E_SHOTS'] + '/maths_partie2.png')
+    check("la réponse enregistrée reste le texte brut (LaTeX tel que saisi)", '\\frac{1}{x}' in v or '\\frac{1' in v, v[:60])
+    check("aucune exception de page", not errs10, errs10[:2])
+
 def s7_evenements_une_fois(br):
     print("\n== 7. Message et appel du surveillant : chaque événement n'arrive qu'UNE fois chez l'étudiant (relève de 30 s comprise) ==")
     name = 'ZZ RG dup1'; MSG = 'Merci de rester face à la caméra (essai automatique)'
@@ -324,7 +373,7 @@ if __name__ == '__main__':
     with sync_playwright() as p:
         PWH.append(p)
         br = p.chromium.launch(executable_path=CHROME, headless=True, args=['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream', f'--host-resolver-rules=MAP {HOST} 127.0.0.1', '--ignore-certificate-errors'])
-        for name, fn in (('1', s1_entree_et_reprise), ('2', s2_camera_et_abonnements), ('3', s3_test_technique), ('5', s5_test_poste_sans_connexion), ('6', s6_fermeture_au_clic), ('7', s7_evenements_une_fois), ('8', s8_etudiant_ne_commande_pas_les_autres), ('9', s9_interruption_breve_du_focus), ('4', s4_remise_et_autorisations)):
+        for name, fn in (('1', s1_entree_et_reprise), ('2', s2_camera_et_abonnements), ('3', s3_test_technique), ('5', s5_test_poste_sans_connexion), ('6', s6_fermeture_au_clic), ('7', s7_evenements_une_fois), ('8', s8_etudiant_ne_commande_pas_les_autres), ('9', s9_interruption_breve_du_focus), ('10', s10_formules_et_maths), ('4', s4_remise_et_autorisations)):
             if only and name not in only: continue
             try: fn(br)
             except Exception as e: check(f'scénario {name} : exécution sans erreur', False, repr(e)[:900])

@@ -17,6 +17,9 @@ def purge(table, col, ids, depth=0):
     s.execute(text(f'delete from {table} where {col} = any(:i)'), {'i': list(ids)}); s.commit()
 d = json.loads(sys.argv[1])
 for aid in [r[0] for r in s.execute(text('select id from exam_attempts where exam_id=:e'), {'e': d['exam']}).fetchall()]: purge('exam_attempts', 'id', [aid])
+if d.get('exam2'):
+    for aid in [r[0] for r in s.execute(text('select id from exam_attempts where exam_id=:e'), {'e': d['exam2']}).fetchall()]: purge('exam_attempts', 'id', [aid])
+    purge('online_exams', 'id', [d['exam2']]); purge('subjects', 'id', [d['sub2']])
 for t in ('online_exams',): purge(t, 'id', [d['exam']])
 purge('subjects', 'id', [d['sub']])
 for u in d['uids']:

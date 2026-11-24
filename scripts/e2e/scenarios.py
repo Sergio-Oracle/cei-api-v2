@@ -274,7 +274,7 @@ def s10_formules_et_maths(br):
     inp.fill('1,5'); st.locator('label:has(.katex)').first.click(); st.wait_for_timeout(800)
     if os.environ.get('CEI_E2E_SHOTS'): st.screenshot(path=os.environ['CEI_E2E_SHOTS'] + '/maths_partie1.png')
     # Maths / Programmation : partie rédaction (après la partie 1)
-    CODE_TA = 'textarea[placeholder*="code / démonstration"]'
+    CODE_TA = '.cm-content[aria-label="Réponse à la question 3"]'
     for _ in range(3):
         if st.locator(CODE_TA).count(): break
         part2 = st.locator('button:has-text("Passer aux questions ouvertes")')
@@ -282,27 +282,85 @@ def s10_formules_et_maths(br):
         nxt = st.locator('button:has-text("Suiv.")')
         if nxt.count() and nxt.first.is_enabled(): nxt.first.click(); st.wait_for_timeout(1500)
         else: break
-    if not st.locator(CODE_TA).count(): print('   (boutons :', [t.strip()[:30] for t in st.locator('button').all_inner_texts() if t.strip()][:25], ')')
-    check("Maths / Programmation : la zone de réponse est affichée", st.locator(CODE_TA).count() == 1)
+    check("Maths / Programmation : la zone de réponse (éditeur) est affichée", st.locator(CODE_TA).count() == 1)
+    DOC = lambda: st.locator('[data-cei-answer]').first.get_attribute('data-cei-answer') or ''      # la question 3 est la première zone de réponse
     body = st.inner_text('body')
-    check("énoncé du Maths / Programmation : formules rendues, plus de « \\begin{cases} » brut", '\\begin' not in body and '\\mathbb' not in body and '\\(' not in body, [t for t in ('\\begin', '\\mathbb', '\\(') if t in body])
+    check("énoncé du Maths / Programmation : formules rendues, plus de « \\begin{cases} » brut", '\\begin' not in body and '\\mathbb' not in body and '\\(' not in body.replace('\\( … \\)', ''), [t for t in ('\\begin', '\\mathbb') if t in body])
     check("puces : « • définit… » et non « * définit… »", '• définit' in body and '* définit' not in body)
     check("barre de symboles mathématiques présente (Fraction, Racine, Intégrale…)", st.locator('button[title="Fraction"]').count() == 1 and st.locator('button[title="Intégrale"]').count() == 1)
     ta = st.locator(CODE_TA).first; ta.click()
     st.locator('button[title="Fraction"]').click(); st.wait_for_timeout(400)
-    v = ta.input_value()
-    check("« Fraction » insère \\(\\frac{}{}\\) à l'endroit du curseur", '\\(\\frac{' in v, v)
-    ta.press_sequentially('1', delay=30); ta.press('ArrowRight'); ta.press('ArrowRight'); ta.press_sequentially('x', delay=30); st.wait_for_timeout(600)
+    check("« Fraction » insère \\(\\frac{}{}\\) à l'endroit du curseur", '\\(\\frac{' in DOC(), DOC())
+    st.keyboard.type('1'); st.keyboard.press('ArrowRight'); st.keyboard.press('ArrowRight'); st.keyboard.type('x'); st.wait_for_timeout(600)
     check("l'aperçu « Aperçu de votre réponse » apparaît dès qu'il y a une formule", st.locator('text=Aperçu de votre réponse').count() == 1)
     check("… et la formule y est rendue", st.locator('text=Aperçu de votre réponse >> xpath=../..').locator('.katex').count() >= 1)
-    ta.press('End'); ta.press('Enter'); ta.press('Tab'); ta.press_sequentially('code', delay=20); st.wait_for_timeout(300)
-    v = ta.input_value()
-    check("Tab indente de 4 espaces (au lieu de quitter la zone)", '\n    code' in v, repr(v[-20:]))
-    ta.press('Enter'); ta.press_sequentially('suite', delay=20); v = ta.input_value()
-    check("Entrée conserve l'indentation de la ligne précédente", '\n    suite' in v, repr(v[-24:]))
+    st.keyboard.press('End'); st.keyboard.press('Enter'); st.keyboard.press('Tab'); st.keyboard.type('code'); st.wait_for_timeout(300)
+    check("Tab indente de 4 espaces (au lieu de quitter la zone)", '\n    code' in DOC(), repr(DOC()[-20:]))
+    st.keyboard.press('Enter'); st.keyboard.type('suite')
+    check("Entrée conserve l'indentation de la ligne précédente", '\n    suite' in DOC(), repr(DOC()[-24:]))
+    check("la réponse enregistrée reste le texte brut (LaTeX tel que saisi)", '\\frac{1}{x}' in DOC(), DOC()[:60])
+    # éditeur visuel de formules (MathLive)
+    st.locator('button:has-text("Éditeur de formule")').click(); st.wait_for_selector('math-field', timeout=20000); st.wait_for_timeout(800)
+    check("éditeur visuel de formules (MathLive) affiché", st.locator('math-field').count() == 1)
+    st.evaluate("(l) => document.querySelector('math-field').setValue(l)", '\\frac{a+b}{2}'); st.wait_for_timeout(300)
+    n_before = st.locator('text=Aperçu de votre réponse >> xpath=../..').locator('.katex').count()
+    st.locator('button:has-text("Insérer dans la réponse")').click(); st.wait_for_timeout(600)
+    check("« Insérer dans la réponse » ajoute la formule en LaTeX", '\\frac{a+b}{2}' in DOC(), repr(DOC()))
+    check("… et elle apparaît rendue dans l'aperçu", st.locator('text=Aperçu de votre réponse >> xpath=../..').locator('.katex').count() > n_before)
     if os.environ.get('CEI_E2E_SHOTS'): st.screenshot(path=os.environ['CEI_E2E_SHOTS'] + '/maths_partie2.png')
-    check("la réponse enregistrée reste le texte brut (LaTeX tel que saisi)", '\\frac{1}{x}' in v or '\\frac{1' in v, v[:60])
+    st.locator('button:has-text("Fermer l’éditeur de formule")').first.click()
+    # coloration syntaxique : langage Python
+    Q3_LN = '.cm-editor:has([aria-label="Réponse à la question 3"]) .cm-lineNumbers'
+    check("démonstration LaTeX : pas de numéros de ligne", st.locator(Q3_LN).count() == 0)
+    st.locator('select[aria-label="Langage de la réponse"]').select_option('python'); st.wait_for_timeout(1200)
+    st.locator(CODE_TA).first.click(); st.keyboard.press('Control+a'); st.keyboard.press('Delete'); st.keyboard.type('def f(x):'); st.keyboard.press('Enter'); st.keyboard.type('return x'); st.wait_for_timeout(500)
+    check("code Python : numéros de ligne affichés", st.locator(Q3_LN).count() == 1)
+    cols = st.evaluate("""() => { const c = getComputedStyle(document.querySelector('.cm-content')).color;
+        const sp = [...document.querySelectorAll('.cm-content .cm-line span')].map(s => [s.textContent, getComputedStyle(s).color]); return {base: c, spans: sp} }""")
+    kw = [c for t, c in cols['spans'] if t.strip() in ('def', 'return')]
+    check("code Python : les mots-clés (def, return) sont colorés (≠ couleur du texte)", len(kw) >= 1 and all(c != cols['base'] for c in kw), cols)
+    check("la réponse enregistrée reste le code brut", DOC() == 'def f(x):\n    return x', repr(DOC()))
+    if os.environ.get('CEI_E2E_SHOTS'): st.screenshot(path=os.environ['CEI_E2E_SHOTS'] + '/maths_partie2_python.png')
     check("aucune exception de page", not errs10, errs10[:2])
+
+def s11_code_avec_tests(br):
+    print("\n== 11. Question de code avec tests automatiques (Piston) : tests d'exemple, « Tester mon code », résultats ==")
+    st = new_ctx(br); errs11 = []; st.on('pageerror', lambda e: errs11.append(str(e)[:160]))
+    login(st, ctx['students']['code1']); start_exam(st, exam=ctx['exam2']); st.wait_for_timeout(5000)
+    if st.locator("button:has-text(\"Revenir à l'examen\")").count(): st.locator("button:has-text(\"Revenir à l'examen\")").first.click(); st.wait_for_timeout(1500)
+    st.locator('input[inputmode="decimal"]').first.fill('1,5'); st.locator('label:has(.katex)').first.click(); st.wait_for_timeout(800)
+    for _ in range(3):
+        if st.locator('.cm-content[aria-label="Réponse à la question 4"]').count(): break
+        part2 = st.locator('button:has-text("Passer aux questions ouvertes")')
+        if part2.count() and part2.first.is_enabled(): part2.first.click(); st.wait_for_timeout(2500)
+        else: break
+    Q4 = '.cm-content[aria-label="Réponse à la question 4"]'
+    check("question 4 (code) affichée", st.locator(Q4).count() == 1)
+    st.wait_for_timeout(2500)
+    check("le langage de la question (Python) est imposé : pas de menu de choix, pastille « Python »", st.locator('text=Python').count() >= 1 and st.locator('select[aria-label="Langage de la réponse"]').count() == 1, st.locator('select[aria-label="Langage de la réponse"]').count())
+    check("tests d'exemple affichés (2 visibles : « 3 4 » → 7, « 10 20 » → 30)", st.locator('text=Tests d\'exemple').count() == 1 and st.locator('td:has-text("3 4")').count() >= 1 and st.locator('td:has-text("10 20")').count() >= 1)
+    check("« 2 autres tests seront évalués à la correction » (sans en révéler le contenu)", st.locator('text=2 autres tests seront évalués à la correction').count() == 1)
+    html = st.content()
+    check("AUCUN test caché dans la page (« -5 5 », « 101 »)", '-5 5' not in html and '>101<' not in html)
+    btn = st.locator('button:has-text("Tester mon code")')
+    check("« Tester mon code » inactif tant qu'il n'y a pas de code", btn.count() == 1 and not btn.first.is_enabled())
+    def ecrire(code):
+        st.locator(Q4).click(); st.keyboard.press('Control+a'); st.keyboard.press('Delete'); st.keyboard.type(code)
+    ecrire('a,b=map(int,input().split())\nprint(a+b)'); st.wait_for_timeout(500)
+    btn.first.click(); st.wait_for_selector('text=réussis sur 2', timeout=40000)
+    check("code juste : « 2 tests réussis sur 2 »", st.locator('text=2 tests réussis sur 2').count() == 1 and st.locator('text=✔ Réussi').count() == 2)
+    if os.environ.get('CEI_E2E_SHOTS'): st.screenshot(path=os.environ['CEI_E2E_SHOTS'] + '/code_tests_ok.png', full_page=False)
+    ecrire('a,b=map(int,input().split())\nprint(a-b)'); st.wait_for_timeout(400)
+    btn.first.click(); st.wait_for_selector('text=0 test réussi sur 2', timeout=40000)
+    check("code faux : « 0 test réussi sur 2 », ce que le programme affiche est montré", st.locator('text=✘ Échec').count() == 2 and 'Votre programme affiche' in st.inner_text('body'))
+    ecrire('while True:\n    pass'); st.wait_for_timeout(400)
+    btn.first.click(); st.wait_for_selector('text=Temps d\'exécution dépassé', timeout=60000)
+    check("boucle infinie : « Temps d'exécution dépassé » (le test se termine, la page reste utilisable)", st.locator("text=Temps d'exécution dépassé").count() >= 1 and btn.first.is_enabled())
+    ecrire('print(1/0)'); st.wait_for_timeout(400)
+    btn.first.click(); st.wait_for_selector('text=0 test réussi sur 2', timeout=40000)
+    check("erreur d'exécution : message de l'erreur du programme, pas de texte d'infrastructure", 'ZeroDivisionError' in st.inner_text('body') and 'Piston' not in st.inner_text('body') and 'isolate' not in st.inner_text('body'))
+    check("le code reste enregistré tel que saisi (réponse brute)", (st.locator('[data-cei-answer]').nth(1).get_attribute('data-cei-answer') or '') == 'print(1/0)')
+    check("aucune exception de page", not errs11, errs11[:2])
 
 def s7_evenements_une_fois(br):
     print("\n== 7. Message et appel du surveillant : chaque événement n'arrive qu'UNE fois chez l'étudiant (relève de 30 s comprise) ==")
@@ -373,7 +431,7 @@ if __name__ == '__main__':
     with sync_playwright() as p:
         PWH.append(p)
         br = p.chromium.launch(executable_path=CHROME, headless=True, args=['--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream', f'--host-resolver-rules=MAP {HOST} 127.0.0.1', '--ignore-certificate-errors'])
-        for name, fn in (('1', s1_entree_et_reprise), ('2', s2_camera_et_abonnements), ('3', s3_test_technique), ('5', s5_test_poste_sans_connexion), ('6', s6_fermeture_au_clic), ('7', s7_evenements_une_fois), ('8', s8_etudiant_ne_commande_pas_les_autres), ('9', s9_interruption_breve_du_focus), ('10', s10_formules_et_maths), ('4', s4_remise_et_autorisations)):
+        for name, fn in (('1', s1_entree_et_reprise), ('2', s2_camera_et_abonnements), ('3', s3_test_technique), ('5', s5_test_poste_sans_connexion), ('6', s6_fermeture_au_clic), ('7', s7_evenements_une_fois), ('8', s8_etudiant_ne_commande_pas_les_autres), ('9', s9_interruption_breve_du_focus), ('10', s10_formules_et_maths), ('11', s11_code_avec_tests), ('4', s4_remise_et_autorisations)):
             if only and name not in only: continue
             try: fn(br)
             except Exception as e: check(f'scénario {name} : exécution sans erreur', False, repr(e)[:900])

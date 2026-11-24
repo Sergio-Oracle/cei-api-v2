@@ -2673,6 +2673,21 @@ def _deterministic_grade(content: str, rubric: str, answers_data, seed=None) -> 
             structured.append({'num': num, 'type': 'appariement', 'max': pts, 'score': earned,
                                 'correct': n_right == len(pairs), 'given': f'{n_right}/{len(pairs)} correctes'})
 
+        elif marker == 'CODE':
+            # Code exécutable (barème : « Langage : … » + « Test : … ») : tests visibles ET cachés exécutés dans le bac à sable (services/code_sandbox.py).
+            # Sans tests, sans bac à sable ou en cas de panne : la question reste confiée à l'IA / au professeur, comme avant.
+            key = correct_map.get(num)
+            if not key or key.get('type') != 'ext' or not key.get('code'):
+                continue
+            res = QT.grade_code(key, (answers_data.get(f'pq_{num}') or ''))
+            if res is None:
+                continue
+            fraction, summary = res
+            earned = round(pts * fraction, 2)
+            score += earned; max_score += pts; graded_nums.add(num)
+            breakdown.append(f"Question {num} : {summary} — {earned:.2f}/{pts:.2f} pt")
+            structured.append({'num': num, 'type': 'code', 'max': pts, 'score': earned, 'correct': fraction == 1.0, 'given': summary})
+
         elif marker in QT.GRID_MARKERS or marker in QT.TEXT_MARKERS:
             key = correct_map.get(num)
             if not key or key.get('type') != 'ext':

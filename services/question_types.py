@@ -23,6 +23,10 @@ Barème (ligne dans le bloc de la question) :
   cloze :                      « Champs : 1=Dakar|dakar ; 2=14 (± 0,5) ; 3=B »  (réponses acceptées, nombre + tolérance, lettre du choix)
   calculee :                   « Formule : a*b*n/100 (± 1) »  (variables de l'énoncé ; tolérance absolue ou en %)
   zones :                      « Zones : 1=[x1,y1,x2,y2] ; 2=[…] »  (rectangles en % de l'image, étiquettes dans l'ordre)
+  code :                       « Langage : python » + des lignes « Test : entrée « 3 4 » ; sortie « 7 » » (entrée standard) ou « Test caché : appel « print(somme(3, 4)) » ; sortie « 7 » »
+                               (expression ajoutée après le code, Python / JavaScript / PHP) ; « Notation : tout ou rien » (défaut : proportionnelle). Exécution : services/code_sandbox.py
+  unités (numerique, calculee) : « Unité : W | kW = 0,001 | MW = 0,000001 »  (comme le « Calculated » de Moodle : unité principale, puis unités acceptées avec leur multiplicateur ;
+                               « Unité obligatoire : … » exige une unité ; sans cette ligne, l'unité saisie est ignorée comme avant)
 
 Les familles « grille » (association, tri, ordre, trous) partagent le même stockage des réponses
 (pq_<n>_<index de l'élément> = lettre ou rang) et la même notation proportionnelle (fraction d'éléments
@@ -119,6 +123,14 @@ def extract_keys_from_block(block: str) -> dict:
     if m:
         tol = parse_number(m.group(2)) if m.group(2) else 0.0
         out['formula'] = {'expr': m.group(1).strip(), 'tol': abs(tol or 0.0), 'percent': m.group(3) == '%'}
+    code = parse_code_key(block)
+    if code:
+        out['code'] = code
+    m = _UNITS_RE.search(block)
+    if m:
+        u = parse_units(m.group(2), required=bool(m.group(1)))
+        if u:
+            out['units'] = u
     m = _ZONES_RE.search(block)
     if m:
         zones = {}
@@ -227,11 +239,60 @@ def grade_court(key: dict, raw: str):
     return (1.0 if given and any(given == norm_text(a) for a in acc) else 0.0), (raw or '').strip()
 
 
+_NUM_UNIT_RE = re.compile(r'^\s*([-+\u2212]?\s*\d[\d\s\u00a0\u202f.,]*(?:[eE][-+\u2212]?\d+)?)\s*(\S.*)?$')
+
+
+def norm_unit(u: str) -> str:
+    """Unité comparée sans espaces ni point médian, « µ » = « μ » = « u » ; la casse compte (m ≠ M, comme dans Moodle)."""
+    return re.sub(r'[\s\u00a0\u202f\u00b7\u22c5.]', '', str(u or '')).replace('\u00b5', 'u').replace('\u03bc', 'u')
+
+
+def parse_units(spec: str, required: bool = False):
+    """« W | kW = 0,001 | MW = 0,000001 » → {'main': 'W', 'alts': {'kW': 0.001, 'MW': 1e-06}, 'required': False}.
+    Multiplicateur = valeur exprimée dans l'unité alternative / valeur exprimée dans l'unité principale (5500 W = 5,5 kW → 0,001), comme dans Moodle."""
+    parts = [p.strip() for p in re.split(r'\s*[|;]\s*', (spec or '').strip()) if p.strip()]
+    if not parts:
+        return None
+    main = norm_unit(parts[0].split('=')[0])
+    if not main:
+        return None
+    alts = {}
+    for p in parts[1:]:
+        name, _, mult = p.partition('=')
+        m = parse_number(mult) if mult.strip() else None
+        if norm_unit(name) and m:
+            alts[norm_unit(name)] = m
+    return {'main': main, 'alts': alts, 'required': bool(required)}
+
+
+def split_number_unit(raw: str):
+    """« 5,5 kW » → (5.5, 'kW') ; « 12 » → (12.0, None) ; « abc » → (None, None)."""
+    m = _NUM_UNIT_RE.match(str(raw or ''))
+    if not m:
+        return None, None
+    v = parse_number(m.group(1))
+    unit = norm_unit(m.group(2)) if m.group(2) else None
+    return v, (unit or None)
+
+
+def value_in_main_unit(raw: str, units: dict):
+    """Valeur de la réponse ramenée à l'unité principale ; None si le nombre est illisible, l'unité inconnue, ou absente alors qu'elle est obligatoire."""
+    v, unit = split_number_unit(raw)
+    if v is None:
+        return None
+    if unit is None:
+        return None if units.get('required') else v
+    if unit == units['main']:
+        return v
+    mult = units.get('alts', {}).get(unit)
+    return v / mult if mult else None
+
+
 def grade_numerique(key: dict, raw: str):
     k = key.get('number')
     if not k:
         return None
-    v = parse_number(raw)
+    v = value_in_main_unit(raw, key['units']) if key.get('units') else parse_number(raw)
     if v is None:
         return 0.0, (raw or '').strip()
     tol = abs(k['value']) * k['tol'] / 100.0 if k['percent'] else k['tol']
@@ -244,6 +305,52 @@ _CLOZE_ITEM_RE = re.compile(r'^\s*(\d{1,2})\s+(COURT|NUM|CHOIX)\b(?:\s*:\s*(.+))
 _FIELDS_RE = re.compile(r'Champs\s*:\s*(.+)', re.I)
 _FORMULA_RE = re.compile(r'Formule\s*:\s*([^\n(]+?)\s*(?:\(\s*[±+]\s*/?\s*-?\s*([\d.,]+)\s*(%?)\s*\))?\s*$', re.I | re.M)
 _ZONES_RE = re.compile(r'Zones\s*:\s*(.+)', re.I)
+_CODE_LANG_RE = re.compile(r'^\s*[-•*]?\s*Langage\s*:\s*([A-Za-z+#0-9]+)\s*$', re.I | re.M)
+_CODE_TEST_RE = re.compile(
+    r'^\s*[-•*]?\s*Test(?P<n>\s*\d+)?(?P<flag>\s*\(?\s*(?:cach[ée]e?|masqu[ée]e?|visible)\s*\)?)?\s*:\s*(?P<kind>entr[ée]e|appel|stdin)\s*[=:]?\s*(?P<inp>.*?)\s*;\s*sortie\s*[=:]?\s*(?P<out>.*?)\s*$',
+    re.I | re.M)
+_CODE_ALL_RE = re.compile(r'Notation\s*:\s*tout\s+ou\s+rien', re.I)
+
+
+def _unquote(v: str) -> str:
+    """« « 3\\n4 » » / "…" / `…` → texte ; \\n \\t \\\\ deviennent un retour à la ligne, une tabulation, une barre oblique inverse."""
+    v = (v or '').strip()
+    for a, b in (('«', '»'), ('"', '"'), ('`', '`'), ("'", "'")):
+        if len(v) >= 2 and v.startswith(a) and v.endswith(b):
+            v = v[1:-1]
+            if a == '«':
+                v = v.strip(' \u00a0\u202f')        # espace typographique (insécable) contre les guillemets français
+            break
+    return v.replace('\\n', '\n').replace('\\t', '\t').replace('\\\\', '\\')
+
+
+def parse_code_key(block: str):
+    """Barème d'une question de code exécutable : langage + tests (visibles par défaut, « caché » pour les tests de correction seule). None s'il manque le langage ou les tests."""
+    from services.code_sandbox import norm_lang
+    lm = _CODE_LANG_RE.search(block)
+    lang = norm_lang(lm.group(1)) if lm else None
+    tests = []
+    for i, m in enumerate(_CODE_TEST_RE.finditer(block), 1):
+        flag = (m.group('flag') or '').lower()
+        kind = 'call' if m.group('kind').lower() == 'appel' else 'stdin'
+        n = int(m.group('n')) if m.group('n') else i
+        tests.append({'n': n, 'hidden': bool(re.search(r'cach|masqu', flag)), 'kind': kind, 'input': _unquote(m.group('inp')), 'expected': _unquote(m.group('out'))})
+    if not lang or not tests:
+        return None
+    return {'lang': lang, 'tests': tests, 'all_or_nothing': bool(_CODE_ALL_RE.search(block))}
+
+
+def grade_code(key: dict, raw: str):
+    """→ (fraction, résumé) ou None (pas de tests, ou bac à sable indisponible : la question reste confiée à l'IA / au professeur)."""
+    c = key.get('code')
+    if not c:
+        return None
+    from services import code_sandbox as SB
+    r = SB.grade(c['lang'], raw, c['tests'], c.get('all_or_nothing', False))
+    return None if r is None else (r[0], r[1])
+
+
+_UNITS_RE = re.compile(r'^\s*[-•*]?\s*Unit[ée]s?(\s+obligatoires?)?\s*:\s*(.+)$', re.I | re.M)      # « Unité : W | kW = 0,001 | MW = 0,000001 » (comme le « Calculated » de Moodle)
 LABELS_RE = re.compile(r'^\s*[ÉE]tiquettes?\s*:\s*(.+)$', re.I)
 VARS_RE = re.compile(r'^\s*Variables?\s*:\s*(.+)$', re.I)
 
@@ -374,7 +481,7 @@ def grade_calculee(key: dict, raw: str, vars_line: str, seed, num):
     want = eval_formula(f['expr'], instantiate(vars_line, seed, num))
     if want is None:
         return None
-    v = parse_number(raw)
+    v = value_in_main_unit(raw, key['units']) if key.get('units') else parse_number(raw)
     tol = abs(want) * f['tol'] / 100.0 if f['percent'] else f['tol']
     ok = v is not None and abs(v - want) <= tol + 1e-9
     return (1.0 if ok else 0.0), (raw or '').strip(), want

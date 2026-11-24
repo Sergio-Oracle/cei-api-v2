@@ -2840,6 +2840,19 @@ OPENAPI_SPEC = {
             }}}},
             "responses": {"200": {"description": "Message envoyé (ou doublon ignoré : « duplicate »: true)"}}
         }},
+        "/api/exam_attempts/{attempt_id}/code_info": {"get": {
+            "tags": ["Examens"], "summary": "Questions de code avec tests automatiques : langage et tests VISIBLES (jamais les tests cachés)",
+            "description": "Réservé à l'étudiant de la tentative. `enabled` est faux si le bac à sable d'exécution (Piston, variable CODE_SANDBOX_URL) n'est pas configuré : les questions de code restent alors corrigées par l'IA / le professeur.",
+            "parameters": [{"name": "attempt_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+            "responses": {"200": {"description": "{enabled, questions: {numéro: {lang, tests: [{n, kind, input, expected}], hidden}}}"}, "404": {"description": "Tentative introuvable"}}
+        }},
+        "/api/exam_attempts/{attempt_id}/code_run": {"post": {
+            "tags": ["Examens"], "summary": "« Tester mon code » : exécute les tests VISIBLES d'une question de code dans le bac à sable",
+            "description": "Une exécution à la fois par étudiant (429 `busy` sinon), 64 Ko de code au plus (413), 503 `unavailable` si le bac à sable ne répond pas (jamais un faux « échec »). La note est calculée à la correction avec TOUS les tests.",
+            "parameters": [{"name": "attempt_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+            "requestBody": {"required": True, "content": {"application/json": {"schema": {"type": "object", "required": ["num", "code"], "properties": {"num": {"type": "string", "example": "4"}, "code": {"type": "string"}}}}}},
+            "responses": {"200": {"description": "{success, results: [{n, ok, status, input, expected, got, stderr}], passed, total, hidden}"}, "400": {"description": "Copie déjà rendue"}, "404": {"description": "Question sans tests"}, "429": {"description": "Un test est déjà en cours"}, "503": {"description": "Bac à sable indisponible"}}
+        }},
         "/api/online_exams/{exam_id}/student_messages": {"get": {
             "tags": ["Surveillant"], "summary": "Messages des étudiants — vue surveillant/prof",
             "parameters": [

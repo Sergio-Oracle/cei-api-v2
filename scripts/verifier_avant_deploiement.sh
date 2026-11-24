@@ -18,5 +18,10 @@ if [ -d ../cei-next/scripts ]; then
     else echo "ÉCHEC front/$n  → /tmp/verif_front_$n.log"; tail -5 /tmp/verif_front_$n.log; ko=1; fi
   done
 fi
+# Moteur d'exécution du code (WebAssembly) dans un Chromium réel : fonctionnement + isolation réseau (24/11/2026)
+if [ -f ../cei-next/scripts/test_code_runner.py ] && [ -x /tmp/pwenv/bin/python ]; then
+  if (cd ../cei-next && /tmp/pwenv/bin/python scripts/test_code_runner.py > /tmp/verif_front_code_runner.log 2>&1); then echo "OK   front/test_code_runner  ($(grep -oE '[0-9]+(/[0-9]+)? vérifications réussies' /tmp/verif_front_code_runner.log | tail -1))"
+  else echo "ÉCHEC front/test_code_runner  → /tmp/verif_front_code_runner.log"; tail -5 /tmp/verif_front_code_runner.log; ko=1; fi
+fi
 [ $ko -eq 0 ] && echo "== Tout est bon : déploiement autorisé ==" || echo "== DÉPLOIEMENT REFUSÉ =="
 exit $ko

@@ -10,6 +10,7 @@ ctx = json.load(open(sys.argv[1])); BASE = os.environ.get('CEI_E2E_BASE', 'https
 HOST = BASE.split('//')[1].split('/')[0]
 CHROME = os.environ.get('CEI_E2E_CHROME') or (sorted(glob.glob('/root/.cache/ms-playwright/chromium-*/chrome-linux*/chrome')) or [None])[-1]
 ROOM = f"exam-{ctx['exam']}"
+API_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 UID = dict(zip(['adm'] + list(ctx['students']), ctx['uids']))
 RES = []
 PWH = []                      # objet Playwright (pour lancer un second navigateur dans un scénario)
@@ -324,8 +325,10 @@ def s10_formules_et_maths(br):
     check("aucune exception de page", not errs10, errs10[:2])
 
 def s11_code_avec_tests(br):
-    print("\n== 11. Question de code avec tests automatiques (Piston) : tests d'exemple, « Tester mon code », résultats ==")
+    print("\n== 11. Question de code : exécution DANS LE NAVIGATEUR (Python en WebAssembly) par l'étudiant, puis tests cachés exécutés par l'enseignant ==")
     st = new_ctx(br); errs11 = []; st.on('pageerror', lambda e: errs11.append(str(e)[:160]))
+    seen_att = []; net11 = []
+    st.on('request', lambda rq: (seen_att.append(__import__('re').search(r'/api/exam_attempts/(\d+)/', rq.url).group(1)) if __import__('re').search(r'/api/exam_attempts/(\d+)/code_info', rq.url) else None, net11.append(rq.url) if '/code_run' in rq.url else None))
     login(st, ctx['students']['code1']); start_exam(st, exam=ctx['exam2']); st.wait_for_timeout(5000)
     if st.locator("button:has-text(\"Revenir à l'examen\")").count(): st.locator("button:has-text(\"Revenir à l'examen\")").first.click(); st.wait_for_timeout(1500)
     st.locator('input[inputmode="decimal"]').first.fill('1,5'); st.locator('label:has(.katex)').first.click(); st.wait_for_timeout(800)
@@ -347,20 +350,48 @@ def s11_code_avec_tests(br):
     def ecrire(code):
         st.locator(Q4).click(); st.keyboard.press('Control+a'); st.keyboard.press('Delete'); st.keyboard.type(code)
     ecrire('a,b=map(int,input().split())\nprint(a+b)'); st.wait_for_timeout(500)
-    btn.first.click(); st.wait_for_selector('text=réussis sur 2', timeout=40000)
+    btn.first.click(); st.wait_for_selector('text=réussis sur 2', timeout=90000)
     check("code juste : « 2 tests réussis sur 2 »", st.locator('text=2 tests réussis sur 2').count() == 1 and st.locator('text=✔ Réussi').count() == 2)
     if os.environ.get('CEI_E2E_SHOTS'): st.screenshot(path=os.environ['CEI_E2E_SHOTS'] + '/code_tests_ok.png', full_page=False)
     ecrire('a,b=map(int,input().split())\nprint(a-b)'); st.wait_for_timeout(400)
-    btn.first.click(); st.wait_for_selector('text=0 test réussi sur 2', timeout=40000)
+    btn.first.click(); st.wait_for_selector('text=0 test réussi sur 2', timeout=60000)
     check("code faux : « 0 test réussi sur 2 », ce que le programme affiche est montré", st.locator('text=✘ Échec').count() == 2 and 'Votre programme affiche' in st.inner_text('body'))
     ecrire('while True:\n    pass'); st.wait_for_timeout(400)
-    btn.first.click(); st.wait_for_selector('text=Temps d\'exécution dépassé', timeout=60000)
-    check("boucle infinie : « Temps d'exécution dépassé » (le test se termine, la page reste utilisable)", st.locator("text=Temps d'exécution dépassé").count() >= 1 and btn.first.is_enabled())
+    btn.first.click(); st.wait_for_selector('text=met trop de temps', timeout=90000)
+    check("boucle infinie : « met trop de temps à s'exécuter » (arrêtée au délai, la page reste utilisable)", st.locator("text=met trop de temps").count() >= 1 and btn.first.is_enabled())
     ecrire('print(1/0)'); st.wait_for_timeout(400)
-    btn.first.click(); st.wait_for_selector('text=0 test réussi sur 2', timeout=40000)
-    check("erreur d'exécution : message de l'erreur du programme, pas de texte d'infrastructure", 'ZeroDivisionError' in st.inner_text('body') and 'Piston' not in st.inner_text('body') and 'isolate' not in st.inner_text('body'))
+    btn.first.click(); st.wait_for_selector('text=0 test réussi sur 2', timeout=60000)
+    check("erreur d'exécution : message de l'erreur du programme, pas de texte d'infrastructure", 'ZeroDivisionError' in st.inner_text('body') and 'Piston' not in st.inner_text('body') and 'isolate' not in st.inner_text('body') and 'Pyodide' not in st.inner_text('body'))
     check("le code reste enregistré tel que saisi (réponse brute)", (st.locator('[data-cei-answer]').nth(1).get_attribute('data-cei-answer') or '') == 'print(1/0)')
-    check("aucune exception de page", not errs11, errs11[:2])
+    check("l'exécution n'a JAMAIS touché nos serveurs (aucune requête « code_run »)", not net11, net11)
+    # ── Côté enseignant : tests cachés exécutés dans SON navigateur, note enregistrée ──
+    ecrire('a,b=map(int,input().split())\nprint(a+b)')
+    att = seen_att[0] if seen_att else None
+    for _ in range(40):                                                                    # attend que la sauvegarde automatique ait enregistré le dernier code
+        got = subprocess.run([os.path.join(API_ROOT, '.venv-base/bin/python'), '-c', f"from models import *\ns=get_session();print('SAVED' if 'a+b' in (s.query(ExamAttempt).get({att}).answers or '') else 'WAIT')"], cwd=API_ROOT, capture_output=True, text=True).stdout.strip().splitlines()[-1:]
+        if got == ['SAVED']: break
+        st.wait_for_timeout(3000)
+    check("identifiant de la copie relevé", bool(att), seen_att)
+    ad = new_ctx(br); errs11b = []; ad.on('pageerror', lambda e: errs11b.append(str(e)[:160])); login(ad, ctx['adm'])
+    ad.goto(f"{BASE}/dashboard/professor/attempts/{att}"); ad.wait_for_selector("text=Tests du code de l'étudiant", timeout=40000)
+    check("la page de correction affiche « Tests du code de l'étudiant » (question 4, python)", ad.locator('text=Question 4').count() >= 1 and ad.locator('button:has-text("Exécuter les tests")').count() == 1)
+    ad.locator('button:has-text("Exécuter les tests")').first.click()
+    try: ad.wait_for_selector('text=/test\\(s\\) réussi\\(s\\)/', timeout=120000)
+    except Exception: t_ = text(ad); i_ = t_.find('Tests du code'); print('   [diagnostic] panneau :', t_[i_:i_ + 700], '| ALERTES :', [x for x in t_.split(' | ') if any(k in x.lower() for k in ('erreur', 'impossible', 'changé', 'relancez', 'pas pu'))][:4])
+    check("4 tests exécutés (2 visibles + 2 CACHÉS) : « 4/4 test(s) réussi(s) »", ad.locator('text=4/4 test(s) réussi(s)').count() >= 1 and ad.locator('text=✔ Réussi').count() == 4)
+    check("les tests cachés sont signalés « caché » à l'enseignant seulement", ad.locator('span:has-text("caché")').count() == 2)
+    out = subprocess.run([os.path.join(API_ROOT, '.venv-base/bin/python'), '-c', f"from models import get_session\nfrom sqlalchemy import text\ns=get_session();print(s.execute(text(\"select fraction,summary from code_test_results where attempt_id={att} and num='4'\")).fetchall())"], cwd=API_ROOT, capture_output=True, text=True).stdout.strip().splitlines()[-1]
+    check("résultat enregistré côté serveur (fraction 1.0)", "1.0" in out, out)
+    # exécution groupée : copie rendue, résultat effacé → le bouton de l'examen la retrouve et la teste
+    subprocess.run([os.path.join(API_ROOT, '.venv-base/bin/python'), '-c', f"from models import *\nfrom sqlalchemy import text\ns=get_session()\na=s.query(ExamAttempt).get({att})\na.status=AttemptStatus.SUBMITTED\ns.execute(text('delete from code_test_results where attempt_id={att}'))\ns.commit()"], cwd=API_ROOT, capture_output=True, text=True)
+    ad.goto(f"{BASE}/dashboard/professor/online-correction"); ad.wait_for_selector('button:has-text("Tester le code")', timeout=40000)
+    check("page de correction des examens : bouton « Tester le code (1 copie) » pour l'examen", ad.locator('button:has-text("Tester le code (1 copie)")').count() >= 1)
+    ad.locator('button:has-text("Tester le code")').first.click(); ad.wait_for_selector('text=question(s) de code testée(s)', timeout=120000)
+    out = subprocess.run([os.path.join(API_ROOT, '.venv-base/bin/python'), '-c', f"from models import get_session\nfrom sqlalchemy import text\ns=get_session();print(s.execute(text(\"select fraction from code_test_results where attempt_id={att} and num='4'\")).fetchall())"], cwd=API_ROOT, capture_output=True, text=True).stdout.strip().splitlines()[-1]
+    check("exécution groupée : la copie est testée et le résultat enregistré (fraction 1.0)", "1.0" in out, out)
+    check("le bouton disparaît une fois toutes les copies testées", ad.locator('button:has-text("Tester le code")').count() == 0)
+    check("aucune exception de page", not errs11 and not errs11b, (errs11 + errs11b)[:2])
+    ad.context.close(); st.context.close()
 
 def s7_evenements_une_fois(br):
     print("\n== 7. Message et appel du surveillant : chaque événement n'arrive qu'UNE fois chez l'étudiant (relève de 30 s comprise) ==")

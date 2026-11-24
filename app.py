@@ -140,7 +140,7 @@ from routes.exam_client     import exam_client_bp;     app.register_blueprint(ex
 from routes.tech_test      import tech_test_bp;       app.register_blueprint(tech_test_bp)     # test technique avant l'examen (caméra, micro, écran, réseau, diffusion réelle)
 from routes.audit          import audit_bp;           app.register_blueprint(audit_bp)
 from routes.staff_chat     import staff_chat_bp;      app.register_blueprint(staff_chat_bp)   # messagerie du personnel d'un examen
-from routes.code_run       import code_run_bp;        app.register_blueprint(code_run_bp)     # questions de code : tests visibles + « Tester mon code » (bac à sable Piston)
+from routes.code_run       import code_run_bp;        app.register_blueprint(code_run_bp)     # questions de code : tests visibles côté étudiant, exécution des tests par l enseignant (dans le navigateur)
 from services import subject_normalizer as _subject_normalizer;  _subject_normalizer.install()   # sujets de PDF : tableaux Vrai/Faux lus, numérotation continue
 from services import audit as _audit;  _audit.install(app)   # journal d'activité des comptes à privilèges (discret)
 from routes.transcripts    import transcripts_bp;     app.register_blueprint(transcripts_bp)

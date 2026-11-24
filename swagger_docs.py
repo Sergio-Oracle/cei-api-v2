@@ -2842,16 +2842,30 @@ OPENAPI_SPEC = {
         }},
         "/api/exam_attempts/{attempt_id}/code_info": {"get": {
             "tags": ["Examens"], "summary": "Questions de code avec tests automatiques : langage et tests VISIBLES (jamais les tests cachés)",
-            "description": "Réservé à l'étudiant de la tentative. `enabled` est faux si le bac à sable d'exécution (Piston, variable CODE_SANDBOX_URL) n'est pas configuré : les questions de code restent alors corrigées par l'IA / le professeur.",
+            "description": "Réservé à l'étudiant de la tentative. Le code s'exécute DANS SON NAVIGATEUR (WebAssembly, enceinte isolée sans réseau) : le serveur n'exécute jamais le code d'un étudiant. `runnable` est vrai pour Python et JavaScript ; Java / C / C++ / PHP restent lus par l'IA / le professeur.",
             "parameters": [{"name": "attempt_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
-            "responses": {"200": {"description": "{enabled, questions: {numéro: {lang, tests: [{n, kind, input, expected}], hidden}}}"}, "404": {"description": "Tentative introuvable"}}
+            "responses": {"200": {"description": "{questions: {numéro: {lang, runnable, tests: [{n, kind, input, expected}], hidden}}}"}, "404": {"description": "Tentative introuvable"}}
         }},
-        "/api/exam_attempts/{attempt_id}/code_run": {"post": {
-            "tags": ["Examens"], "summary": "« Tester mon code » : exécute les tests VISIBLES d'une question de code dans le bac à sable",
-            "description": "Une exécution à la fois par étudiant (429 `busy` sinon), 64 Ko de code au plus (413), 503 `unavailable` si le bac à sable ne répond pas (jamais un faux « échec »). La note est calculée à la correction avec TOUS les tests.",
+        "/api/exam_attempts/{attempt_id}/code_tests": {"get": {
+            "tags": ["Correction"], "summary": "Tests de code d'une copie (TOUS, y compris les cachés) + réponse de l'étudiant — personnel seulement",
+            "description": "Réservé aux professeurs de l'examen, au responsable d'examen et à l'administrateur. Chaque question rend le langage, les tests (visibles et cachés), le code de l'étudiant, son empreinte (`code_sha`) et le dernier résultat enregistré pour CETTE réponse (`saved`, null s'il est périmé ou absent).",
             "parameters": [{"name": "attempt_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
-            "requestBody": {"required": True, "content": {"application/json": {"schema": {"type": "object", "required": ["num", "code"], "properties": {"num": {"type": "string", "example": "4"}, "code": {"type": "string"}}}}}},
-            "responses": {"200": {"description": "{success, results: [{n, ok, status, input, expected, got, stderr}], passed, total, hidden}"}, "400": {"description": "Copie déjà rendue"}, "404": {"description": "Question sans tests"}, "429": {"description": "Un test est déjà en cours"}, "503": {"description": "Bac à sable indisponible"}}
+            "responses": {"200": {"description": "{attempt_id, questions: [{num, lang, runnable, all_or_nothing, code, code_sha, empty, tests, saved}]}"}, "403": {"description": "Accès non autorisé"}, "404": {"description": "Tentative non trouvée"}}
+        }},
+        "/api/exam_attempts/{attempt_id}/code_results": {"post": {
+            "tags": ["Correction"], "summary": "Enregistre les sorties des tests de code exécutés dans le navigateur de l'enseignant ; recalcule le verdict et la note de la question",
+            "description": "Le navigateur envoie, pour CHAQUE test, son statut (`ok`, `runtime_error`, `timeout`, `output`, `unavailable`) et la sortie obtenue : le serveur compare lui-même à la sortie attendue (comparaison tolérante) et ignore tout verdict annoncé par le client. 409 si la réponse de l'étudiant a changé depuis l'exécution (`code_sha` périmé) ; 400 si un test manque ou n'a pas pu être exécuté (jamais de note sur un résultat partiel). Si la copie est déjà corrigée question par question, la note de la question et le total sont mis à jour (l'enseignant peut ensuite les modifier).",
+            "parameters": [{"name": "attempt_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+            "requestBody": {"required": True, "content": {"application/json": {"schema": {"type": "object", "required": ["num", "code_sha", "results"], "properties": {
+                "num": {"type": "string", "example": "4"}, "code_sha": {"type": "string"},
+                "results": {"type": "array", "items": {"type": "object", "properties": {"n": {"type": "integer"}, "status": {"type": "string", "example": "ok"}, "got": {"type": "string"}, "stderr": {"type": "string"}}}}}}}}},
+            "responses": {"200": {"description": "{success, fraction, summary, detail, score, question_scores, feedback}"}, "400": {"description": "Exécution incomplète"}, "403": {"description": "Accès non autorisé"}, "404": {"description": "Question sans tests"}, "409": {"description": "La réponse a changé : relancer les tests"}}
+        }},
+        "/api/online_exams/{exam_id}/code_pending": {"get": {
+            "tags": ["Correction"], "summary": "Copies de l'examen dont des questions de code n'ont pas encore de résultat de tests à jour",
+            "description": "Alimente le bouton « Tester le code » de la page de correction : le navigateur de l'enseignant exécute les tests de chaque copie listée, l'une après l'autre. Seules les copies réellement affichées à l'étudiant sont listées.",
+            "parameters": [{"name": "exam_id", "in": "path", "required": True, "schema": {"type": "integer"}}],
+            "responses": {"200": {"description": "{has_code, total, attempts: [{attempt_id, student_name, questions: [numéros]}]}"}, "403": {"description": "Accès non autorisé"}, "404": {"description": "Examen introuvable"}}
         }},
         "/api/online_exams/{exam_id}/student_messages": {"get": {
             "tags": ["Surveillant"], "summary": "Messages des étudiants — vue surveillant/prof",

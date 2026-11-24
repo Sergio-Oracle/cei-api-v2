@@ -11,7 +11,7 @@ from pathlib import Path
 
 from flask import Blueprint, request, jsonify, send_file, make_response, Response, current_app
 from sqlalchemy import desc, func as sa_func, update as sql_update
-from sqlalchemy.orm import joinedload
+from sqlalchemy.orm import joinedload, object_session
 
 from auth_paseto import paseto_required, get_current_user_id, get_current_user_role
 from extensions import limiter
@@ -2573,7 +2573,35 @@ def _question_points_map(content: str, rubric: str = '') -> dict:
     return points
 
 
-def _deterministic_grade(content: str, rubric: str, answers_data, seed=None) -> tuple:
+def _session_of(obj):
+    """Session de l'objet s'il est une ligne de base de données, sinon None (copie fictive d'un test)."""
+    try:
+        return object_session(obj)
+    except Exception:
+        return None
+
+
+def _stored_code_results(session, attempt_id) -> dict:
+    """Résultats des tests de code déjà exécutés pour cette copie (routes/code_run.py) ; jamais d'exception : sans eux, l'IA / le professeur notent."""
+    own = None
+    try:
+        from services import code_results as _CR
+        if session is None:
+            own = session = get_session()
+        return _CR.load(session, attempt_id)
+    except Exception as e:
+        try:
+            session.rollback()
+        except Exception:
+            pass
+        print(f"[code] résultats de tests illisibles pour la copie {attempt_id} : {e}")
+        return {}
+    finally:
+        if own is not None:
+            own.close()
+
+
+def _deterministic_grade(content: str, rubric: str, answers_data, seed=None, code_results=None) -> tuple:
     """Note automatiquement — sans IA, comparaison exacte ou crédit partiel —
     les questions QCM / QCM à réponses multiples / Vrai-Faux / Appariement,
     exactement comme Moodle le fait pour qtype_multichoice (grade_response
@@ -2674,12 +2702,13 @@ def _deterministic_grade(content: str, rubric: str, answers_data, seed=None) -> 
                                 'correct': n_right == len(pairs), 'given': f'{n_right}/{len(pairs)} correctes'})
 
         elif marker == 'CODE':
-            # Code exécutable (barème : « Langage : … » + « Test : … ») : tests visibles ET cachés exécutés dans le bac à sable (services/code_sandbox.py).
-            # Sans tests, sans bac à sable ou en cas de panne : la question reste confiée à l'IA / au professeur, comme avant.
+            # Code exécutable (barème : « Langage : … » + « Test : … ») : tests visibles ET cachés, exécutés dans le navigateur de l'enseignant
+            # (routes/code_run.py) ; la note vient des résultats enregistrés pour CETTE réponse. Sans tests, sans résultat à jour (ou langage non
+            # exécutable) : la question reste confiée à l'IA / au professeur, comme avant.
             key = correct_map.get(num)
             if not key or key.get('type') != 'ext' or not key.get('code'):
                 continue
-            res = QT.grade_code(key, (answers_data.get(f'pq_{num}') or ''))
+            res = QT.grade_code(key, (answers_data.get(f'pq_{num}') or ''), (code_results or {}).get(num))
             if res is None:
                 continue
             fraction, summary = res
@@ -3070,7 +3099,7 @@ def _run_auto_correction_core(attempt_id: int, notify_failure: bool = True):
         # génération ne respecte pas toujours parfaitement la répartition
         # demandée), plutôt que de supposer un total fixe.
         det_score, det_max, total_max, det_breakdown, det_nums, det_structured = _deterministic_grade(
-            subject.content, subject.rubric or '', answers_data, seed=attempt.id)
+            subject.content, subject.rubric or '', answers_data, seed=attempt.id, code_results=_stored_code_results(session, attempt.id))
         if total_max <= 0.01:
             total_max = 20.0   # barème non reconnu : l'IA corrige toute la copie sur 20
         remaining_max = round(total_max - det_max, 2)
@@ -3538,7 +3567,8 @@ def _run_ai_correction_impl(attempt, corrected_by_id=None) -> float:
     # RÉEL des points du sujet (souvent ≠ 20 malgré la consigne de
     # génération), plutôt que de supposer un total fixe.
     det_score, det_max, total_max, det_breakdown, det_nums, det_structured = _deterministic_grade(
-        subject.content, subject.rubric or '', answers_data if isinstance(answers_data, dict) else {}, seed=attempt.id)
+        subject.content, subject.rubric or '', answers_data if isinstance(answers_data, dict) else {}, seed=attempt.id,
+        code_results=_stored_code_results(_session_of(attempt), attempt.id))
     if total_max <= 0.01:
         total_max = 20.0   # barème non reconnu : l'IA corrige toute la copie sur 20
     remaining_max = round(total_max - det_max, 2)

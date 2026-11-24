@@ -24,7 +24,7 @@ Barème (ligne dans le bloc de la question) :
   calculee :                   « Formule : a*b*n/100 (± 1) »  (variables de l'énoncé ; tolérance absolue ou en %)
   zones :                      « Zones : 1=[x1,y1,x2,y2] ; 2=[…] »  (rectangles en % de l'image, étiquettes dans l'ordre)
   code :                       « Langage : python » + des lignes « Test : entrée « 3 4 » ; sortie « 7 » » (entrée standard) ou « Test caché : appel « print(somme(3, 4)) » ; sortie « 7 » »
-                               (expression ajoutée après le code, Python / JavaScript / PHP) ; « Notation : tout ou rien » (défaut : proportionnelle). Exécution : services/code_sandbox.py
+                               (expression ajoutée après le code, Python / JavaScript / PHP) ; « Notation : tout ou rien » (défaut : proportionnelle). Exécution : DANS LE NAVIGATEUR (WebAssembly, voir cei-next/lib/codeRunner.ts) ; résultats enregistrés par services/code_results.py
   unités (numerique, calculee) : « Unité : W | kW = 0,001 | MW = 0,000001 »  (comme le « Calculated » de Moodle : unité principale, puis unités acceptées avec leur multiplicateur ;
                                « Unité obligatoire : … » exige une unité ; sans cette ligne, l'unité saisie est ignorée comme avant)
 
@@ -324,9 +324,28 @@ def _unquote(v: str) -> str:
     return v.replace('\\n', '\n').replace('\\t', '\t').replace('\\\\', '\\')
 
 
+_CODE_LANGS = ('python', 'javascript', 'java', 'c', 'cpp', 'php')
+_CODE_ALIASES = {'py': 'python', 'python3': 'python', 'js': 'javascript', 'node': 'javascript', 'nodejs': 'javascript', 'c++': 'cpp', 'cplusplus': 'cpp'}
+CODE_RUNNABLE = ('python', 'javascript')          # langages exécutés dans le navigateur ; les autres restent lus par l'IA / le professeur
+
+
+def norm_lang(name):
+    n = re.sub(r'[^a-z+#]', '', str(name or '').lower())
+    n = _CODE_ALIASES.get(n, n)
+    return n if n in _CODE_LANGS else None
+
+
+def normalize_output(s) -> str:
+    """Comparaison tolérante de CodeRunner : fins de ligne unifiées, espaces de fin de ligne et lignes vides finales ignorés.
+    (Même règle côté navigateur : cei-next/lib/codeTests.ts.)"""
+    lines = [ln.rstrip() for ln in str(s or '').replace('\r\n', '\n').replace('\r', '\n').split('\n')]
+    while lines and not lines[-1]:
+        lines.pop()
+    return '\n'.join(lines)
+
+
 def parse_code_key(block: str):
     """Barème d'une question de code exécutable : langage + tests (visibles par défaut, « caché » pour les tests de correction seule). None s'il manque le langage ou les tests."""
-    from services.code_sandbox import norm_lang
     lm = _CODE_LANG_RE.search(block)
     lang = norm_lang(lm.group(1)) if lm else None
     tests = []
@@ -340,14 +359,45 @@ def parse_code_key(block: str):
     return {'lang': lang, 'tests': tests, 'all_or_nothing': bool(_CODE_ALL_RE.search(block))}
 
 
-def grade_code(key: dict, raw: str):
-    """→ (fraction, résumé) ou None (pas de tests, ou bac à sable indisponible : la question reste confiée à l'IA / au professeur)."""
+def code_sha(raw) -> str:
+    import hashlib
+    return hashlib.sha256(str(raw or '').encode('utf-8')).hexdigest()
+
+
+def judge_code(c: dict, results: list):
+    """Notation des tests d'une question de code à partir des sorties obtenues (exécutées dans le navigateur de l'enseignant).
+    `results` = [{'n', 'status', 'got'}] ; le verdict de chaque test est recalculé ICI (jamais celui annoncé par le navigateur).
+    → (fraction, résumé, détail) ou None si un test manque (exécution incomplète : on ne note pas sur des résultats partiels)."""
+    by_n = {str(r.get('n')): r for r in (results or []) if isinstance(r, dict)}
+    detail = []
+    for t in c['tests']:
+        r = by_n.get(str(t['n']))
+        if r is None:
+            return None
+        status = str(r.get('status') or '')
+        if status == 'unavailable':
+            return None                  # le navigateur n'a pas pu exécuter : ni réussi ni échoué
+        expected, got = normalize_output(t['expected']), normalize_output(r.get('got'))
+        detail.append({'n': t['n'], 'hidden': t['hidden'], 'ok': status == 'ok' and got == expected, 'status': status,
+                       'got': got[:2000], 'expected': expected[:2000], 'stderr': str(r.get('stderr') or '')[:1500]})
+    passed = sum(1 for d in detail if d['ok'])
+    fraction = (1.0 if passed == len(detail) else 0.0) if c.get('all_or_nothing') else passed / len(detail)
+    fails = [str(d['n']) for d in detail if not d['ok']]
+    summary = f"{passed}/{len(detail)} test(s) réussi(s)" + (f" (échec : test {', '.join(fails)})" if fails else '')
+    return fraction, summary, detail
+
+
+def grade_code(key: dict, raw: str, stored=None):
+    """→ (fraction, résumé) ou None. Une réponse vide vaut 0. Sinon la note vient des résultats enregistrés pour CETTE réponse
+    (empreinte identique) ; sans résultats la question reste confiée à l'IA / au professeur."""
     c = key.get('code')
     if not c:
         return None
-    from services import code_sandbox as SB
-    r = SB.grade(c['lang'], raw, c['tests'], c.get('all_or_nothing', False))
-    return None if r is None else (r[0], r[1])
+    if not (raw or '').strip():
+        return 0.0, 'aucune réponse'
+    if not stored or stored.get('sha') != code_sha(raw):
+        return None
+    return float(stored['fraction']), str(stored.get('summary') or '')
 
 
 _UNITS_RE = re.compile(r'^\s*[-•*]?\s*Unit[ée]s?(\s+obligatoires?)?\s*:\s*(.+)$', re.I | re.M)      # « Unité : W | kW = 0,001 | MW = 0,000001 » (comme le « Calculated » de Moodle)
